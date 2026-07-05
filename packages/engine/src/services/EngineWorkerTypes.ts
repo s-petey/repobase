@@ -1,7 +1,7 @@
 import { Schema } from "effect";
-import { RepoConfig } from "../schemas";
-import { SearchResult } from "./Indexer";
-import { AddRepoStage, SyncResult } from "./RepobaseEngine";
+import { RepoConfig } from "../schemas.js";
+import { SearchResult } from "./Indexer.js";
+import { AddRepoStage, SyncResult } from "./RepobaseEngine.js";
 
 const RepoActions = Schema.Literal('addRepo', 'removeRepo', 'syncRepo', 'syncAll', 'listRepos', 'getRepo', 'search')
 export type RepoAction = Schema.Schema.Type<typeof RepoActions>

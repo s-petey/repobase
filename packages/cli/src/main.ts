@@ -253,7 +253,7 @@ const cloudLogoutCommand = Command.make("logout", {}, () =>
 const cloudStatusCommand = Command.make("status", {}, () =>
   Effect.gen(function* () {
     const configured = yield* isCloudConfigured()
-    
+
     if (!configured) {
       yield* Console.log("Cloud sync is not configured.")
       yield* Console.log("Run 'repobase cloud login' to configure.")
@@ -450,9 +450,10 @@ const searchCommand = Command.make(
       for (const result of results) {
         yield* Console.log(`${result.repo}/${result.path}`)
         yield* Console.log(`  Score: ${result.score.toFixed(3)}`)
-        if (result.snippet) {
-          const snippet = result.snippet.replace(/\n/g, " ").slice(0, 100)
-          yield* Console.log(`  ${snippet}...`)
+        const snippet = Option.getOrNull(result.snippet)
+        if (snippet !== null) {
+          const formattedSnippet = snippet.replace(/\n/g, " ").slice(0, 100)
+          yield* Console.log(`  ${formattedSnippet}...`)
         }
         yield* Console.log("")
       }
