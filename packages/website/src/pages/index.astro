@@ -1,5 +1,5 @@
 ---
-import { Icon } from '@astrojs/starlight/components';
+// import { Icon } from '@astrojs/starlight/components';
 import demoVideo from '../assets/demo.mp4';
 import Analytics from '@vercel/analytics/astro'
 
@@ -8,7 +8,7 @@ const siteUrl = 'https://repobase.dev'; // Update to your actual domain
 const pageTitle = 'Repobase – AI-Powered Repository Search';
 const pageDescription = 'Give your AI agents instant access to the repositories that matter. Local indexing, semantic search, and MCP integration for Cursor, Claude, and more.';
 const ogImage = `${siteUrl}/og-image.png`;
-const twitterHandle = '@repobase'; // Update with your Twitter handle or remove
+// const twitterHandle = '@repobase'; // Update with your Twitter handle or remove
 
 const features = [
   {
@@ -95,7 +95,7 @@ const mcpConfig = `{
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     
     <!-- JSON-LD Structured Data -->
-    <script type="application/ld+json" set:html={JSON.stringify({
+    <script is:inline type="application/ld+json" set:html={JSON.stringify({
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
       "name": "Repobase",
