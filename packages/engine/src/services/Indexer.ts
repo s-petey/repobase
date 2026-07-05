@@ -1,5 +1,5 @@
 import { FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, Option, SubscriptionRef } from "effect"
+import { Context, Effect, Layer, Option, Schema, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type { FileChange } from "./GitClient.js"
 import * as os from "os"
@@ -62,24 +62,26 @@ const DEFAULT_IGNORE_PATTERNS = [
 /**
  * Summary of an indexing operation
  */
-export interface IndexSummary {
-  repo: string
-  filesIndexed: number
-  filesDeleted: number
-  filesSkipped: number
-  durationMs: number
-}
+ export const IndexSummary = Schema.Struct({
+   repo: Schema.String,
+   filesIndexed: Schema.Number,
+   filesDeleted: Schema.Number,
+   filesSkipped: Schema.Number,
+   durationMs: Schema.Number,
+ })
+ export type IndexSummary =Schema.Schema.Type<typeof IndexSummary>
 
 /**
  * A single search result
  */
-export interface SearchResult {
-  repo: string
-  path: string
-  filename: string
-  score: number
-  snippet?: string
-}
+ export const SearchResult = Schema.Struct({
+   repo: Schema.String,
+   path: Schema.String,
+   filename: Schema.String,
+   score: Schema.Number,
+   snippet: Schema.Option(Schema.String),
+ })
+ export type SearchResult = Schema.Schema.Type<typeof SearchResult>
 
 /**
  * Options for search operations
@@ -358,12 +360,12 @@ export const make = Effect.gen(function* () {
   const getDb = Effect.gen(function* () {
     if (db) return db
     yield* fs.makeDirectory(INDEX_DIR, { recursive: true }).pipe(Effect.ignore)
-    
+
     const lancedb = yield* Effect.tryPromise({
       try: () => import("@lancedb/lancedb"),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to import lancedb: ${e}` })
     })
-    
+
     db = yield* Effect.tryPromise({
       try: () => lancedb.connect(INDEX_DIR),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to connect to LanceDB: ${e}` })
@@ -527,10 +529,10 @@ export const make = Effect.gen(function* () {
       const toDelete = [...existingByPath.keys()].filter((p) => !seenPaths.has(p))
 
       // Update progress with total files to index
-      yield* updateProgress({ 
-        phase: "indexing", 
-        filesProcessed: 0, 
-        totalFiles: toIndex.length 
+      yield* updateProgress({
+        phase: "indexing",
+        filesProcessed: 0,
+        totalFiles: toIndex.length
       })
 
       // Delete removed files from index
@@ -560,9 +562,9 @@ export const make = Effect.gen(function* () {
           (file) =>
             Effect.gen(function* () {
               // Update progress before processing each file
-              yield* updateProgress({ 
-                filesProcessed: processed, 
-                currentFile: file.path 
+              yield* updateProgress({
+                filesProcessed: processed,
+                currentFile: file.path
               })
 
               const vector = yield* embedText(file.contents)
@@ -576,7 +578,7 @@ export const make = Effect.gen(function* () {
               })
 
               processed++
-              
+
               return {
                 id: `${repoId}:${file.path}`,
                 repo: repoId,
@@ -588,13 +590,14 @@ export const make = Effect.gen(function* () {
                 hash: file.hash,
                 vector
               }
+              // FIXME: I likely should have a updateProgress here...
             }),
           { concurrency: 1 } // Process sequentially to avoid overwhelming the embedder
         )
 
-        yield* updateProgress({ 
-          phase: "finalizing", 
-          filesProcessed: toIndex.length, 
+        yield* updateProgress({
+          phase: "finalizing",
+          filesProcessed: toIndex.length,
           totalFiles: toIndex.length,
           currentFile: undefined
         })
@@ -692,7 +695,7 @@ export const make = Effect.gen(function* () {
         // Insert new record
         const contents = new TextDecoder().decode(buffer).slice(0, MAX_FILE_SIZE)
         const vector = yield* embedText(contents)
-        
+
         const stat = yield* fs.stat(fullPath).pipe(
           Effect.catchAll(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
         )
@@ -767,11 +770,11 @@ export const make = Effect.gen(function* () {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (results as Array<any>).map((r) => ({
-        repo: r.repo as string,
-        path: r.path as string,
-        filename: r.filename as string,
-        score: (r._score ?? 1) as number,
-        snippet: extractSnippet(r.contents as string, query)
+        repo: r.repo ,
+        path: r.path ,
+        filename: r.filename ,
+        score: (r._score ?? 1) ,
+        snippet:Option.some( extractSnippet(r.contents , query))
       }))
     })
 
@@ -803,11 +806,11 @@ export const make = Effect.gen(function* () {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (results as Array<any>).map((r) => ({
-        repo: r.repo as string,
-        path: r.path as string,
-        filename: r.filename as string,
-        score: 1 / (1 + ((r._distance ?? 0) as number)),
-        snippet: extractSnippet(r.contents as string, query)
+        repo: r.repo ,
+        path: r.path ,
+        filename: r.filename ,
+        score: 1 / (1 + ((r._distance ?? 0) )),
+        snippet: Option.some( extractSnippet(r.contents, query))
       }))
     })
 
@@ -853,11 +856,11 @@ export const make = Effect.gen(function* () {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (results as Array<any>).map((r) => ({
-        repo: r.repo as string,
-        path: r.path as string,
-        filename: r.filename as string,
-        score: (r._relevanceScore ?? 1) as number,
-        snippet: extractSnippet(r.contents as string, query)
+        repo: r.repo ,
+        path: r.path ,
+        filename: r.filename ,
+        score: (r._relevanceScore ?? 1) ,
+        snippet: Option.some( extractSnippet(r.contents , query))
       }))
     })
 

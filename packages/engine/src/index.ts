@@ -64,7 +64,7 @@ export {
   type AddRepoOptions,
   type AddRepoProgress,
   type AddRepoStage,
-  type SyncResult,
+   SyncResult,
   initialProgress
 } from "./services/RepobaseEngine.js"
 export {
@@ -75,6 +75,29 @@ export {
   type SyncStatus,
   type CloudConfigInput
 } from "./services/CloudSync.js"
+
+// Worker types
+export type {
+  RepoAction,
+  WorkerInput,
+  WorkerEvent,
+  ResultEvent,
+  AddRepoOutput,
+  SyncRepoOutput,
+  SyncAllOutput,
+  ListReposOutput,
+  GetRepoOutput,
+  SearchOutput,
+  ProgressEventSchema,
+  ResultEventSchema,
+    WorkerOutputByTag,
+} from "./services/EngineWorkerTypes.js"
+
+// Worker pool: execute operations in a background thread
+export { execute } from "./services/EngineWorkerManager.js"
+
+// Diagnostic logger (both main and worker threads)
+export { logMain, logWorker } from "./diagnostic-logger.js"
 
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"

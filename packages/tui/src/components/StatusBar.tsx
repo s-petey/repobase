@@ -3,7 +3,7 @@ import { colors } from "../theme/index.js"
 import { featureFlags } from "../config.js"
 
 interface StatusBarProps {
-  mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete"
+  mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "status"
   message?: string
   mcpServerRunning?: boolean
   cloudConfigured?: boolean
@@ -21,7 +21,7 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
     if (mode === "results") {
       return "[Esc] Back"
     }
-    return "[a] Add  [d] Delete  [s] Sync  [S] Sync All  [/] Search  [c] Copy MCP Config  [q] Quit"
+    return "[?] Status  [a] Add  [d] Delete  [s] Sync  [S] Sync All  [/] Search  [c] Copy MCP Config  [q] Quit"
   }
 
   const getMessageColor = () => {
@@ -32,11 +32,11 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
   }
 
   const helpText = getHelpText()
-  
+
   // MCP server status (only shown if feature flag enabled)
   const mcpStatus = mcpServerRunning ? "MCP: *" : "MCP: o"
   const mcpColor = mcpServerRunning ? colors.status.success.default : colors.text.secondary
-  
+
   // Cloud sync status (only shown if feature flag enabled)
   const getCloudStatus = () => {
     if (!cloudConfigured) return "Cloud: o"
@@ -44,10 +44,10 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
     return "Cloud: ok"
   }
   const cloudStatus = getCloudStatus()
-  const cloudColor = !cloudConfigured 
-    ? colors.text.secondary 
-    : (cloudPendingCount && cloudPendingCount > 0) 
-      ? colors.status.warning.default 
+  const cloudColor = !cloudConfigured
+    ? colors.text.secondary
+    : (cloudPendingCount && cloudPendingCount > 0)
+      ? colors.status.warning.default
       : colors.status.success.default
 
   return (

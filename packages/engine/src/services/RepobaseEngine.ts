@@ -1,5 +1,5 @@
 import { FileSystem } from "@effect/platform"
-import { Context, Effect, Fiber, Layer, Option, Stream, SubscriptionRef } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Schema, Stream, SubscriptionRef } from "effect"
 import {
   GitError,
   IndexError,
@@ -14,19 +14,20 @@ import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
 import {
   Indexer,
-  type IndexSummary,
   type IndexingProgress,
   type SearchMode,
   type SearchOptions,
   type SearchResult,
-  initialIndexingProgress
+  initialIndexingProgress,
+  IndexSummary
 } from "./Indexer.js"
 import * as os from "os"
 
 /**
  * Progress state for adding a repository
  */
-export type AddRepoStage = "cloning" | "indexing" | "complete" | "error"
+ export const AddRepoStage = Schema.Literal("cloning" , "indexing" , "complete" , "error")
+ export type AddRepoStage =  Schema.Schema.Type<typeof AddRepoStage>
 
 export interface AddRepoProgress {
   readonly stage: AddRepoStage
@@ -66,13 +67,14 @@ export interface AddRepoOptions {
 /**
  * Result of a sync operation
  */
-export interface SyncResult {
-  readonly id: string
-  readonly updated: boolean
-  readonly previousCommit: Option.Option<string>
-  readonly currentCommit: string
-  readonly indexSummary?: IndexSummary
-}
+ export const SyncResult = Schema.Struct({
+   id: Schema.String,
+   updated: Schema.Boolean,
+   previousCommit: Schema.OptionFromNullOr(Schema.String),
+   currentCommit: Schema.String,
+   indexSummary: Schema.optional(IndexSummary),
+ })
+ export type SyncResult = Schema.Schema.Type<typeof SyncResult>
 
 /**
  * All possible engine errors
@@ -133,7 +135,7 @@ export const make = Effect.gen(function* () {
   const addRepo: RepobaseEngineService["addRepo"] = (url, options) =>
     Effect.gen(function* () {
       const progressRef = options?.progressRef
-      
+
       // Helper to update progress
       const updateProgress = (update: Partial<AddRepoProgress>) =>
         progressRef
@@ -158,18 +160,18 @@ export const make = Effect.gen(function* () {
       )
 
       // Clone the repository
-      yield* updateProgress({ 
-        stage: "cloning", 
-        progress: 10, 
-        message: `Cloning ${url}...` 
+      yield* updateProgress({
+        stage: "cloning",
+        progress: 10,
+        message: `Cloning ${url}...`
       })
       yield* Effect.log(`Cloning ${url}...`)
       yield* git.clone(url, localPath)
 
-      yield* updateProgress({ 
-        stage: "cloning", 
-        progress: 40, 
-        message: "Clone complete, preparing..." 
+      yield* updateProgress({
+        stage: "cloning",
+        progress: 40,
+        message: "Clone complete, preparing..."
       })
 
       // Get current commit
@@ -194,9 +196,9 @@ export const make = Effect.gen(function* () {
       // Save config
       yield* store.addRepo(repo)
 
-      yield* updateProgress({ 
-        stage: "indexing", 
-        progress: 50, 
+      yield* updateProgress({
+        stage: "indexing",
+        progress: 50,
         message: `Indexing ${id}...`,
         filesIndexed: 0,
         totalFiles: 0
@@ -207,17 +209,17 @@ export const make = Effect.gen(function* () {
 
       // Subscribe to indexing progress changes and forward them
       const forwarderFiber = yield* Effect.fork(
-        Stream.runForEach(indexingProgressRef.changes, (indexingState) => 
+        Stream.runForEach(indexingProgressRef.changes, (indexingState) =>
           Effect.gen(function* () {
             if (!progressRef) return
-            
+
             const overallProgress = calcIndexingProgress(indexingState)
-            const phaseMessage = indexingState.phase === "scanning" 
+            const phaseMessage = indexingState.phase === "scanning"
               ? "Scanning files..."
               : indexingState.phase === "finalizing"
                 ? "Finalizing index..."
                 : `Indexing: ${indexingState.currentFile ?? "..."}`
-            
+
             yield* SubscriptionRef.update(progressRef, (prev) => ({
               ...prev,
               progress: overallProgress,
@@ -240,9 +242,9 @@ export const make = Effect.gen(function* () {
       // Clean up forwarder
       yield* Fiber.interrupt(forwarderFiber)
 
-      yield* updateProgress({ 
-        stage: "complete", 
-        progress: 100, 
+      yield* updateProgress({
+        stage: "complete",
+        progress: 100,
         message: `Added ${id}`,
         filesIndexed: indexResult.filesIndexed,
         totalFiles: indexResult.filesIndexed

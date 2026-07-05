@@ -1,12 +1,14 @@
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress } from "@repobase/engine"
 import { initialProgress } from "@repobase/engine"
-import { useCallback, useState } from "react"
-import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog } from "./components/index.js"
+import { useCallback, useState, useRef } from "react"
+import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, StatusModal } from "./components/index.js"
+import type { StatusInfo } from "./components/StatusModal.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
 
-type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete"
+
+type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "status"
 
 interface AppProps {
   initialRepos: RepoConfig[]
@@ -36,18 +38,22 @@ export const App = ({
   const [mode, setMode] = useState<AppMode>("list")
   const [message, setMessage] = useState<string | undefined>()
   const [inputValue, setInputValue] = useState("")
-  
+
   // Progress state for adding repos
   const [addProgress, setAddProgress] = useState<AddRepoProgress>(initialProgress)
-  
+
   // Search state
   const [searchQuery, setSearchQuery] = useState("")
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid")
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchResultIndex, setSearchResultIndex] = useState(0)
-  
+
   // Delete confirmation state
   const [repoToDelete, setRepoToDelete] = useState<RepoConfig | null>(null)
+
+  // Status modal state
+  const [showStatus, setShowStatus] = useState(false)
+  const lastProgressRef = useRef<StatusInfo | null>(null)
 
   const showMessage = useCallback((msg: string, duration = 3000) => {
     setMessage(msg)
@@ -59,14 +65,20 @@ export const App = ({
       setMode("list")
       return
     }
-    
+
     // Reset progress and show progress modal
     setAddProgress(initialProgress)
     setMode("adding")
-    
+
     try {
       await onAddRepo(url, (progress) => {
         setAddProgress(progress)
+        lastProgressRef.current = {
+          stage: progress.stage,
+          message: progress.message,
+          progress: progress.progress,
+          timestamp: new Date().toLocaleTimeString(),
+        }
       })
       const updatedRepos = await onRefreshRepos()
       setRepos(updatedRepos)
@@ -81,19 +93,25 @@ export const App = ({
         progress: 0,
         message: error instanceof Error ? error.message : "Failed to add"
       })
+      lastProgressRef.current = {
+        stage: "error",
+        message: error instanceof Error ? error.message : "Failed to add",
+        progress: 0,
+        timestamp: new Date().toLocaleTimeString(),
+      }
       // Show error state briefly then return to list
       setTimeout(() => {
         showMessage(`Error: ${error instanceof Error ? error.message : "Failed to add"}`)
         setMode("list")
       }, 2000)
     }
-    
+
     setInputValue("")
   }, [onAddRepo, onRefreshRepos, showMessage])
 
   const handleRequestDelete = useCallback(() => {
     if (repos.length === 0) return
-    
+
     const repo = repos[selectedIndex]
     setRepoToDelete(repo)
     setMode("confirmDelete")
@@ -101,10 +119,10 @@ export const App = ({
 
   const handleConfirmDelete = useCallback(async () => {
     if (!repoToDelete) return
-    
+
     setMode("syncing")
     setMessage(`Removing ${repoToDelete.id}...`)
-    
+
     try {
       await onRemoveRepo(repoToDelete.id)
       const updatedRepos = await onRefreshRepos()
@@ -114,7 +132,7 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to remove"}`)
     }
-    
+
     setRepoToDelete(null)
     setMode("list")
   }, [repoToDelete, onRemoveRepo, onRefreshRepos, showMessage, selectedIndex])
@@ -126,11 +144,11 @@ export const App = ({
 
   const handleSyncRepo = useCallback(async () => {
     if (repos.length === 0) return
-    
+
     const repo = repos[selectedIndex]
     setMode("syncing")
     setMessage(`Syncing ${repo.id}...`)
-    
+
     try {
       const result = await onSyncRepo(repo.id)
       const updatedRepos = await onRefreshRepos()
@@ -139,14 +157,14 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
-    
+
     setMode("list")
   }, [repos, selectedIndex, onSyncRepo, onRefreshRepos, showMessage])
 
   const handleSyncAll = useCallback(async () => {
     setMode("syncing")
     setMessage("Syncing all repositories...")
-    
+
     try {
       const results = await onSyncAll()
       const updatedRepos = await onRefreshRepos()
@@ -156,7 +174,7 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
-    
+
     setMode("list")
   }, [onSyncAll, onRefreshRepos, showMessage])
 
@@ -165,12 +183,12 @@ export const App = ({
       setMode("list")
       return
     }
-    
+
     setMode("syncing")
     setMessage(`Searching: "${query}"...`)
     setSearchQuery(query)
     setSearchMode(searchModeParam)
-    
+
     try {
       const results = await onSearch(query, searchModeParam)
       setSearchResults(results)
@@ -181,7 +199,7 @@ export const App = ({
       showMessage(`Error: ${error instanceof Error ? error.message : "Search failed"}`)
       setMode("list")
     }
-    
+
     setInputValue("")
   }, [onSearch, showMessage])
 
@@ -200,13 +218,13 @@ export const App = ({
     }
   }
 }`
-    
+
     try {
       // Use platform-specific clipboard command
       const platform = process.platform
       let command: string
       let args: string[]
-      
+
       if (platform === "darwin") {
         // macOS
         command = "pbcopy"
@@ -222,18 +240,18 @@ export const App = ({
       } else {
         throw new Error("Unsupported platform for clipboard")
       }
-      
+
       const proc = Bun.spawn([command, ...args], {
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
       })
-      
+
       await proc.stdin.write(mcpConfig)
       proc.stdin.end()
-      
+
       await proc.exited
-      
+
       if (proc.exitCode !== 0) {
         // Try xsel on Linux if xclip failed
         if (platform === "linux") {
@@ -245,7 +263,7 @@ export const App = ({
           await proc2.stdin.write(mcpConfig)
           proc2.stdin.end()
           await proc2.exited
-          
+
           if (proc2.exitCode !== 0) {
             throw new Error("Failed to copy to clipboard")
           }
@@ -253,7 +271,7 @@ export const App = ({
           throw new Error("Failed to copy to clipboard")
         }
       }
-      
+
       showMessage("[OK] MCP configuration copied to clipboard")
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to copy to clipboard"}`)
@@ -270,8 +288,23 @@ export const App = ({
         handleCloseResults()
       } else if (mode === "confirmDelete") {
         handleCancelDelete()
+      } else if (mode === "status") {
+        setShowStatus(false)
+        setMode('list')
       } else if (mode === "list") {
         onQuit()
+      }
+      return
+    }
+
+    // Handle "?" in any mode to show status
+    if (key.name === "?") {
+      if (mode === "status") {
+        setShowStatus(false)
+        setMode("list")
+      } else {
+        setShowStatus(true)
+        setMode("status")
       }
       return
     }
@@ -345,9 +378,9 @@ export const App = ({
     >
       <Header version="1.0.3" />
       <RepoList repos={repos} selectedIndex={selectedIndex} />
-      <StatusBar 
-        mode={mode} 
-        message={message} 
+      <StatusBar
+        mode={mode}
+        message={message}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {
@@ -360,7 +393,7 @@ export const App = ({
           return localCommit !== cloudCommit
         }).length : 0}
       />
-      
+
       {mode === "add" && (
         <AddRepoModal
           onSubmit={handleAddRepo}
@@ -372,7 +405,7 @@ export const App = ({
           value={inputValue}
         />
       )}
-      
+
       {mode === "search" && (
         <SearchModal
           onSubmit={handleSearch}
@@ -384,16 +417,26 @@ export const App = ({
           value={inputValue}
         />
       )}
-      
+
       {mode === "adding" && (
         <ProgressModal progress={addProgress} />
       )}
-      
+
       {mode === "confirmDelete" && repoToDelete && (
         <ConfirmDialog
           message={`Are you sure you want to delete "${repoToDelete.id}"? This action cannot be undone.`}
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
+        />
+      )}
+
+      {showStatus && (
+        <StatusModal
+        status={lastProgressRef.current}
+        onClose={() => {
+          setShowStatus(false)
+          setMode("list")
+        }}
         />
       )}
     </box>
