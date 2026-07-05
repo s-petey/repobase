@@ -15,7 +15,7 @@ interface AddRepoModalProps {
   value: string
 }
 
-export const AddRepoModal = ({ onSubmit, onCancel, onInput, value }: AddRepoModalProps) => {
+export const AddRepoModal = ({ onSubmit,  onInput,  }: AddRepoModalProps) => {
   const renderer = useRenderer()
   const inputRef = useRef<InputRenderable | null>(null)
 
@@ -28,8 +28,10 @@ export const AddRepoModal = ({ onSubmit, onCancel, onInput, value }: AddRepoModa
       }
     }
 
+    // @ts-ignore Using valid value
     renderer?.keyInput.on("paste", handlePaste)
     return () => {
+      // @ts-ignore Using valid value
       renderer?.keyInput.off("paste", handlePaste)
     }
   }, [renderer])
@@ -70,7 +72,7 @@ export const AddRepoModal = ({ onSubmit, onCancel, onInput, value }: AddRepoModa
           ref={(r: InputRenderable | null) => { inputRef.current = r }}
           placeholder="https://github.com/owner/repo"
           onInput={onInput}
-          onSubmit={onSubmit}
+          onSubmit={(e) => onSubmit(typeof e === 'string' ? e : '')}
           focused
           style={{
             focusedBackgroundColor: colors.bg.muted,

@@ -36,8 +36,10 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
       }
     }
 
+    // @ts-ignore Using valid value
     renderer?.keyInput.on("paste", handlePaste)
     return () => {
+      // @ts-ignore Using valid value
       renderer?.keyInput.off("paste", handlePaste)
     }
   }, [renderer, inputFocused])
@@ -117,7 +119,7 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
           ref={(r: InputRenderable | null) => { inputRef.current = r }}
           placeholder="Enter search query..."
           onInput={onInput}
-          onSubmit={handleSubmit}
+          onSubmit={(e) => handleSubmit(typeof e === 'string' ? e : '')}
           focused={inputFocused}
           style={{
             focusedBackgroundColor: colors.bg.muted,

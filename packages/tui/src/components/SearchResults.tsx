@@ -1,4 +1,5 @@
 import { TextAttributes } from "@opentui/core"
+import { Option } from "effect"
 import { useKeyboard } from "@opentui/react"
 import type { SearchResult, SearchMode } from "@repobase/engine"
 import { colors } from "../theme/index.js"
@@ -110,6 +111,7 @@ export const SearchResults = ({
           {results.map((result, index) => {
             const isSelected = index === selectedIndex
             const scorePercent = Math.round(result.score * 100)
+            const snippet = Option.getOrNull(result.snippet)
 
             return (
               <box
@@ -157,10 +159,10 @@ export const SearchResults = ({
                 </box>
 
                 {/* Snippet line (if selected) */}
-                {isSelected && result.snippet && (
+                {isSelected && snippet && (
                   <box style={{ marginLeft: 2, marginTop: 0 }}>
                     <text
-                      content={result.snippet.replace(/\n/g, " ").slice(0, 120)}
+                      content={snippet.replace(/\n/g, " ").slice(0, 120)}
                       style={{
                         fg: colors.text.tertiary,
                       }}
