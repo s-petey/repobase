@@ -100,13 +100,16 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
       return Stream.fromEffect(
         Effect.gen(function* () {
           const engine = yield* RepobaseEngine;
-          const repos = yield* engine
-            .listRepos()
-            .pipe(
-              Effect.catchAll((e) =>
-                Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
-              ),
-            );
+          const repos = yield* engine.listRepos().pipe(
+            Effect.map((r) => r),
+            Effect.catchAll((e) =>
+              Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
+            ),
+          );
+
+          if (!Array.isArray(repos)) {
+            return ErrorEventSchema.make({ message: "repos is not an array" });
+          }
 
           return ResultEventSchema.make({
             data: {
@@ -128,6 +131,11 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
                 Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
               ),
             );
+
+          if (repo._tag === "Error") {
+            return ErrorEventSchema.make({ message: "repo not found" });
+          }
+
           return ResultEventSchema.make({ data: { _tag: "getRepo", data: repo } });
         }),
       );
@@ -146,6 +154,11 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
                 Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
               ),
             );
+
+          if (!Array.isArray(results)) {
+            return ErrorEventSchema.make({ message: "results is not an array" });
+          }
+
           return ResultEventSchema.make({ data: { _tag: "search", data: results } });
         }),
       );
