@@ -5,6 +5,7 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
+    "check": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run"
   },

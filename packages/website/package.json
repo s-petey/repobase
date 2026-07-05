@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "check": "astro check",
     "dev": "astro dev",
     "start": "astro dev",
     "build": "npm run generate-assets && astro build",

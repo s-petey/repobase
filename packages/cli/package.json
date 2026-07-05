@@ -8,6 +8,7 @@
   "main": "src/main.ts",
   "types": "src/main.ts",
   "scripts": {
+    "check": "tsc --noEmit",
     "start": "bun run src/main.ts",
     "repobase": "bun run src/main.ts"
   },

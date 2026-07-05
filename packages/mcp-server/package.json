@@ -8,6 +8,7 @@
     "repobase-mcp": "./src/main.ts"
   },
   "scripts": {
+    "check": "tsc --noEmit",
     "start": "tsx src/main.ts",
     "build": "tsc"
   },
