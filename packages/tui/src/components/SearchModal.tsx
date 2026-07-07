@@ -90,7 +90,7 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
         top: "20%",
         left: "10%",
         width: "80%",
-        height: 12,
+        height: 14,
         backgroundColor: colors.bg.elevated,
         borderStyle: "double",
         borderColor: colors.status.info.default,
