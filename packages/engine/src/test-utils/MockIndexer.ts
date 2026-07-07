@@ -74,8 +74,8 @@ export const mockIndexerLayer = (
           state.indexes.delete(repoId);
         }),
 
-      searchKeyword: (query: string, _options?: SearchOptions) =>
-        Effect.succeed(
+      searchKeyword: (query: string, options?: SearchOptions) => {
+        const results =
           state.searchResults.length > 0
             ? state.searchResults
             : [
@@ -86,11 +86,14 @@ export const mockIndexerLayer = (
                   score: 0.95,
                   snippet: Option.some(`...${query}...`),
                 },
-              ],
-        ),
+              ];
+        return Effect.succeed(
+          options?.repo ? results.filter((r) => r.repo === options.repo) : results,
+        );
+      },
 
-      searchSemantic: (query: string, _options?: SearchOptions) =>
-        Effect.succeed(
+      searchSemantic: (query: string, options?: SearchOptions) => {
+        const results =
           state.searchResults.length > 0
             ? state.searchResults
             : [
@@ -101,11 +104,14 @@ export const mockIndexerLayer = (
                   score: 0.85,
                   snippet: Option.some(`...semantic match for ${query}...`),
                 },
-              ],
-        ),
+              ];
+        return Effect.succeed(
+          options?.repo ? results.filter((r) => r.repo === options.repo) : results,
+        );
+      },
 
-      searchHybrid: (query: string, _options?: SearchOptions) =>
-        Effect.succeed(
+      searchHybrid: (query: string, options?: SearchOptions) => {
+        const results =
           state.searchResults.length > 0
             ? state.searchResults
             : [
@@ -116,25 +122,14 @@ export const mockIndexerLayer = (
                   score: 0.9,
                   snippet: Option.some(`...hybrid result for ${query}...`),
                 },
-              ],
-        ),
+              ];
+        return Effect.succeed(
+          options?.repo ? results.filter((r) => r.repo === options.repo) : results,
+        );
+      },
 
-      listFiles: (options: ListFilesOptions) =>
-        Effect.succeed(
-          state.listFilesResponse.length > 0
-            ? state.listFilesResponse
-            : options.repo
-              ? [
-                  {
-                    repo: options.repo,
-                    path: options.path ?? "",
-                    filename: options.path?.split("/").pop() ?? options.repo,
-                    isDirectory: false,
-                    size: 1024,
-                  },
-                ]
-              : [],
-        ),
+      listFiles: (_options: ListFilesOptions) =>
+        Effect.succeed(state.listFilesResponse.length > 0 ? state.listFilesResponse : []),
 
       globFiles: (pattern: string, _options?: GlobOptions) =>
         state.globFilesResponse.length > 0

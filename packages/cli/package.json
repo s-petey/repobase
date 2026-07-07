@@ -10,7 +10,9 @@
   "scripts": {
     "check": "tsc --noEmit",
     "start": "bun run src/main.ts",
-    "repobase": "bun run src/main.ts"
+    "repobase": "bun run src/main.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@effect/cli": "^0.59.0",
