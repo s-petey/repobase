@@ -6,7 +6,9 @@
   "types": "src/main.tsx",
   "scripts": {
     "check": "tsc --noEmit",
-    "start": "bun run src/main.tsx"
+    "start": "bun run src/main.tsx",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@effect/platform": "^0.93.6",
