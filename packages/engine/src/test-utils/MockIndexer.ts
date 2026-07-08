@@ -133,11 +133,8 @@ export const mockIndexerLayer = (
 
       globFiles: (pattern: string, _options?: GlobOptions) =>
         state.globFilesResponse.length > 0
-          ? (Effect.succeed(state.globFilesResponse) as Effect.Effect<
-              readonly FileInfo[],
-              InvalidPatternError
-            >)
-          : (Effect.succeed([
+          ? Effect.succeed(state.globFilesResponse)
+          : Effect.succeed([
               {
                 repo: "mock-repo",
                 path: pattern,
@@ -145,7 +142,7 @@ export const mockIndexerLayer = (
                 isDirectory: false,
                 size: 512,
               },
-            ]) as Effect.Effect<readonly FileInfo[], InvalidPatternError>),
+            ]),
 
       readFile: (
         repo: string,
@@ -162,12 +159,9 @@ export const mockIndexerLayer = (
             totalLines: entry.content.split("\n").length,
             startLine: 1,
             endLine: entry.content.split("\n").length,
-          } as FileContent);
+          });
         }
-        return Effect.fail(new FileNotFoundError({ repo, path: filePath })) as Effect.Effect<
-          FileContent,
-          FileNotFoundError
-        >;
+        return Effect.fail(new FileNotFoundError({ repo, path: filePath }));
       },
 
       grepPattern: (pattern: string, options?: GrepOptions) => {
