@@ -110,8 +110,8 @@ export const mockRepobaseEngineLayer = (
           }),
         ),
 
-      search: (query: string, _mode: SearchMode, _options?: SearchOptions) =>
-        Effect.succeed(
+      search: (query: string, _mode: SearchMode, options?: SearchOptions) => {
+        const results =
           state.searchResults.length > 0
             ? state.searchResults
             : [
@@ -122,7 +122,10 @@ export const mockRepobaseEngineLayer = (
                   score: 0.95,
                   snippet: Option.some(`...${query}...`),
                 },
-              ],
-        ),
+              ];
+        return Effect.succeed(
+          options?.repo ? results.filter((r) => r.repo === options.repo) : results,
+        );
+      },
     }),
   );

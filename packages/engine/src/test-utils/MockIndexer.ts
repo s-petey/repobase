@@ -170,30 +170,33 @@ export const mockIndexerLayer = (
         >;
       },
 
-      grepPattern: (pattern: string, _options?: GrepOptions) =>
-        state.grepResults.length > 0
-          ? (Effect.succeed(state.grepResults) as Effect.Effect<
-              readonly GrepResult[],
-              InvalidPatternError
-            >)
-          : (Effect.succeed([
-              {
-                repo: "mock-repo",
-                path: "src/file.ts",
-                matchCount: 1,
-                matches: [
-                  {
-                    lineNumber: 42,
-                    content: `  const match = "${pattern}"`,
-                    isMatch: true,
-                  } as GrepMatch,
-                  {
-                    lineNumber: 43,
-                    content: "  // context line",
-                    isMatch: false,
-                  } as GrepMatch,
-                ],
-              },
-            ]) as Effect.Effect<readonly GrepResult[], InvalidPatternError>),
+      grepPattern: (pattern: string, options?: GrepOptions) => {
+        const results =
+          state.grepResults.length > 0
+            ? state.grepResults
+            : [
+                {
+                  repo: "mock-repo",
+                  path: "src/file.ts",
+                  matchCount: 1,
+                  matches: [
+                    {
+                      lineNumber: 42,
+                      content: `  const match = "${pattern}"`,
+                      isMatch: true,
+                    },
+                    {
+                      lineNumber: 43,
+                      content: "  // context line",
+                      isMatch: false,
+                    },
+                  ],
+                },
+              ];
+
+        return Effect.succeed(
+          options?.repo ? results.filter((r) => r.repo === options.repo) : results,
+        );
+      },
     }),
   );
