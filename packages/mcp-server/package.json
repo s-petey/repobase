@@ -10,7 +10,9 @@
   "scripts": {
     "check": "tsc --noEmit",
     "start": "tsx src/main.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@effect/platform": "^0.93.6",
@@ -19,8 +21,5 @@
     "@repobase/engine": "workspace:*",
     "effect": "^3.19.9",
     "zod": "^3.25.0"
-  },
-  "devDependencies": {
-    "tsx": "^4.19.0"
   }
 }
