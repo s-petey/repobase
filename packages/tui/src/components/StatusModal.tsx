@@ -40,7 +40,7 @@ export const StatusModal = ({ status, onClose }: StatusModalProps) => {
         top: "25%",
         left: "15%",
         width: "70%",
-        height: 12,
+        height: 14,
         backgroundColor: colors.bg.elevated,
         borderStyle: "double",
         borderColor: colors.accent.default,
