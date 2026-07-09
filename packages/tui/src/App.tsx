@@ -39,8 +39,11 @@ export const App = ({
   const [message, setMessage] = useState<string | undefined>()
   const [inputValue, setInputValue] = useState("")
 
-  // Progress state for adding repos
-  const [addProgress, setAddProgress] = useState<AddRepoProgress>(initialProgress)
+  // Progress state for adding repos (supports multiple concurrent operations)
+  const [activeAdds, setActiveAdds] = useState<Record<string, AddRepoProgress>>({})
+  const [completedAddCount, setCompletedAddCount] = useState(0)
+  const addOpIdRef = useRef(0)
+  const completedCountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("")
@@ -60,19 +63,30 @@ export const App = ({
     setTimeout(() => setMessage(undefined), duration)
   }, [])
 
+  const scheduleResetCompletedCount = useCallback(() => {
+    if (completedCountTimerRef.current) {
+      clearTimeout(completedCountTimerRef.current)
+    }
+    completedCountTimerRef.current = setTimeout(() => {
+      setCompletedAddCount(0)
+      completedCountTimerRef.current = null
+    }, 3000)
+  }, [])
+
   const handleAddRepo = useCallback(async (url: string) => {
     if (!url.trim()) {
       setMode("list")
       return
     }
 
-    // Reset progress and show progress modal
-    setAddProgress(initialProgress)
+    const opId = `add-${++addOpIdRef.current}`
+
+    setActiveAdds(prev => ({ ...prev, [opId]: initialProgress }))
     setMode("adding")
 
     try {
       await onAddRepo(url, (progress) => {
-        setAddProgress(progress)
+        setActiveAdds(prev => ({ ...prev, [opId]: progress }))
         lastProgressRef.current = {
           stage: progress.stage,
           message: progress.message,
@@ -80,34 +94,31 @@ export const App = ({
           timestamp: new Date().toLocaleTimeString(),
         }
       })
+      setActiveAdds(prev => {
+        const next = { ...prev }
+        delete next[opId]
+        if (Object.keys(next).length === 0) {
+          setCompletedAddCount(c => c + 1)
+          scheduleResetCompletedCount()
+        }
+        return next
+      })
       const updatedRepos = await onRefreshRepos()
       setRepos(updatedRepos)
-      // Keep showing progress modal with complete state for a moment
-      setTimeout(() => {
-        showMessage(`[OK] Added repository`)
-        setMode("list")
-      }, 500)
+      showMessage(`[OK] Added repository`)
+      setMode(prev => prev === "adding" ? "list" : prev)
     } catch (error) {
-      setAddProgress({
-        stage: "error",
-        progress: 0,
-        message: error instanceof Error ? error.message : "Failed to add"
+      setActiveAdds(prev => {
+        const next = { ...prev }
+        delete next[opId]
+        return next
       })
-      lastProgressRef.current = {
-        stage: "error",
-        message: error instanceof Error ? error.message : "Failed to add",
-        progress: 0,
-        timestamp: new Date().toLocaleTimeString(),
-      }
-      // Show error state briefly then return to list
-      setTimeout(() => {
-        showMessage(`Error: ${error instanceof Error ? error.message : "Failed to add"}`)
-        setMode("list")
-      }, 2000)
+      showMessage(`Error: ${error instanceof Error ? error.message : "Failed to add"}`)
+      setMode(prev => prev === "adding" ? "list" : prev)
     }
 
     setInputValue("")
-  }, [onAddRepo, onRefreshRepos, showMessage])
+  }, [onAddRepo, onRefreshRepos, showMessage, scheduleResetCompletedCount])
 
   const handleRequestDelete = useCallback(() => {
     if (repos.length === 0) return
@@ -284,6 +295,8 @@ export const App = ({
       if (mode === "add" || mode === "search") {
         setMode("list")
         setInputValue("")
+      } else if (mode === "adding") {
+        setMode("list")
       } else if (mode === "results") {
         handleCloseResults()
       } else if (mode === "confirmDelete") {
@@ -381,6 +394,8 @@ export const App = ({
       <StatusBar
         mode={mode}
         message={message}
+        activeAdds={activeAdds}
+        completedAddCount={completedAddCount}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {
@@ -419,7 +434,7 @@ export const App = ({
       )}
 
       {mode === "adding" && (
-        <ProgressModal progress={addProgress} />
+        <ProgressModal activeAdds={activeAdds} />
       )}
 
       {mode === "confirmDelete" && repoToDelete && (

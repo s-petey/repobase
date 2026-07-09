@@ -3,7 +3,14 @@ import type { AddRepoProgress } from "@repobase/engine"
 import { colors } from "../theme/index.js"
 
 interface ProgressModalProps {
-  progress: AddRepoProgress
+  activeAdds: Record<string, AddRepoProgress>
+}
+
+const getLatestProgress = (adds: Record<string, AddRepoProgress>): AddRepoProgress | null => {
+  const keys = Object.keys(adds)
+  if (keys.length === 0) return null
+  const latestKey = keys.sort().reverse()[0]
+  return adds[latestKey]
 }
 
 /**
@@ -57,11 +64,17 @@ const getStageIcon = (stage: AddRepoProgress["stage"]): string => {
   }
 }
 
-export const ProgressModal = ({ progress }: ProgressModalProps) => {
+export const ProgressModal = ({ activeAdds }: ProgressModalProps) => {
+  const progress = getLatestProgress(activeAdds)
+  if (!progress) return null
+
   const barWidth = 40
   const progressBar = createProgressBar(progress.progress, barWidth)
   const stageColor = getStageColor(progress.stage)
   const stageIcon = getStageIcon(progress.stage)
+
+  const activeCount = Object.keys(activeAdds).length
+  const titleSuffix = activeCount > 1 ? ` (${activeCount} in progress)` : ""
 
   return (
     <box
@@ -80,7 +93,7 @@ export const ProgressModal = ({ progress }: ProgressModalProps) => {
       }}
     >
       <text
-        content={`${stageIcon} Adding Repository`}
+        content={`${stageIcon} Adding Repository${titleSuffix}`}
         style={{
           fg: stageColor,
           attributes: TextAttributes.BOLD,
@@ -128,7 +141,7 @@ export const ProgressModal = ({ progress }: ProgressModalProps) => {
       )}
       
       <text
-        content={progress.stage === "complete" ? "[Enter] Continue" : "Please wait..."}
+        content={progress.stage === "complete" ? "[Enter] Continue" : progress.stage === "error" ? "[Esc] Dismiss" : "Please wait...  [Esc] Dismiss"}
         style={{
           fg: colors.text.tertiary,
           marginTop: 1,

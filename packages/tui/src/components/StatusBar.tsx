@@ -1,22 +1,28 @@
 import { TextAttributes } from "@opentui/core"
+import type { AddRepoProgress } from "@repobase/engine"
 import { colors } from "../theme/index.js"
 import { featureFlags } from "../config.js"
+
+const createMiniProgressBar = (progress: number, width: number): string => {
+  const filledWidth = Math.round((progress / 100) * width)
+  const emptyWidth = width - filledWidth
+  return `[${"=".repeat(filledWidth)}${"-".repeat(emptyWidth)}]`
+}
 
 interface StatusBarProps {
   mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "status"
   message?: string
+  activeAdds?: Record<string, AddRepoProgress>
+  completedAddCount?: number
   mcpServerRunning?: boolean
   cloudConfigured?: boolean
   cloudPendingCount?: number
 }
 
-export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cloudPendingCount }: StatusBarProps) => {
+export const StatusBar = ({ mode, message, activeAdds, completedAddCount, mcpServerRunning, cloudConfigured, cloudPendingCount }: StatusBarProps) => {
   const getHelpText = () => {
     if (mode === "add" || mode === "search" || mode === "confirmDelete") {
       return "" // Help text shown in modal
-    }
-    if (mode === "syncing" || mode === "adding") {
-      return "Processing..."
     }
     if (mode === "results") {
       return "[Esc] Back"
@@ -50,6 +56,20 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
       ? colors.status.warning.default
       : colors.status.success.default
 
+  const activeEntries = activeAdds ? Object.values(activeAdds) : []
+  const activeCount = activeEntries.length
+  const totalCount = activeCount + (completedAddCount || 0)
+  const getActiveAddsText = (): string | null => {
+    if (activeCount === 0 && !completedAddCount) return null
+    if (activeCount === 1) {
+      const p = activeEntries[0]
+      const bar = createMiniProgressBar(p.progress, 10)
+      return `> Adding: ${p.message} ${bar} ${p.progress}%`
+    }
+    return `Adding repos: ${completedAddCount || 0} of ${totalCount} complete`
+  }
+  const activeAddsText = getActiveAddsText()
+
   return (
     <box
       style={{
@@ -63,6 +83,15 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
       }}
     >
       <box style={{ flexDirection: "row", gap: 2 }}>
+        {activeAddsText && !message ? (
+          <text
+            content={activeAddsText}
+            style={{
+              fg: colors.progress.cloning,
+              attributes: TextAttributes.BOLD,
+            }}
+          />
+        ) : null}
         <text
           content={message || ""}
           style={{
