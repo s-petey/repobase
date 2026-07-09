@@ -8,8 +8,8 @@ import {
   SearchError,
   StoreError
 } from "../errors.js"
-import { RepoConfig, RepoMode } from "../schemas.js"
-import { deriveRepoId, trackingMode } from "../utils.js"
+import { GitHubUrlSchema, RepoConfig, RepoMode } from "../schemas.js"
+import { trackingMode } from "../utils.js"
 import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
 import {
@@ -142,7 +142,10 @@ export const make = Effect.gen(function* () {
           ? SubscriptionRef.update(progressRef, (prev) => ({ ...prev, ...update }))
           : Effect.void
 
-      const id = deriveRepoId(url)
+      const { owner, name } = yield* Schema.decode(GitHubUrlSchema)(url).pipe(
+        Effect.mapError((e) => new StoreError({ operation: "addRepo", message: e.message }))
+      )
+      const id = `${owner}-${name}`
       const localPath = `${reposDir}/${id}`
 
       // Check if already exists
@@ -182,6 +185,8 @@ export const make = Effect.gen(function* () {
       const repo: RepoConfig = {
         id,
         url,
+        owner,
+        name,
         localPath,
         mode,
         lastSyncedCommit: Option.some(currentCommit),

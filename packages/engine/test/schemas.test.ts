@@ -96,6 +96,8 @@ describe("schemas", () => {
         const input = {
           id: "Effect-TS-effect",
           url: "https://github.com/Effect-TS/effect",
+          owner: "Effect-TS",
+          name: "effect",
           localPath: "/home/user/.repobase/repos/Effect-TS-effect",
           mode: { _tag: "tracking", branch: "main" },
           lastSyncedCommit: "abc123",
@@ -122,6 +124,8 @@ describe("schemas", () => {
         const input = {
           id: "test-repo",
           url: "https://github.com/test/repo",
+          owner: "test",
+          name: "repo",
           localPath: "/path/to/repo",
           mode: { _tag: "pinned", ref: "v1.0.0" },
           lastSyncedCommit: null,
@@ -157,6 +161,8 @@ describe("schemas", () => {
             {
               id: "repo1",
               url: "https://github.com/test/repo1",
+              owner: "test",
+              name: "repo1",
               localPath: "/path/repo1",
               mode: { _tag: "tracking", branch: "main" },
               lastSyncedCommit: null,

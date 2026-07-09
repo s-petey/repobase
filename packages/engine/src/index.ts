@@ -8,18 +8,21 @@ export {
   type CloudConfig,
   type SyncManifestFile,
   type SyncManifest,
+  GitHubUrlSchema,
+  RepoStoreDataV1,
   TrackingMode as TrackingModeSchema,
   PinnedMode as PinnedModeSchema,
   RepoMode as RepoModeSchema,
   RepoConfig as RepoConfigSchema,
   RepoStoreData as RepoStoreDataSchema,
+  RepoStoreDataV1 as RepoStoreDataV1Schema,
   CloudConfig as CloudConfigSchema,
   SyncManifestFile as SyncManifestFileSchema,
   SyncManifest as SyncManifestSchema
 } from "./schemas.js"
 
 // Utils
-export { deriveRepoId, trackingMode, pinnedMode } from "./utils.js"
+export { deriveRepoId, extractRepoOwner, extractRepoParts, trackingMode, pinnedMode } from "./utils.js"
 
 // Errors
 export {

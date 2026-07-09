@@ -1,8 +1,9 @@
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress } from "@repobase/engine"
 import { initialProgress } from "@repobase/engine"
-import { useCallback, useState, useRef } from "react"
+import { useCallback, useState, useRef, useMemo, useEffect } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, StatusModal } from "./components/index.js"
+import type { FlatRow } from "./components/RepoList.js"
 import type { StatusInfo } from "./components/StatusModal.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
@@ -22,6 +23,32 @@ interface AppProps {
   cloudConfigured?: boolean
 }
 
+function buildFlatRows(repos: RepoConfig[], collapsed: Set<string>): FlatRow[] {
+  if (repos.length <= 1) {
+    return repos.map(r => ({ kind: "repo" as const, repo: r }))
+  }
+
+  const groups = new Map<string, RepoConfig[]>()
+  for (const repo of repos) {
+    const list = groups.get(repo.owner) ?? []
+    list.push(repo)
+    groups.set(repo.owner, list)
+  }
+
+  const rows: FlatRow[] = []
+  const sortedOwners = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
+  for (const [owner, groupRepos] of sortedOwners) {
+    const sortedRepos = [...groupRepos].sort((a, b) => a.id.localeCompare(b.id))
+    rows.push({ kind: "header", owner, repoCount: sortedRepos.length, collapsed: collapsed.has(owner) })
+    if (!collapsed.has(owner)) {
+      for (const repo of sortedRepos) {
+        rows.push({ kind: "repo", repo })
+      }
+    }
+  }
+  return rows
+}
+
 export const App = ({
   initialRepos,
   onAddRepo,
@@ -38,6 +65,7 @@ export const App = ({
   const [mode, setMode] = useState<AppMode>("list")
   const [message, setMessage] = useState<string | undefined>()
   const [inputValue, setInputValue] = useState("")
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
   // Progress state for adding repos (supports multiple concurrent operations)
   const [activeAdds, setActiveAdds] = useState<Record<string, AddRepoProgress>>({})
@@ -57,6 +85,16 @@ export const App = ({
   // Status modal state
   const [showStatus, setShowStatus] = useState(false)
   const lastProgressRef = useRef<StatusInfo | null>(null)
+
+  const flatRows = useMemo(() => buildFlatRows(repos, collapsedGroups), [repos, collapsedGroups])
+
+  // Clamp selectedIndex when flatRows shrinks (deletion, regrouping)
+  useEffect(() => {
+    const max = Math.max(0, flatRows.length - 1)
+    if (selectedIndex > max) {
+      setSelectedIndex(max)
+    }
+  }, [flatRows.length, selectedIndex])
 
   const showMessage = useCallback((msg: string, duration = 3000) => {
     setMessage(msg)
@@ -120,14 +158,6 @@ export const App = ({
     setInputValue("")
   }, [onAddRepo, onRefreshRepos, showMessage, scheduleResetCompletedCount])
 
-  const handleRequestDelete = useCallback(() => {
-    if (repos.length === 0) return
-
-    const repo = repos[selectedIndex]
-    setRepoToDelete(repo)
-    setMode("confirmDelete")
-  }, [repos, selectedIndex])
-
   const handleConfirmDelete = useCallback(async () => {
     if (!repoToDelete) return
 
@@ -138,7 +168,6 @@ export const App = ({
       await onRemoveRepo(repoToDelete.id)
       const updatedRepos = await onRefreshRepos()
       setRepos(updatedRepos)
-      setSelectedIndex(Math.max(0, selectedIndex - 1))
       showMessage(`[OK] Removed ${repoToDelete.id}`)
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to remove"}`)
@@ -146,17 +175,14 @@ export const App = ({
 
     setRepoToDelete(null)
     setMode("list")
-  }, [repoToDelete, onRemoveRepo, onRefreshRepos, showMessage, selectedIndex])
+  }, [repoToDelete, onRemoveRepo, onRefreshRepos, showMessage])
 
   const handleCancelDelete = useCallback(() => {
     setRepoToDelete(null)
     setMode("list")
   }, [])
 
-  const handleSyncRepo = useCallback(async () => {
-    if (repos.length === 0) return
-
-    const repo = repos[selectedIndex]
+  const handleSyncRepo = useCallback(async (repo: RepoConfig) => {
     setMode("syncing")
     setMessage(`Syncing ${repo.id}...`)
 
@@ -170,7 +196,7 @@ export const App = ({
     }
 
     setMode("list")
-  }, [repos, selectedIndex, onSyncRepo, onRefreshRepos, showMessage])
+  }, [onSyncRepo, onRefreshRepos, showMessage])
 
   const handleSyncAll = useCallback(async () => {
     setMode("syncing")
@@ -289,6 +315,15 @@ export const App = ({
     }
   }, [showMessage])
 
+  const toggleGroup = useCallback((owner: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(owner)) next.delete(owner)
+      else next.add(owner)
+      return next
+    })
+  }, [])
+
   useKeyboard((key) => {
     // Handle escape/quit in any mode
     if (key.name === "escape" || (key.name === "q" && mode === "list")) {
@@ -325,6 +360,8 @@ export const App = ({
     // Only handle navigation in list mode
     if (mode !== "list") return
 
+    const row = flatRows[selectedIndex]
+
     switch (key.name) {
       case "up":
       case "k":
@@ -332,19 +369,38 @@ export const App = ({
         break
       case "down":
       case "j":
-        setSelectedIndex(Math.min(repos.length - 1, selectedIndex + 1))
+        setSelectedIndex(Math.min(flatRows.length - 1, selectedIndex + 1))
+        break
+      case "enter":
+      case "return":
+        if (row?.kind === "header") {
+          toggleGroup(row.owner)
+        }
+        break
+      case "left":
+        if (row?.kind === "header" && !row.collapsed) {
+          toggleGroup(row.owner)
+        }
+        break
+      case "right":
+        if (row?.kind === "header" && row.collapsed) {
+          toggleGroup(row.owner)
+        }
         break
       case "a":
         setMode("add")
         break
       case "d":
-        handleRequestDelete()
+        if (row?.kind === "repo") {
+          setRepoToDelete(row.repo)
+          setMode("confirmDelete")
+        }
         break
       case "s":
         if (key.shift) {
           handleSyncAll()
-        } else {
-          handleSyncRepo()
+        } else if (row?.kind === "repo") {
+          handleSyncRepo(row.repo)
         }
         break
       case "/":
@@ -390,19 +446,19 @@ export const App = ({
       }}
     >
       <Header version="1.0.3" />
-      <RepoList repos={repos} selectedIndex={selectedIndex} />
+      <RepoList flatRows={flatRows} selectedIndex={selectedIndex} />
       <StatusBar
         mode={mode}
         message={message}
         activeAdds={activeAdds}
         completedAddCount={completedAddCount}
+        grouped={repos.length > 1}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {
           if (!r.cloudEnabled) return false
           const localCommit = r.lastSyncedCommit ? r.lastSyncedCommit : null
           const cloudCommit = r.lastPushedCommit ? r.lastPushedCommit : null
-          // Pending if cloud enabled but commits don't match
           if (localCommit === null) return false
           if (cloudCommit === null) return true
           return localCommit !== cloudCommit

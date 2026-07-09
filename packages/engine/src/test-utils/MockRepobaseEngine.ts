@@ -4,7 +4,7 @@ import type { RepoConfig } from "../schemas.js";
 import type { SearchMode, SearchOptions, SearchResult } from "../services/Indexer.js";
 import type { AddRepoOptions, SyncResult } from "../services/RepobaseEngine.js";
 import { RepobaseEngine } from "../services/RepobaseEngine.js";
-import { deriveRepoId, trackingMode } from "../utils.js";
+import { deriveRepoId, extractRepoParts, trackingMode } from "../utils.js";
 
 export interface MockRepobaseEngineState {
   repos: RepoConfig[];
@@ -32,7 +32,8 @@ export const mockRepobaseEngineLayer = (
             return yield* Effect.fail(new RepoAlreadyExistsError({ id: deriveRepoId(url) }));
           }
 
-          const id = deriveRepoId(url);
+          const { owner, name } = extractRepoParts(url);
+          const id = `${owner}-${name}`;
           if (state.repos.some((r) => r.id === id)) {
             return yield* Effect.fail(new RepoAlreadyExistsError({ id }));
           }
@@ -40,6 +41,8 @@ export const mockRepobaseEngineLayer = (
           const repo: RepoConfig = {
             id,
             url,
+            owner,
+            name,
             localPath: `/mock/.repobase/repos/${id}`,
             mode: options?.mode ?? trackingMode("main"),
             lastSyncedCommit: Option.some("mock-commit"),
