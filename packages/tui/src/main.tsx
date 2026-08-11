@@ -1,8 +1,7 @@
-#!/usr/bin/env bun
-import { createCliRenderer } from "@opentui/core"
-import { createRoot } from "@opentui/react"
-import { BunContext } from "@effect/platform-bun"
-import { Effect, Layer, SubscriptionRef, Stream, Fiber } from "effect"
+import { createCliRenderer } from "@opentui/core";
+import { createRoot } from "@opentui/react";
+import { BunContext } from "@effect/platform-bun";
+import { Effect, Layer, SubscriptionRef, Stream, Fiber } from "effect";
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
@@ -10,14 +9,12 @@ import {
   RepoStoreLayer,
   IndexerLayer,
   initialProgress,
-  type RepoConfig,
   type SearchMode,
-  type SearchResult,
   type AddRepoProgress,
-} from "@repobase/engine"
-import { App } from "./App.js"
-import { fileLoggerLayer, defaultLogPath } from "./file-logger.js"
-import { featureFlags } from "./config.js"
+} from "@repobase/engine";
+import { App } from "./App.js";
+import { fileLoggerLayer, defaultLogPath } from "./file-logger.js";
+import { featureFlags } from "./config.js";
 
 // File logger for debugging - writes to ~/.repobase/tui.log
 const FileLogger = fileLoggerLayer()
