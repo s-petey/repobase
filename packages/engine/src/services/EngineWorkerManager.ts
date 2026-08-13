@@ -4,11 +4,11 @@ import { isWorkerError, WorkerError } from "@effect/platform/WorkerError"
 import { Deferred, Effect, FiberId, Stream } from "effect"
 import type { WorkerInput, WorkerEvent } from "./EngineWorkerTypes.js"
 
-// ── Module-level worker pool (size 1: one link at a time) ──
+// ── Lazily-initialized worker pool (size 1: one link at a time) ──
 
 const spawnWorker = () =>
   new Worker(
-    new URL("./EngineWorkerEntry.ts", import.meta.url),
+    new URL("./EngineWorkerEntry.js", import.meta.url),
     { type: "module" },
   )
 
@@ -19,8 +19,14 @@ const poolInit = Deferred.unsafeMake<
   WorkerError
 >(FiberId.none)
 
-Effect.runFork(
-  Effect.scoped(
+let poolStarted = false
+
+const startPool: Effect.Effect<void, never, never> = Effect.suspend(() => {
+  if (poolStarted) {
+    return Effect.never
+  }
+  poolStarted = true
+  return Effect.scoped(
     Effect.flatMap(
       makePool<WorkerInput, WorkerEvent, never>({ size: 1 }).pipe(
         Effect.provide(StreamWorkerLayer),
@@ -36,18 +42,20 @@ Effect.runFork(
         console.error("Worker pool creation failed:", cause)
       }),
     ),
-  ),
-)
+  )
+})
 
 /**
  * Execute a worker operation and return a stream of events.
  * Operations are serialized (pool size 1) so only one runs at a time.
+ * The pool is started lazily on first use (no worker spawned at import time).
  */
 export const execute = (
   input: WorkerInput,
 ): Stream.Stream<WorkerEvent, Error> =>
   Stream.unwrap(
-    Deferred.await(poolInit).pipe(
+    Effect.fork(startPool).pipe(
+      Effect.flatMap(() => Deferred.await(poolInit)),
       Effect.timeout("10 seconds"),
       Effect.catchTag("TimeoutException", () =>
         Effect.fail(new Error("Worker pool initialization timed out after 10s")),
