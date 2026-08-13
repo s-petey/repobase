@@ -13,8 +13,8 @@
   "dependencies": {
     "@effect/platform": "^0.93.6",
     "@effect/platform-bun": "^0.86.0",
-    "@opentui/core": "^0.1.0",
-    "@opentui/react": "^0.1.0",
+    "@opentui/core": "0.4.2",
+    "@opentui/react": "0.4.2",
     "@repobase/engine": "workspace:*",
     "effect": "^3.19.9",
     "react": "^19.0.0"
