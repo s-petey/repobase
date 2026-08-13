@@ -446,7 +446,7 @@ export const App = ({
       }}
     >
       <Header version="1.0.3" />
-      <RepoList flatRows={flatRows} selectedIndex={selectedIndex} />
+      <RepoList flatRows={flatRows} selectedIndex={selectedIndex} totalRepoCount={repos.length} />
       <StatusBar
         mode={mode}
         message={message}

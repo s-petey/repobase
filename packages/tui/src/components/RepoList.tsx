@@ -1,58 +1,54 @@
-import { TextAttributes } from "@opentui/core"
-import type { RepoConfig } from "@repobase/engine"
-import { Option } from "effect"
-import { colors } from "../theme/index.js"
+import { TextAttributes } from "@opentui/core";
+import type { RepoConfig } from "@repobase/engine";
+import { Option } from "effect";
+import { colors } from "../theme/index.js";
 
 export type FlatRow =
   | { kind: "header"; owner: string; repoCount: number; collapsed: boolean }
-  | { kind: "repo"; repo: RepoConfig }
+  | { kind: "repo"; repo: RepoConfig };
 
 interface RepoListProps {
-  flatRows: FlatRow[]
-  selectedIndex: number
+  flatRows: FlatRow[];
+  selectedIndex: number;
+  totalRepoCount: number;
 }
 
 const formatMode = (repo: RepoConfig): string => {
   if (repo.mode._tag === "tracking") {
-    return `tracking: ${repo.mode.branch}`
+    return `tracking: ${repo.mode.branch}`;
   }
-  return `pinned: ${repo.mode.ref}`
-}
+  return `pinned: ${repo.mode.ref}`;
+};
 
 const formatStatus = (repo: RepoConfig): { text: string; color: string } => {
   if (repo.mode._tag === "pinned") {
-    return { text: "o pinned", color: colors.text.secondary }
+    return { text: "o pinned", color: colors.text.secondary };
   }
   return Option.isSome(repo.lastSyncedCommit)
     ? { text: "+ synced", color: colors.status.success.default }
-    : { text: "o pending", color: colors.status.warning.default }
-}
+    : { text: "o pending", color: colors.status.warning.default };
+};
 
 const formatCloudStatus = (repo: RepoConfig): string => {
-  if (!repo.cloudEnabled) return ""
-  
+  if (!repo.cloudEnabled) return "";
+
   // Check if cloud is in sync with local
-  const localCommit = Option.getOrNull(repo.lastSyncedCommit)
-  const cloudCommit = repo.lastPushedCommit ? Option.getOrNull(repo.lastPushedCommit) : null
+  const localCommit = Option.getOrNull(repo.lastSyncedCommit);
+  const cloudCommit = repo.lastPushedCommit ? Option.getOrNull(repo.lastPushedCommit) : null;
 
   if (localCommit && cloudCommit && localCommit === cloudCommit) {
-    return "[C]"
+    return "[C]";
   } else if (repo.cloudEnabled) {
-    return "[C^]"
+    return "[C^]";
   }
-  return ""
-}
+  return "";
+};
 
 const repoCountLabel = (count: number): string => {
-  return `${count} repo${count !== 1 ? "s" : ""}`
-}
+  return `${count} repo${count !== 1 ? "s" : ""}`;
+};
 
-export const RepoList = ({ flatRows, selectedIndex }: RepoListProps) => {
-  const repoCount = flatRows.reduce(
-    (acc, row) => (row.kind === "repo" ? acc + 1 : acc),
-    0,
-  )
-
+export const RepoList = ({ flatRows, selectedIndex, totalRepoCount }: RepoListProps) => {
   if (flatRows.length === 0) {
     return (
       <box
@@ -63,16 +59,10 @@ export const RepoList = ({ flatRows, selectedIndex }: RepoListProps) => {
           alignItems: "center",
         }}
       >
-        <text
-          content="No repositories configured."
-          style={{ fg: colors.text.secondary }}
-        />
-        <text
-          content="Press [a] to add one."
-          style={{ fg: colors.text.tertiary, marginTop: 1 }}
-        />
+        <text content="No repositories configured." style={{ fg: colors.text.secondary }} />
+        <text content="Press [a] to add one." style={{ fg: colors.text.tertiary, marginTop: 1 }} />
       </box>
-    )
+    );
   }
 
   return (
@@ -84,7 +74,7 @@ export const RepoList = ({ flatRows, selectedIndex }: RepoListProps) => {
       }}
     >
       <text
-        content={`Repositories (${repoCount})`}
+        content={`Repositories (${totalRepoCount})`}
         style={{
           fg: colors.text.primary,
           attributes: TextAttributes.BOLD,
@@ -98,11 +88,11 @@ export const RepoList = ({ flatRows, selectedIndex }: RepoListProps) => {
         }}
       >
         {flatRows.map((row, index) => {
-          const isSelected = index === selectedIndex
-          const prefix = isSelected ? "> " : "  "
+          const isSelected = index === selectedIndex;
+          const prefix = isSelected ? "> " : "  ";
 
           if (row.kind === "header") {
-            const icon = row.collapsed ? "\u25B6" : "\u25BC"
+            const icon = row.collapsed ? "\u25B6" : "\u25BC";
             return (
               <box
                 key={`header-${row.owner}`}
@@ -120,13 +110,13 @@ export const RepoList = ({ flatRows, selectedIndex }: RepoListProps) => {
                   }}
                 />
               </box>
-            )
+            );
           }
 
-          const repo = row.repo
-          const status = formatStatus(repo)
-          const mode = formatMode(repo)
-          const cloudStatus = formatCloudStatus(repo)
+          const repo = row.repo;
+          const status = formatStatus(repo);
+          const mode = formatMode(repo);
+          const cloudStatus = formatCloudStatus(repo);
 
           return (
             <box
@@ -145,9 +135,9 @@ export const RepoList = ({ flatRows, selectedIndex }: RepoListProps) => {
                 }}
               />
             </box>
-          )
+          );
         })}
       </scrollbox>
     </box>
-  )
-}
+  );
+};
