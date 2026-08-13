@@ -75,6 +75,14 @@ export class InvalidPatternError extends Data.TaggedError("InvalidPatternError")
 }> {}
 
 /**
+ * Failed to acquire or release a cross-worker file lock
+ */
+export class LockError extends Data.TaggedError("LockError")<{
+  readonly targetPath: string
+  readonly message: string
+}> {}
+
+/**
  * Union of all engine errors
  */
 export type EngineError =
@@ -88,3 +96,4 @@ export type EngineError =
   | CloudNotConfiguredError
   | FileNotFoundError
   | InvalidPatternError
+  | LockError

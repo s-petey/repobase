@@ -23,6 +23,15 @@ export {
 
 // Utils
 export { deriveRepoId, extractRepoOwner, extractRepoParts, trackingMode, pinnedMode } from "./utils.js"
+export {
+  computeConcurrencyLimit,
+  maxConcurrencyConfig,
+  MAX_CONCURRENCY_ENV,
+  DEFAULT_MAX_CONCURRENCY
+} from "./services/Concurrency.js"
+
+// Cross-worker file locks
+export { withLock, type LockOptions, type LockRetryOptions } from "./services/Lock.js"
 
 // Errors
 export {
@@ -36,6 +45,7 @@ export {
   RepoAlreadyExistsError,
   FileNotFoundError,
   InvalidPatternError,
+  LockError,
   type EngineError
 } from "./errors.js"
 
