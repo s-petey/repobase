@@ -1,5 +1,4 @@
-#!/usr/bin/env bun
-import { Args, Command, Options, Prompt } from "@effect/cli"
+import { Args, Command, Options } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option } from "effect"
 import {

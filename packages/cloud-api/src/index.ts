@@ -1,6 +1,5 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { bearerAuth } from "hono/bearer-auth"
 import { searchRoutes } from "./routes/search"
 import { reposRoutes } from "./routes/repos"
 import { syncRoutes } from "./routes/sync"
@@ -41,7 +40,7 @@ app.use("/v1/*", async (c, next) => {
     return c.json({ error: "Invalid token format" }, 401)
   }
 
-  const [userId, apiKey] = parts
+  const [userId, _apiKey] = parts
   
   // TODO: Validate apiKey against stored keys
   // For now, just extract userId

@@ -1,11 +1,9 @@
 import { Effect, Layer, Option } from "effect";
-import { FileNotFoundError, InvalidPatternError } from "../errors.js";
+import { FileNotFoundError } from "../errors.js";
 import type { FileChange } from "../services/GitClient.js";
 import type {
-  FileContent,
   FileInfo,
   GlobOptions,
-  GrepMatch,
   GrepOptions,
   GrepResult,
   IndexOptions,

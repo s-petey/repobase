@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { CloudError, CloudNotConfiguredError, StoreError } from "../errors.js"
-import { CloudConfig, RepoConfig, SyncManifest } from "../schemas.js"
+import { CloudConfig, RepoConfig } from "../schemas.js"
 import { RepoStore } from "./RepoStore.js"
 import * as os from "os"
 import * as crypto from "crypto"
@@ -227,7 +227,7 @@ export const make = Effect.gen(function* () {
       const localManifest = yield* buildLocalManifest
 
       // Filter to files that belong to this repo (files starting with repo id or global files)
-      const repoFiles = Object.entries(localManifest).filter(([filePath]) => {
+      const repoFiles = Object.entries(localManifest).filter(([_filePath]) => {
         // LanceDB stores all data together, so we push everything
         // In a more sophisticated implementation, we could filter by repo
         return true
@@ -257,7 +257,7 @@ export const make = Effect.gen(function* () {
 
   const pushAll: CloudSyncService["pushAll"] = () =>
     Effect.gen(function* () {
-      const config = yield* loadConfig
+      yield* loadConfig
       const data = yield* store.load()
 
       // Filter to repos with cloudEnabled
