@@ -46,6 +46,7 @@ export {
   FileNotFoundError,
   InvalidPatternError,
   LockError,
+  EngineErrorTags,
   type EngineError
 } from "./errors.js"
 
@@ -97,7 +98,6 @@ export type {
   ResultEvent,
   AddRepoOutput,
   SyncRepoOutput,
-  SyncAllOutput,
   ListReposOutput,
   GetRepoOutput,
   SearchOutput,

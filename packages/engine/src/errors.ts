@@ -97,3 +97,21 @@ export type EngineError =
   | FileNotFoundError
   | InvalidPatternError
   | LockError
+
+/**
+ * Serializable tag name for every engine error, used by the worker protocol
+ * so typed errors survive the worker boundary.
+ */
+export const EngineErrorTags = [
+  "GitError",
+  "StoreError",
+  "RepoNotFoundError",
+  "RepoAlreadyExistsError",
+  "IndexError",
+  "SearchError",
+  "CloudError",
+  "CloudNotConfiguredError",
+  "FileNotFoundError",
+  "InvalidPatternError",
+  "LockError",
+] as const 

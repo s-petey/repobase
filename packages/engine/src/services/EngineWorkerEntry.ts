@@ -44,6 +44,7 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
               Effect.catchAll((e) =>
                 Effect.succeed(
                   ErrorEventSchema.make({
+                    errorTag: e._tag,
                     message: e.message ?? String(e),
                   }),
                 ),
@@ -62,20 +63,12 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
           return yield* engine.syncRepo(input.id).pipe(
             Effect.map((r) => ResultEventSchema.make({ data: { _tag: "syncRepo", data: r } })),
             Effect.catchAll((e) =>
-              Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
-            ),
-          );
-        }),
-      );
-
-    case "syncAll":
-      return Stream.fromEffect(
-        Effect.gen(function* () {
-          const engine = yield* RepobaseEngine;
-          return yield* engine.syncAll().pipe(
-            Effect.map((r) => ResultEventSchema.make({ data: { _tag: "syncAll", data: r } })),
-            Effect.catchAll((e) =>
-              Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
+              Effect.succeed(
+                ErrorEventSchema.make({
+                  errorTag: e._tag,
+                  message: e.message ?? String(e),
+                }),
+              ),
             ),
           );
         }),
@@ -89,7 +82,12 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
             .removeRepo(input.id)
             .pipe(
               Effect.catchAll((e) =>
-                Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
+                Effect.succeed(
+                  ErrorEventSchema.make({
+                    errorTag: e._tag,
+                    message: e.message ?? String(e),
+                  }),
+                ),
               ),
             );
           return ResultEventSchema.make({ data: { _tag: "removeRepo", data: null } });
@@ -101,14 +99,18 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
         Effect.gen(function* () {
           const engine = yield* RepobaseEngine;
           const repos = yield* engine.listRepos().pipe(
-            Effect.map((r) => r),
             Effect.catchAll((e) =>
-              Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
+              Effect.succeed(
+                ErrorEventSchema.make({
+                  errorTag: e._tag,
+                  message: e.message ?? String(e),
+                }),
+              ),
             ),
           );
 
           if (!Array.isArray(repos)) {
-            return ErrorEventSchema.make({ message: "repos is not an array" });
+            return repos;
           }
 
           return ResultEventSchema.make({
@@ -128,12 +130,17 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
             .getRepo(input.id)
             .pipe(
               Effect.catchAll((e) =>
-                Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
+                Effect.succeed(
+                  ErrorEventSchema.make({
+                    errorTag: e._tag,
+                    message: e.message ?? String(e),
+                  }),
+                ),
               ),
             );
 
           if (repo._tag === "Error") {
-            return ErrorEventSchema.make({ message: "repo not found" });
+            return repo;
           }
 
           return ResultEventSchema.make({ data: { _tag: "getRepo", data: repo } });
@@ -151,12 +158,17 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
             })
             .pipe(
               Effect.catchAll((e) =>
-                Effect.succeed(ErrorEventSchema.make({ message: e.message ?? String(e) })),
+                Effect.succeed(
+                  ErrorEventSchema.make({
+                    errorTag: e._tag,
+                    message: e.message ?? String(e),
+                  }),
+                ),
               ),
             );
 
           if (!Array.isArray(results)) {
-            return ErrorEventSchema.make({ message: "results is not an array" });
+            return results;
           }
 
           return ResultEventSchema.make({ data: { _tag: "search", data: results } });

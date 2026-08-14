@@ -1,9 +1,10 @@
 import { Schema } from "effect";
+import { EngineErrorTags } from "../errors.js";
 import { RepoConfig } from "../schemas.js";
 import { SearchResult } from "./Indexer.js";
 import { AddRepoStage, SyncResult } from "./RepobaseEngine.js";
 
-const RepoActions = Schema.Literal('addRepo', 'removeRepo', 'syncRepo', 'syncAll', 'listRepos', 'getRepo', 'search')
+const RepoActions = Schema.Literal('addRepo', 'removeRepo', 'syncRepo', 'listRepos', 'getRepo', 'search')
 export type RepoAction = Schema.Schema.Type<typeof RepoActions>
 
 // ── Worker Input: what the main thread sends ─────────────
@@ -19,8 +20,6 @@ export const RemoveRepoInput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickL
 export const SyncRepoInput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickLiteral('syncRepo')).Type, {
   id: Schema.String,
 })
-
-export const SyncAllInput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickLiteral('syncAll')).Type, {})
 
 export const ListReposInput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickLiteral('listRepos')).Type, {})
 
@@ -39,7 +38,6 @@ export const WorkerInput = Schema.Union(
   AddRepoInput,
   RemoveRepoInput,
   SyncRepoInput,
-  SyncAllInput,
   ListReposInput,
   GetRepoInput,
   SearchInput,
@@ -63,11 +61,6 @@ export const SyncRepoOutput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickLi
   data: SyncResult
 })
 export type SyncRepoOutput = Schema.Schema.Type<typeof SyncRepoOutput>
-
-export const SyncAllOutput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickLiteral('syncAll')).Type, {
-  data: Schema.Array(SyncResult)
-})
-export type SyncAllOutput = Schema.Schema.Type<typeof SyncAllOutput>
 
 export const ListReposOutput = Schema.TaggedStruct(RepoActions.pipe(Schema.pickLiteral('listRepos')).Type, {
   data: Schema.Array(RepoConfig)
@@ -96,7 +89,6 @@ export const ResultEventSchema = Schema.TaggedStruct("Result", {
       AddRepoOutput,
       RemoveRepoOutput,
       SyncRepoOutput,
-      SyncAllOutput,
       ListReposOutput,
       GetRepoOutput,
       SearchOutput,
@@ -105,8 +97,10 @@ export const ResultEventSchema = Schema.TaggedStruct("Result", {
 export type ResultEvent = Schema.Schema.Type<typeof ResultEventSchema>
 
 export const ErrorEventSchema = Schema.TaggedStruct("Error", {
+  errorTag: Schema.Literal(...EngineErrorTags),
   message: Schema.String,
 })
+export type ErrorEventSchema = Schema.Schema.Type<typeof ErrorEventSchema>
 
 export const WorkerEvent = Schema.Union(
   ProgressEventSchema,
@@ -120,7 +114,6 @@ export type WorkerOutputByTag = {
   "addRepo": AddRepoOutput
   "removeRepo": RemoveRepoOutput
   "syncRepo": SyncRepoOutput
-  "syncAll": SyncAllOutput
   "listRepos": ListReposOutput
   "getRepo": GetRepoOutput
   "search": SearchOutput

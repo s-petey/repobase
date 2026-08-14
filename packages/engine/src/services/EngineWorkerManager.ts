@@ -2,9 +2,10 @@ import { BunWorker } from "@effect/platform-bun"
 import { makePool, type WorkerPool } from "@effect/platform/Worker"
 import { isWorkerError, WorkerError } from "@effect/platform/WorkerError"
 import { Deferred, Effect, FiberId, Stream } from "effect"
+import { maxConcurrencyConfig } from "./Concurrency.js"
 import type { WorkerInput, WorkerEvent } from "./EngineWorkerTypes.js"
 
-// ── Lazily-initialized worker pool (size 1: one link at a time) ──
+// ── Lazily-initialized worker pool (size = resolved concurrency cap) ──
 
 const spawnWorker = () =>
   new Worker(
@@ -27,15 +28,14 @@ const startPool: Effect.Effect<void, never, never> = Effect.suspend(() => {
   }
   poolStarted = true
   return Effect.scoped(
-    Effect.flatMap(
-      makePool<WorkerInput, WorkerEvent, never>({ size: 1 }).pipe(
+    Effect.gen(function* () {
+      const size = yield* maxConcurrencyConfig.pipe(Effect.orDie)
+      const pool = yield* makePool<WorkerInput, WorkerEvent, never>({ size }).pipe(
         Effect.provide(StreamWorkerLayer),
-      ),
-      (pool) =>
-        Deferred.succeed(poolInit, pool).pipe(
-          Effect.flatMap(() => Effect.never),
-        ),
-    ),
+      )
+      yield* Deferred.succeed(poolInit, pool)
+      yield* Effect.never
+    }),
   ).pipe(
     Effect.catchAllCause((cause) =>
       Effect.sync(() => {
@@ -47,7 +47,9 @@ const startPool: Effect.Effect<void, never, never> = Effect.suspend(() => {
 
 /**
  * Execute a worker operation and return a stream of events.
- * Operations are serialized (pool size 1) so only one runs at a time.
+ * The pool is sized by the resolved concurrency cap (env override wins,
+ * otherwise `min(cores, 4)`), so operations run across worker threads in
+ * parallel up to that cap.
  * The pool is started lazily on first use (no worker spawned at import time).
  */
 export const execute = (
