@@ -52,7 +52,11 @@ const handler = (input: WorkerInput): Stream.Stream<WorkerEvent, never, Repobase
             ),
           );
 
-          return Stream.merge(progressStream, resultStream);
+          return Stream.merge(progressStream, resultStream).pipe(
+            Stream.takeUntil(
+              (event) => event._tag === "Result" || event._tag === "Error",
+            ),
+          );
         }),
       );
 

@@ -109,6 +109,15 @@ export type {
 // Worker pool: execute operations in a background thread
 export { execute } from "./services/EngineWorkerManager.js"
 
+// Worker-backed client
+export {
+  WorkerClient,
+  type WorkerClientService,
+  WorkerClientLive,
+  makeWorkerEngineClient,
+  RepobaseEngineWorkerLayer
+} from "./services/EngineClient.js"
+
 // Diagnostic logger (both main and worker threads)
 export { logMain, logWorker } from "./diagnostic-logger.js"
 

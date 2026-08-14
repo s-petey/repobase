@@ -1,12 +1,10 @@
 import { FileSystem } from "@effect/platform"
 import { Context, Effect, Fiber, Layer, Option, Schema, Stream, SubscriptionRef } from "effect"
 import {
-  GitError,
-  IndexError,
   RepoAlreadyExistsError,
   RepoNotFoundError,
-  SearchError,
-  StoreError
+  StoreError,
+  type EngineError
 } from "../errors.js"
 import { GitHubUrlSchema, RepoConfig, RepoMode } from "../schemas.js"
 import { trackingMode } from "../utils.js"
@@ -75,17 +73,6 @@ export interface AddRepoOptions {
    indexSummary: Schema.optional(IndexSummary),
  })
  export type SyncResult = Schema.Schema.Type<typeof SyncResult>
-
-/**
- * All possible engine errors
- */
-export type EngineError =
-  | GitError
-  | StoreError
-  | IndexError
-  | SearchError
-  | RepoNotFoundError
-  | RepoAlreadyExistsError
 
 /**
  * RepobaseEngine service interface
