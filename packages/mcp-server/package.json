@@ -12,11 +12,10 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@effect/platform": "^0.93.6",
-    "@effect/platform-bun": "^0.86.0",
+    "@effect/platform-bun": "4.0.0-rc.115",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@repobase/engine": "workspace:*",
-    "effect": "^3.19.9",
+    "effect": "4.0.0-rc.115",
     "zod": "^4.6.5"
   },
   "devDependencies": {

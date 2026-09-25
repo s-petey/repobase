@@ -1,6 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Layer } from "effect"
-import { FileSystem } from "@effect/platform"
+import { Effect, FileSystem, Layer, Sink, Stream } from "effect"
 import { Indexer, IndexError, SearchError } from "../src/index.js"
 import { layer as IndexerLayer } from "../src/services/Indexer.js"
 
@@ -209,7 +208,7 @@ const MockFileSystem = Layer.succeed(
     realPath: (path) => Effect.succeed(path),
     remove: () => Effect.void,
     rename: () => Effect.void,
-    sink: () => Effect.die("sink not implemented"),
+    sink: () => Sink.die("sink not implemented"),
     stat: (path) => {
       const content = mockFiles[path as string]
       if (content) {
@@ -233,11 +232,11 @@ const MockFileSystem = Layer.succeed(
       }
       return Effect.fail({ _tag: "SystemError", reason: "NotFound", message: "File not found" } as any)
     },
-    stream: () => Effect.die("stream not implemented"),
+    stream: () => Stream.die("stream not implemented"),
     symlink: () => Effect.void,
     truncate: () => Effect.void,
     utimes: () => Effect.void,
-    watch: () => Effect.die("watch not implemented"),
+    watch: () => Stream.die("watch not implemented"),
     writeFile: () => Effect.void,
     writeFileString: () => Effect.void
   })

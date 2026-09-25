@@ -85,7 +85,7 @@ export { layer as CloudSyncLayer } from "./services/CloudSync.js"
 
 // Layer composition for Bun
 import { Layer } from "effect"
-import { BunFileSystem, BunCommandExecutor } from "@effect/platform-bun"
+import { BunServices } from "@effect/platform-bun"
 import { layer as GitClientLayer } from "./services/GitClient.js"
 import { layer as RepoStoreLayer } from "./services/RepoStore.js"
 import { layer as IndexerLayer } from "./services/Indexer.js"
@@ -95,10 +95,7 @@ import { layer as CloudSyncLayer } from "./services/CloudSync.js"
 /**
  * Platform dependencies for Bun
  */
-export const PlatformLive = Layer.mergeAll(
-  BunFileSystem.layer,
-  BunCommandExecutor.layer
-)
+export const PlatformLive = BunServices.layer
 
 /**
  * GitClient layer with Bun platform

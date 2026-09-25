@@ -16,11 +16,13 @@ export default defineConfig({
   },
   test: {
     include: ["test/**/*.test.ts"],
-    deps: {
-      // Ensure @effect/vitest is processed by Vite so our `resolve.alias` applies.
-      // Otherwise it may be loaded directly by Node from its nested node_modules,
-      // causing a second Vitest instance and "No test suite found".
-      inline: ["@effect/vitest"]
+    server: {
+      deps: {
+        // Ensure @effect/vitest is processed by Vite so our `resolve.alias` applies.
+        // Otherwise it may be loaded directly by Node from its nested node_modules,
+        // causing a second Vitest instance and "No test suite found".
+        inline: ["@effect/vitest"]
+      }
     },
     fakeTimers: {
       toFake: undefined

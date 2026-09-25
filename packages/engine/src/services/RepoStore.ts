@@ -1,5 +1,4 @@
-import { FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { StoreError } from "../errors.js"
 import { RepoConfig, RepoStoreData } from "../schemas.js"
 import * as os from "os"
@@ -22,10 +21,9 @@ export interface RepoStoreService {
 /**
  * RepoStore service tag
  */
-export class RepoStore extends Context.Tag("@repobase/engine/RepoStore")<
-  RepoStore,
-  RepoStoreService
->() {}
+export class RepoStore extends Context.Service<RepoStore, RepoStoreService>()(
+  "@repobase/engine/RepoStore"
+) {}
 
 /**
  * Helper to convert errors to StoreError
@@ -63,12 +61,12 @@ export const make = Effect.gen(function* () {
         return { version: 1 as const, repos: [] }
       }
       const content = yield* fs.readFileString(configPath)
-      return yield* Schema.decodeUnknown(RepoStoreData)(JSON.parse(content))
+      return yield* Schema.decodeUnknownEffect(RepoStoreData)(JSON.parse(content))
     }).pipe(Effect.mapError(toStoreError("load")))
 
   const save: RepoStoreService["save"] = (data) =>
     Effect.gen(function* () {
-      const encoded = yield* Schema.encode(RepoStoreData)(data)
+      const encoded = yield* Schema.encodeEffect(RepoStoreData)(data)
       yield* fs.makeDirectory(repobaseDir, { recursive: true })
       yield* fs.writeFileString(configPath, JSON.stringify(encoded, null, 2))
     }).pipe(Effect.mapError(toStoreError("save")))
@@ -77,7 +75,7 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const data = yield* load()
       const repo = data.repos.find((r) => r.id === id)
-      return Option.fromNullable(repo)
+      return Option.fromNullishOr(repo)
     })
 
   const addRepo: RepoStoreService["addRepo"] = (repo) =>

@@ -1,13 +1,19 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Layer } from "effect"
-import { CommandExecutor } from "@effect/platform"
+import { Cause, Effect, Layer, PlatformError, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitClient, GitError } from "../src/index.js"
 import { layer as GitClientLayer } from "../src/services/GitClient.js"
 
 /**
- * Mock CommandExecutor that simulates git command responses
+ * Mock ChildProcessSpawner that simulates git command responses
  */
-const mockCommands: Record<string, { stdout?: string; exitCode?: number; error?: string }> = {
+interface MockCommand {
+  stdout?: string
+  exitCode?: number
+  error?: string
+}
+
+const mockCommands: Record<string, MockCommand> = {
   "git clone --depth 1 https://github.com/test/repo /tmp/repo": { exitCode: 0 },
   "git -C /tmp/repo fetch origin": { exitCode: 0 },
   "git -C /tmp/repo rev-parse HEAD": { stdout: "abc123def456\n" },
@@ -23,74 +29,47 @@ const mockCommands: Record<string, { stdout?: string; exitCode?: number; error?:
   }
 }
 
-const MockCommandExecutor = Layer.succeed(
-  CommandExecutor.CommandExecutor,
-  CommandExecutor.CommandExecutor.of({
-    start: () => Effect.die("start not implemented in mock"),
-    exitCode: (command) => {
-      const cmd = [command.command, ...command.args].join(" ")
-      const mock = mockCommands[cmd]
-      if (!mock) {
-        return Effect.fail({
-          _tag: "SystemError",
-          reason: "Unknown",
-          message: `Unknown command: ${cmd}`
-        } as any)
-      }
-      if (mock.error) {
-        return Effect.fail({
-          _tag: "SystemError",
-          reason: "Unknown",
-          message: mock.error
-        } as any)
-      }
-      return Effect.succeed(mock.exitCode ?? 0)
-    },
-    string: (command) => {
-      const cmd = [command.command, ...command.args].join(" ")
-      const mock = mockCommands[cmd]
-      if (!mock) {
-        return Effect.fail({
-          _tag: "SystemError",
-          reason: "Unknown",
-          message: `Unknown command: ${cmd}`
-        } as any)
-      }
-      if (mock.error) {
-        return Effect.fail({
-          _tag: "SystemError",
-          reason: "Unknown",
-          message: mock.error
-        } as any)
-      }
-      return Effect.succeed(mock.stdout ?? "")
-    },
-    lines: (command) => {
-      const cmd = [command.command, ...command.args].join(" ")
-      const mock = mockCommands[cmd]
-      if (!mock) {
-        return Effect.fail({
-          _tag: "SystemError",
-          reason: "Unknown",
-          message: `Unknown command: ${cmd}`
-        } as any)
-      }
-      if (mock.error) {
-        return Effect.fail({
-          _tag: "SystemError",
-          reason: "Unknown",
-          message: mock.error
-        } as any)
-      }
-      const lines = (mock.stdout ?? "").split("\n").filter((l) => l.length > 0)
-      return Effect.succeed(lines)
-    },
-    stream: () => Effect.die("stream not implemented in mock"),
-    streamLines: () => Effect.die("streamLines not implemented in mock")
+const lookup = (
+  command: ChildProcess.Command
+): Effect.Effect<MockCommand, PlatformError.PlatformError> => {
+  const cmd = ChildProcess.isStandardCommand(command)
+    ? [command.command, ...command.args].join(" ")
+    : "<piped command>"
+  const mock = mockCommands[cmd]
+  if (!mock) {
+    return Effect.fail({
+      _tag: "SystemError",
+      reason: "Unknown",
+      message: `Unknown command: ${cmd}`
+    } as any)
+  }
+  if (mock.error) {
+    return Effect.fail({
+      _tag: "SystemError",
+      reason: "Unknown",
+      message: mock.error
+    } as any)
+  }
+  return Effect.succeed(mock)
+}
+
+const MockChildProcessSpawner = Layer.succeed(
+  ChildProcessSpawner.ChildProcessSpawner,
+  ChildProcessSpawner.ChildProcessSpawner.of({
+    spawn: () => Effect.die("spawn not implemented in mock"),
+    exitCode: (command) =>
+      lookup(command).pipe(Effect.map((mock) => ChildProcessSpawner.ExitCode(mock.exitCode ?? 0))),
+    string: (command) => lookup(command).pipe(Effect.map((mock) => mock.stdout ?? "")),
+    lines: (command) =>
+      lookup(command).pipe(
+        Effect.map((mock) => (mock.stdout ?? "").split("\n").filter((l) => l.length > 0))
+      ),
+    streamString: () => Stream.die("streamString not implemented in mock"),
+    streamLines: () => Stream.die("streamLines not implemented in mock")
   })
 )
 
-const TestGitClientLayer = GitClientLayer.pipe(Layer.provide(MockCommandExecutor))
+const TestGitClientLayer = GitClientLayer.pipe(Layer.provide(MockChildProcessSpawner))
 
 describe("GitClient", () => {
   describe("clone", () => {
@@ -110,9 +89,8 @@ describe("GitClient", () => {
         )
         expect(result._tag).toBe("Failure")
         if (result._tag === "Failure") {
-          const error = result.cause
-          // Check it's a GitError
-          expect(error._tag).toBe("Fail")
+          // Check it failed (rather than died or was interrupted)
+          expect(Cause.hasFails(result.cause)).toBe(true)
         }
       }).pipe(Effect.provide(TestGitClientLayer))
     )

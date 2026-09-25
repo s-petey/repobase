@@ -67,7 +67,7 @@ describe("schemas", () => {
     it.effect("decodes valid tracking mode", () =>
       Effect.gen(function* () {
         const input = { _tag: "tracking", branch: "main" }
-        const result = yield* Schema.decodeUnknown(TrackingMode)(input)
+        const result = yield* Schema.decodeUnknownEffect(TrackingMode)(input)
         expect(result).toEqual({ _tag: "tracking", branch: "main" })
       })
     )
@@ -75,7 +75,7 @@ describe("schemas", () => {
     it.effect("fails on invalid tracking mode", () =>
       Effect.gen(function* () {
         const input = { _tag: "tracking" } // missing branch
-        const result = yield* Effect.exit(Schema.decodeUnknown(TrackingMode)(input))
+        const result = yield* Effect.exit(Schema.decodeUnknownEffect(TrackingMode)(input))
         expect(result._tag).toBe("Failure")
       })
     )
@@ -85,7 +85,7 @@ describe("schemas", () => {
     it.effect("decodes valid pinned mode", () =>
       Effect.gen(function* () {
         const input = { _tag: "pinned", ref: "abc123" }
-        const result = yield* Schema.decodeUnknown(PinnedMode)(input)
+        const result = yield* Schema.decodeUnknownEffect(PinnedMode)(input)
         expect(result).toEqual({ _tag: "pinned", ref: "abc123" })
       })
     )
@@ -95,7 +95,7 @@ describe("schemas", () => {
     it.effect("decodes tracking mode", () =>
       Effect.gen(function* () {
         const input = { _tag: "tracking", branch: "main" }
-        const result = yield* Schema.decodeUnknown(RepoMode)(input)
+        const result = yield* Schema.decodeUnknownEffect(RepoMode)(input)
         expect(result._tag).toBe("tracking")
       })
     )
@@ -103,7 +103,7 @@ describe("schemas", () => {
     it.effect("decodes pinned mode", () =>
       Effect.gen(function* () {
         const input = { _tag: "pinned", ref: "v1.0.0" }
-        const result = yield* Schema.decodeUnknown(RepoMode)(input)
+        const result = yield* Schema.decodeUnknownEffect(RepoMode)(input)
         expect(result._tag).toBe("pinned")
       })
     )
@@ -125,12 +125,12 @@ describe("schemas", () => {
           lastPushedCommit: null
         }
 
-        const decoded = yield* Schema.decodeUnknown(RepoConfig)(input)
+        const decoded = yield* Schema.decodeUnknownEffect(RepoConfig)(input)
         expect(decoded.id).toBe("Effect-TS-effect")
         expect(Option.isSome(decoded.lastSyncedCommit)).toBe(true)
         expect(Option.getOrNull(decoded.lastSyncedCommit)).toBe("abc123")
 
-        const encoded = yield* Schema.encode(RepoConfig)(decoded)
+        const encoded = yield* Schema.encodeEffect(RepoConfig)(decoded)
         expect(encoded.id).toBe("Effect-TS-effect")
         expect(encoded.lastSyncedCommit).toBe("abc123")
       })
@@ -151,7 +151,7 @@ describe("schemas", () => {
           lastPushedCommit: null
         }
 
-        const decoded = yield* Schema.decodeUnknown(RepoConfig)(input)
+        const decoded = yield* Schema.decodeUnknownEffect(RepoConfig)(input)
         expect(Option.isNone(decoded.lastSyncedCommit)).toBe(true)
         expect(Option.isNone(decoded.lastSyncedAt)).toBe(true)
       })
@@ -162,7 +162,7 @@ describe("schemas", () => {
     it.effect("decodes empty store", () =>
       Effect.gen(function* () {
         const input = { version: 1, repos: [] }
-        const result = yield* Schema.decodeUnknown(RepoStoreData)(input)
+        const result = yield* Schema.decodeUnknownEffect(RepoStoreData)(input)
         expect(result.version).toBe(1)
         expect(result.repos).toHaveLength(0)
       })
@@ -188,7 +188,7 @@ describe("schemas", () => {
           ]
         }
 
-        const result = yield* Schema.decodeUnknown(RepoStoreData)(input)
+        const result = yield* Schema.decodeUnknownEffect(RepoStoreData)(input)
         expect(result.repos).toHaveLength(1)
         expect(result.repos[0].id).toBe("repo1")
       })

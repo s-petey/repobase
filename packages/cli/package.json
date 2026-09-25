@@ -12,9 +12,7 @@
     "repobase": "bun run src/main.ts"
   },
   "dependencies": {
-    "@effect/cli": "^0.59.0",
-    "@effect/platform": "^0.93.6",
     "@repobase/engine": "workspace:*",
-    "effect": "^3.19.9"
+    "effect": "4.0.0-rc.115"
   }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
-import { BunContext } from "@effect/platform-bun"
+import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, SubscriptionRef, Stream, Fiber } from "effect"
 import {
   RepobaseEngine,
@@ -29,9 +29,13 @@ const EngineLive = RepobaseEngineLayer.pipe(
   Layer.provide(IndexerLayer)
 )
 
+// provideMerge (not provide) so the file logger is also part of MainLayer's
+// output; in Effect v4 loggers are context references, so a merely-provided
+// logger layer would not apply to the programs we run and logs would hit the TUI.
+// BunServices is provided last so both the engine and the logger share it.
 const MainLayer = EngineLive.pipe(
-  Layer.provide(BunContext.layer),
-  Layer.provide(FileLogger)
+  Layer.provideMerge(FileLogger),
+  Layer.provide(BunServices.layer)
 )
 
 // Helper to run Effect programs
@@ -39,10 +43,6 @@ const runEffect = <A, E>(
   effect: Effect.Effect<A, E, RepobaseEngine>
 ): Promise<A> =>
   Effect.runPromise(effect.pipe(Effect.provide(MainLayer))) as Promise<A>
-
-// Engine service functions
-const { addRepo, removeRepo, listRepos, syncRepo, syncAll, search } =
-  Effect.serviceFunctions(RepobaseEngine)
 
 // Main entry point
 const main = async () => {
@@ -61,7 +61,7 @@ const main = async () => {
   })
 
   // Load initial repos
-  const initialRepos = await runEffect(listRepos())
+  const initialRepos = await runEffect(RepobaseEngine.use((engine) => engine.listRepos()))
   
   // Cloud config is only checked when the feature is enabled
   const cloudConfigured = featureFlags.cloudSync ? false : false
@@ -73,17 +73,19 @@ const main = async () => {
       onAddRepo={async (url: string, onProgress: (p: AddRepoProgress) => void) => {
         // Create the effect that sets up progress tracking
         const addWithProgress = Effect.gen(function* () {
+          const engine = yield* RepobaseEngine
+
           // Create a SubscriptionRef for progress updates
           const progressRef = yield* SubscriptionRef.make<AddRepoProgress>(initialProgress)
           
           // Fork a fiber to listen for progress updates and call the callback
           const listenerFiber = yield* Stream.runForEach(
-            progressRef.changes,
+            SubscriptionRef.changes(progressRef),
             (progress) => Effect.sync(() => onProgress(progress))
-          ).pipe(Effect.fork)
-          
+          ).pipe(Effect.forkChild)
+
           // Run addRepo with the progress ref
-          const result = yield* addRepo(url, { progressRef })
+          const result = yield* engine.addRepo(url, { progressRef })
           
           // Clean up the listener fiber
           yield* Fiber.interrupt(listenerFiber)
@@ -94,21 +96,21 @@ const main = async () => {
         return await runEffect(addWithProgress)
       }}
       onRemoveRepo={async (id: string) => {
-        await runEffect(removeRepo(id))
+        await runEffect(RepobaseEngine.use((engine) => engine.removeRepo(id)))
       }}
       onSyncRepo={async (id: string) => {
-        const result = await runEffect(syncRepo(id))
+        const result = await runEffect(RepobaseEngine.use((engine) => engine.syncRepo(id)))
         return { updated: result.updated }
       }}
       onSyncAll={async () => {
-        const results = await runEffect(syncAll())
+        const results = await runEffect(RepobaseEngine.use((engine) => engine.syncAll()))
         return results.map((r) => ({ id: r.id, updated: r.updated }))
       }}
       onRefreshRepos={async () => {
-        return await runEffect(listRepos())
+        return await runEffect(RepobaseEngine.use((engine) => engine.listRepos()))
       }}
       onSearch={async (query: string, mode: SearchMode) => {
-        return await runEffect(search(query, mode))
+        return await runEffect(RepobaseEngine.use((engine) => engine.search(query, mode)))
       }}
       onQuit={() => {
         renderer.destroy()

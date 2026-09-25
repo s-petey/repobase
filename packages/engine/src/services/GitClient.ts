@@ -1,5 +1,5 @@
-import { Command, CommandExecutor } from "@effect/platform"
 import { Context, Effect, Layer } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitError } from "../errors.js"
 
 /**
@@ -30,10 +30,9 @@ export interface GitClientService {
 /**
  * GitClient service tag
  */
-export class GitClient extends Context.Tag("@repobase/engine/GitClient")<
-  GitClient,
-  GitClientService
->() {}
+export class GitClient extends Context.Service<GitClient, GitClientService>()(
+  "@repobase/engine/GitClient"
+) {}
 
 /**
  * Helper to convert platform errors to GitError
@@ -50,11 +49,13 @@ const toGitError =
  * Create the GitClient service implementation
  */
 export const make = Effect.gen(function* () {
-  const executor = yield* CommandExecutor.CommandExecutor
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+
+  const git = (...args: string[]) => ChildProcess.make("git", args)
 
   // Run command and check exit code - fail on non-zero
-  const runCommand = (cmd: Command.Command, commandName: string) =>
-    Effect.provideService(Command.exitCode(cmd), CommandExecutor.CommandExecutor, executor).pipe(
+  const runCommand = (cmd: ChildProcess.Command, commandName: string) =>
+    spawner.exitCode(cmd).pipe(
       Effect.flatMap((exitCode) =>
         exitCode === 0
           ? Effect.void
@@ -67,52 +68,50 @@ export const make = Effect.gen(function* () {
       )
     )
 
-  const runString = (cmd: Command.Command) =>
-    Effect.provideService(Command.string(cmd), CommandExecutor.CommandExecutor, executor)
+  const runString = (cmd: ChildProcess.Command) => spawner.string(cmd)
 
-  const runLines = (cmd: Command.Command) =>
-    Effect.provideService(Command.lines(cmd), CommandExecutor.CommandExecutor, executor)
+  const runLines = (cmd: ChildProcess.Command) => spawner.lines(cmd)
 
   return GitClient.of({
     clone: (url, path) =>
       runCommand(
-        Command.make("git", "clone", "--depth", "1", url, path),
+        git("clone", "--depth", "1", url, path),
         "clone"
       ).pipe(Effect.mapError(toGitError("clone"))),
 
     fetch: (path) =>
       runCommand(
-        Command.make("git", "-C", path, "fetch", "origin"),
+        git("-C", path, "fetch", "origin"),
         "fetch"
       ).pipe(Effect.mapError(toGitError("fetch"))),
 
     getCurrentCommit: (path) =>
-      runString(Command.make("git", "-C", path, "rev-parse", "HEAD")).pipe(
+      runString(git("-C", path, "rev-parse", "HEAD")).pipe(
         Effect.map((s) => s.trim()),
         Effect.mapError(toGitError("rev-parse"))
       ),
 
     getRemoteHead: (path, branch) =>
-      runString(Command.make("git", "-C", path, "rev-parse", `origin/${branch}`)).pipe(
+      runString(git("-C", path, "rev-parse", `origin/${branch}`)).pipe(
         Effect.map((s) => s.trim()),
         Effect.mapError(toGitError("rev-parse"))
       ),
 
     resetHard: (path, ref) =>
       runCommand(
-        Command.make("git", "-C", path, "reset", "--hard", ref),
+        git("-C", path, "reset", "--hard", ref),
         "reset"
       ).pipe(Effect.mapError(toGitError("reset"))),
 
     checkout: (path, ref) =>
       runCommand(
-        Command.make("git", "-C", path, "checkout", ref),
+        git("-C", path, "checkout", ref),
         "checkout"
       ).pipe(Effect.mapError(toGitError("checkout"))),
 
     diffNameStatus: (path, fromCommit, toCommit) =>
       runLines(
-        Command.make("git", "-C", path, "diff", "--name-status", `${fromCommit}..${toCommit}`)
+        git("-C", path, "diff", "--name-status", `${fromCommit}..${toCommit}`)
       ).pipe(
         Effect.map((lines) =>
           lines
@@ -131,6 +130,6 @@ export const make = Effect.gen(function* () {
 })
 
 /**
- * GitClient layer - requires CommandExecutor
+ * GitClient layer - requires ChildProcessSpawner
  */
 export const layer = Layer.effect(GitClient, make)

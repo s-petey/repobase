@@ -1,5 +1,4 @@
-import { FileSystem } from "@effect/platform"
-import { Context, Effect, Fiber, Layer, Option, Stream, SubscriptionRef } from "effect"
+import { Context, Effect, Fiber, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect"
 import {
   GitError,
   IndexError,
@@ -110,9 +109,9 @@ export interface RepobaseEngineService {
 /**
  * RepobaseEngine service tag
  */
-export class RepobaseEngine extends Context.Tag(
+export class RepobaseEngine extends Context.Service<RepobaseEngine, RepobaseEngineService>()(
   "@repobase/engine/RepobaseEngine"
-)<RepobaseEngine, RepobaseEngineService>() {}
+) {}
 
 /**
  * Get the repos directory path
@@ -206,8 +205,8 @@ export const make = Effect.gen(function* () {
       const indexingProgressRef = yield* SubscriptionRef.make<IndexingProgress>(initialIndexingProgress)
 
       // Subscribe to indexing progress changes and forward them
-      const forwarderFiber = yield* Effect.fork(
-        Stream.runForEach(indexingProgressRef.changes, (indexingState) => 
+      const forwarderFiber = yield* Effect.forkChild(
+        Stream.runForEach(SubscriptionRef.changes(indexingProgressRef), (indexingState) =>
           Effect.gen(function* () {
             if (!progressRef) return
             
@@ -227,7 +226,7 @@ export const make = Effect.gen(function* () {
               currentFile: indexingState.currentFile
             }))
           })
-        ).pipe(Effect.catchAll(() => Effect.void))
+        ).pipe(Effect.catch(() => Effect.void))
       )
 
       // Index the repository with progress tracking
@@ -267,7 +266,7 @@ export const make = Effect.gen(function* () {
 
       // Remove files
       yield* fs.remove(repo.localPath, { recursive: true }).pipe(
-        Effect.catchAll(() => Effect.void) // Ignore if already deleted
+        Effect.catch(() => Effect.void) // Ignore if already deleted
       )
 
       // Remove from store

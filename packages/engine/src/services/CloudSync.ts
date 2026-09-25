@@ -1,5 +1,4 @@
-import { FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { CloudError, CloudNotConfiguredError, StoreError } from "../errors.js"
 import { CloudConfig, RepoConfig, SyncManifest } from "../schemas.js"
 import { RepoStore } from "./RepoStore.js"
@@ -72,10 +71,9 @@ export interface CloudSyncService {
 /**
  * CloudSync service tag
  */
-export class CloudSync extends Context.Tag("@repobase/engine/CloudSync")<
-  CloudSync,
-  CloudSyncService
->() {}
+export class CloudSync extends Context.Service<CloudSync, CloudSyncService>()(
+  "@repobase/engine/CloudSync"
+) {}
 
 /**
  * Get the cloud config file path
@@ -123,7 +121,7 @@ export const make = Effect.gen(function* () {
       return yield* Effect.fail(new CloudNotConfiguredError())
     }
     const content = yield* fs.readFileString(cloudConfigPath)
-    return yield* Schema.decodeUnknown(CloudConfig)(JSON.parse(content))
+    return yield* Schema.decodeUnknownEffect(CloudConfig)(JSON.parse(content))
   }).pipe(Effect.mapError((e) => 
     e instanceof CloudNotConfiguredError ? e : toCloudError("loadConfig")(e)
   ))
@@ -133,7 +131,7 @@ export const make = Effect.gen(function* () {
    */
   const saveConfig = (config: CloudConfig) =>
     Effect.gen(function* () {
-      const encoded = yield* Schema.encode(CloudConfig)(config)
+      const encoded = yield* Schema.encodeEffect(CloudConfig)(config)
       const dir = path.dirname(cloudConfigPath)
       yield* fs.makeDirectory(dir, { recursive: true })
       yield* fs.writeFileString(cloudConfigPath, JSON.stringify(encoded, null, 2))

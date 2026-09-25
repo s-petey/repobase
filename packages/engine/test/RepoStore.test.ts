@@ -1,6 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Layer, Option } from "effect"
-import { FileSystem } from "@effect/platform"
+import { Effect, FileSystem, Layer, Option } from "effect"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { layer as RepoStoreLayer } from "../src/services/RepoStore.js"
 import { RepoConfig, RepoStoreData } from "../src/schemas.js"
@@ -14,7 +13,7 @@ const createMockFileSystem = (initialData: Record<string, string> = {}) => {
   const files = new Map<string, string>(Object.entries(initialData))
   const directories = new Set<string>()
 
-  return FileSystem.FileSystem.of({
+  return FileSystem.makeNoop({
     exists: (path) => Effect.succeed(files.has(path) || directories.has(path)),
     readFileString: (path) => {
       const content = files.get(path)
@@ -34,45 +33,7 @@ const createMockFileSystem = (initialData: Record<string, string> = {}) => {
     makeDirectory: (path, _options) => {
       directories.add(path)
       return Effect.succeed(void 0)
-    },
-    // Stub implementations for unused methods
-    access: () => Effect.succeed(void 0),
-    chmod: () => Effect.succeed(void 0),
-    chown: () => Effect.succeed(void 0),
-    copy: () => Effect.succeed(void 0),
-    copyFile: () => Effect.succeed(void 0),
-    link: () => Effect.succeed(void 0),
-    makeTempDirectory: () => Effect.succeed("/tmp/test"),
-    makeTempDirectoryScoped: () => Effect.succeed("/tmp/test"),
-    makeTempFile: () => Effect.succeed("/tmp/test-file"),
-    makeTempFileScoped: () => Effect.succeed("/tmp/test-file"),
-    open: () => Effect.die("not implemented"),
-    readDirectory: () => Effect.succeed([]),
-    readFile: () => Effect.succeed(new Uint8Array()),
-    readLink: () => Effect.succeed(""),
-    realPath: (path) => Effect.succeed(path),
-    remove: () => Effect.succeed(void 0),
-    rename: () => Effect.succeed(void 0),
-    sink: () => Effect.die("not implemented"),
-    stat: () =>
-      Effect.succeed({
-        type: "File",
-        size: 0,
-        mtime: new Date(),
-        atime: new Date(),
-        ctime: new Date(),
-        mode: 0o644,
-        uid: 1000,
-        gid: 1000,
-        dev: 0,
-        ino: 0
-      } as any),
-    stream: () => Effect.die("not implemented"),
-    symlink: () => Effect.succeed(void 0),
-    truncate: () => Effect.succeed(void 0),
-    utimes: () => Effect.succeed(void 0),
-    watch: () => Effect.die("not implemented"),
-    writeFile: () => Effect.succeed(void 0)
+    }
   })
 }
 

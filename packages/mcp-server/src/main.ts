@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { BunContext } from "@effect/platform-bun"
+import { BunServices } from "@effect/platform-bun"
 import { 
   RepobaseEngine, 
   RepobaseEngineLayer,
@@ -25,7 +25,7 @@ const MainLayer = Layer.mergeAll(
   EngineLive,
   IndexerLayer
 ).pipe(
-  Layer.provide(BunContext.layer)
+  Layer.provide(BunServices.layer)
 )
 
 // Create a managed runtime with the engine layer

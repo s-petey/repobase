@@ -1,5 +1,4 @@
-import { FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, Option, SubscriptionRef } from "effect"
+import { Context, Effect, FileSystem, Layer, Option, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type { FileChange } from "./GitClient.js"
 import * as os from "os"
@@ -261,10 +260,9 @@ export interface IndexerService {
 /**
  * Indexer service tag
  */
-export class Indexer extends Context.Tag("@repobase/engine/Indexer")<
-  Indexer,
-  IndexerService
->() {}
+export class Indexer extends Context.Service<Indexer, IndexerService>()(
+  "@repobase/engine/Indexer"
+) {}
 
 /**
  * Check if a buffer contains binary data
@@ -497,7 +495,7 @@ export const make = Effect.gen(function* () {
         // Read file
         const bufferResult = yield* fs.readFile(fullPath).pipe(
           Effect.option,
-          Effect.catchAll(() => Effect.succeed({ _tag: "None" as const }))
+          Effect.catch(() => Effect.succeed({ _tag: "None" as const }))
         )
 
         if (bufferResult._tag === "None") {
@@ -567,7 +565,7 @@ export const make = Effect.gen(function* () {
 
               const vector = yield* embedText(file.contents)
               const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
-                Effect.catchAll(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
+                Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
               )
 
               const mtimeMs = Option.match(stat.mtime as Option.Option<Date>, {
@@ -659,7 +657,7 @@ export const make = Effect.gen(function* () {
         }
 
         const exists = yield* fs.exists(fullPath).pipe(
-          Effect.catchAll(() => Effect.succeed(false))
+          Effect.catch(() => Effect.succeed(false))
         )
 
         if (!exists) {
@@ -669,7 +667,7 @@ export const make = Effect.gen(function* () {
 
         const bufferResult = yield* fs.readFile(fullPath).pipe(
           Effect.option,
-          Effect.catchAll(() => Effect.succeed({ _tag: "None" as const }))
+          Effect.catch(() => Effect.succeed({ _tag: "None" as const }))
         )
 
         if (bufferResult._tag === "None") {
@@ -694,7 +692,7 @@ export const make = Effect.gen(function* () {
         const vector = yield* embedText(contents)
         
         const stat = yield* fs.stat(fullPath).pipe(
-          Effect.catchAll(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
+          Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
         )
 
         const mtimeMs = Option.match(stat.mtime as Option.Option<Date>, {
@@ -1141,7 +1139,7 @@ export const make = Effect.gen(function* () {
         const absolutePath = `${getReposDir()}/${file.repo}/${file.path}`
         const contentResult = yield* fs.readFileString(absolutePath).pipe(
           Effect.option,
-          Effect.catchAll(() => Effect.succeed(Option.none()))
+          Effect.catch(() => Effect.succeed(Option.none()))
         )
 
         if (Option.isNone(contentResult)) continue

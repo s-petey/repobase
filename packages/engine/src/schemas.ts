@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 // Repository tracking mode - tracks a branch (auto-updates on sync)
 export const TrackingMode = Schema.Struct({
@@ -13,7 +13,7 @@ export const PinnedMode = Schema.Struct({
 })
 
 // Union of tracking modes
-export const RepoMode = Schema.Union(TrackingMode, PinnedMode)
+export const RepoMode = Schema.Union([TrackingMode, PinnedMode])
 
 // Repository metadata
 export const RepoConfig = Schema.Struct({
@@ -22,11 +22,11 @@ export const RepoConfig = Schema.Struct({
   localPath: Schema.String, // ~/.repobase/repos/<id>
   mode: RepoMode,
   lastSyncedCommit: Schema.OptionFromNullOr(Schema.String),
-  lastSyncedAt: Schema.OptionFromNullOr(Schema.DateFromNumber),
-  addedAt: Schema.DateFromNumber,
+  lastSyncedAt: Schema.OptionFromNullOr(Schema.DateFromMillis),
+  addedAt: Schema.DateFromMillis,
   // Cloud sync fields - wip
-  cloudEnabled: Schema.optionalWith(Schema.Boolean, { default: () => false }),
-  lastPushedAt: Schema.OptionFromNullOr(Schema.DateFromNumber),
+  cloudEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultType(Effect.succeed(false))),
+  lastPushedAt: Schema.OptionFromNullOr(Schema.DateFromMillis),
   lastPushedCommit: Schema.OptionFromNullOr(Schema.String)
 })
 
@@ -51,8 +51,8 @@ export const SyncManifestFile = Schema.Struct({
 
 export const SyncManifest = Schema.Struct({
   version: Schema.Literal(1),
-  lastUpdated: Schema.DateFromNumber,
-  files: Schema.Record({ key: Schema.String, value: SyncManifestFile })
+  lastUpdated: Schema.DateFromMillis,
+  files: Schema.Record(Schema.String, SyncManifestFile)
 })
 
 // Derive types from schemas
