@@ -1,4 +1,5 @@
-#!/usr/bin/env bun
+// No shebang: it makes Bun.build mark the bundle `// @bun`, which Bun then
+// decodes as Latin-1. dist/bin/repobase-mcp.js carries the shebang.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"

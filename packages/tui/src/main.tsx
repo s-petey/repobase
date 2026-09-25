@@ -1,4 +1,6 @@
-#!/usr/bin/env bun
+// No shebang here: Bun.build turns a `#!/usr/bin/env bun` entry into a bundle
+// marked `// @bun`, and Bun then decodes that bundle as Latin-1, garbling every
+// non-ASCII character in the TUI. dist/bin/repobase.js carries the shebang.
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { BunRuntime, BunServices } from "@effect/platform-bun"
