@@ -1,13 +1,8 @@
-import { TextAttributes, type InputRenderable } from "@opentui/core"
-import { useRenderer, useKeyboard } from "@opentui/react"
-import { useEffect, useRef, useState } from "react"
+import { TextAttributes } from "@opentui/core"
+import { useKeyboard } from "@opentui/react"
+import { useState } from "react"
 import type { SearchMode } from "@repobase/engine"
 import { colors } from "../theme/index.js"
-
-interface PasteEvent {
-  text: string
-  preventDefault: () => void
-}
 
 interface SearchModalProps {
   onSubmit: (query: string, mode: SearchMode) => void
@@ -22,25 +17,10 @@ const SEARCH_MODES: { mode: SearchMode; label: string; description: string }[] =
   { mode: "hybrid", label: "Hybrid", description: "Combined keyword + semantic" },
 ]
 
+// Paste is handled natively by the focused <input> (opentui >= 0.5)
 export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalProps) => {
-  const renderer = useRenderer()
-  const inputRef = useRef<InputRenderable | null>(null)
   const [selectedModeIndex, setSelectedModeIndex] = useState(2) // Default to hybrid
   const [inputFocused, setInputFocused] = useState(true)
-
-  // Listen for paste events on the renderer's keyInput
-  useEffect(() => {
-    const handlePaste = (event: PasteEvent) => {
-      if (inputRef.current && inputFocused) {
-        inputRef.current.insertText(event.text)
-      }
-    }
-
-    renderer?.keyInput.on("paste", handlePaste)
-    return () => {
-      renderer?.keyInput.off("paste", handlePaste)
-    }
-  }, [renderer, inputFocused])
 
   // Handle keyboard navigation for mode selection
   useKeyboard((key) => {
@@ -114,9 +94,11 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
         }}
       >
         <input
-          ref={(r: InputRenderable | null) => { inputRef.current = r }}
           placeholder="Enter search query..."
           onInput={onInput}
+          // opentui types <input onSubmit> as both (value: string) and Textarea's
+          // (event: SubmitEvent); at runtime an <input> always receives the string value.
+          // @ts-expect-error - onSubmit is called with a string value, not a SubmitEvent
           onSubmit={handleSubmit}
           focused={inputFocused}
           style={{
