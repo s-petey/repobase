@@ -12,9 +12,9 @@ export default defineConfig({
         dark: './src/assets/logo-dark.svg',
         replacesTitle: false,
       },
-      social: {
-        github: 'https://github.com/fernandoabolafio/repobase',
-      },
+      social: [
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/fernandoabolafio/repobase' },
+      ],
       customCss: [
         './src/styles/custom.css',
       ],
