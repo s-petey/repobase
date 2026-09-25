@@ -41,7 +41,9 @@ export class RepoAlreadyExistsError extends Schema.TaggedError<RepoAlreadyExists
  */
 export class IndexError extends Schema.TaggedError<IndexError>()("IndexError", {
   operation: Schema.String,
-  message: Schema.String
+  message: Schema.String,
+  // The file being processed when the error happened, if any
+  path: Schema.optional(Schema.String)
 }) {}
 
 /**

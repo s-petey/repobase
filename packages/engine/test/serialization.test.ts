@@ -56,7 +56,8 @@ describe("serialization", () => {
             { path: "a.ts", hash: "aaa" },
             { path: "b/c.ts", hash: "bbb" }
           ],
-          toDelete: ["old.ts"]
+          toDelete: ["old.ts"],
+          skipped: 4
         }
         const { decoded } = yield* roundTrip(IndexPlan, value)
         expect(decoded).toEqual(value)

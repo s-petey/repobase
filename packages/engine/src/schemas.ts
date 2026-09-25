@@ -67,10 +67,19 @@ export const IndexPlanFile = Schema.Struct({
   hash: Schema.String
 })
 
-// What an indexing run will change: files to embed and paths to drop
+// What an indexing run will change: files to embed and paths to drop.
+// `skipped` counts files left alone (unchanged, binary, ignored or unreadable).
 export const IndexPlan = Schema.Struct({
   toIndex: Schema.Array(IndexPlanFile),
-  toDelete: Schema.Array(Schema.String)
+  toDelete: Schema.Array(Schema.String),
+  skipped: Schema.Number
+})
+
+// Result of indexing one batch of planned files. A planned file that is gone
+// or binary by the time its batch runs is skipped and removed from the index.
+export const IndexBatchResult = Schema.Struct({
+  indexed: Schema.Number,
+  skipped: Schema.Number
 })
 
 // Summary of an indexing operation
@@ -136,6 +145,7 @@ export type SyncManifest = Schema.Schema.Type<typeof SyncManifest>
 export type FileChange = Schema.Schema.Type<typeof FileChange>
 export type IndexPlanFile = Schema.Schema.Type<typeof IndexPlanFile>
 export type IndexPlan = Schema.Schema.Type<typeof IndexPlan>
+export type IndexBatchResult = Schema.Schema.Type<typeof IndexBatchResult>
 export type IndexSummary = Schema.Schema.Type<typeof IndexSummary>
 export type IndexingProgress = Schema.Schema.Type<typeof IndexingProgress>
 export type SearchMode = Schema.Schema.Type<typeof SearchMode>

@@ -84,8 +84,10 @@ async function createBinWrappers() {
   
   await mkdir(join(DIST, "bin"), { recursive: true })
   
-  // TUI wrapper - uses bun for @opentui compatibility
-  const tuiBin = `#!/usr/bin/env bun
+  // TUI wrapper - uses bun for @opentui compatibility. LANCEDB_LOG=error keeps
+  // LanceDB's Rust warnings off stderr, where they draw over the TUI; it must be
+  // set at process start (see "LanceDB log level" in the README).
+  const tuiBin = `#!/usr/bin/env -S LANCEDB_LOG=error bun
 import "../tui/main.js"
 `
   await Bun.write(join(DIST, "bin/repobase.js"), tuiBin)

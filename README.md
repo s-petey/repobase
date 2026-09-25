@@ -80,6 +80,16 @@ bun run test
 bun run build
 ```
 
+### LanceDB log level
+
+The TUI starts with `LANCEDB_LOG=error`: `bun run dev:tui` sets it through the TUI's `start` script, and the published `repobase` command sets it in the shebang of `dist/bin/repobase.js`.
+
+LanceDB's Rust core logs warnings to stderr, and anything on stderr draws over the terminal UI. Hybrid search always triggers one: a deprecation warning about `_score`/`_distance` auto-projection that comes from LanceDB's internal sub-queries. LanceDB 0.39 has no JS API to turn that off, so the only fix is the log level. Errors are still logged.
+
+It has to be set when the process starts. LanceDB reads `LANCEDB_LOG` once, when its native addon loads, and under Bun a `process.env` change made at runtime doesn't reach native code. That's why it lives in the launch commands rather than in the Indexer.
+
+To see LanceDB's warnings or debug output while developing, set your own level; the `start` script keeps it: `LANCEDB_LOG=debug bun run dev:tui`. The published `repobase` command always forces `error`, because a shebang can't fall back to an existing value. To use another level there, run the bundle directly: `LANCEDB_LOG=debug bun "$(npm root -g)/repobase/dist/tui/main.js"`.
+
 ### Dependency versions
 
 Versions shared between workspace packages live in the [catalog](https://bun.com/docs/pm/catalogs) under `workspaces.catalog` in the root `package.json`; packages reference them with `"catalog:"`. To bump a shared dependency, change it in the catalog.

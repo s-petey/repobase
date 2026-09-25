@@ -1,17 +1,30 @@
-import { Context, Effect, FileSystem, Layer, Option, SubscriptionRef } from "effect"
+import { Array as Arr, Context, Effect, FileSystem, Layer, Option, Schedule, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
+  IndexBatchResult,
   IndexingProgress,
+  IndexPlan,
+  IndexPlanFile,
   IndexSummary,
   SearchResult
 } from "../schemas.js"
 import * as os from "os"
 import * as crypto from "crypto"
+import micromatch from "micromatch"
 
 // Configuration
 const INDEX_DIR = `${os.homedir()}/.repobase/index`
 const FILES_TABLE = "files"
+
+/**
+ * Files embedded and written per indexBatch call. Each batch is one LanceDB
+ * write, and the unit a failed index job retries.
+ */
+export const INDEX_BATCH_SIZE = 50
+
+// Max ids per `id IN (...)` delete, to keep the SQL predicate a sane size
+const DELETE_CHUNK_SIZE = 500
 const MAX_FILE_SIZE = 64 * 1024 // 64KB
 const EMBEDDING_DIMENSION = 384
 const MODEL_ID = "Xenova/all-MiniLM-L6-v2"
@@ -86,6 +99,23 @@ export const initialIndexingProgress: IndexingProgress = {
 export interface IndexOptions {
   force?: boolean // Force full re-index even if files haven't changed
   progressRef?: SubscriptionRef.SubscriptionRef<IndexingProgress>
+}
+
+/**
+ * Options for indexing one batch of files
+ */
+export interface IndexBatchOptions {
+  // Called before each file in the batch is processed
+  readonly onFile?: (path: string) => Effect.Effect<void>
+}
+
+/**
+ * Where the index lives and, for tests, how text is embedded
+ */
+export interface IndexerConfig {
+  readonly indexDir: string
+  // Replaces the transformers embedding model (e.g. a deterministic fake in tests)
+  readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
 }
 
 /**
@@ -184,9 +214,39 @@ export interface IndexerService {
   readonly indexChanges: (
     repoId: string,
     repoPath: string,
-    changes: FileChange[]
+    changes: ReadonlyArray<FileChange>
   ) => Effect.Effect<IndexSummary, IndexError>
   readonly removeIndex: (repoId: string) => Effect.Effect<void, IndexError>
+
+  // Indexing building blocks: indexRepo/indexChanges are plan → deletePaths →
+  // indexBatch per chunk → finalizeIndex. Each is safe to re-run.
+
+  // Scan the whole repo and compare against indexed hashes
+  readonly planFullIndex: (
+    repoId: string,
+    repoPath: string,
+    options?: { readonly force?: boolean }
+  ) => Effect.Effect<IndexPlan, IndexError>
+  // Turn a git diff into a plan without scanning the repo
+  readonly planChanges: (
+    repoId: string,
+    repoPath: string,
+    changes: ReadonlyArray<FileChange>
+  ) => Effect.Effect<IndexPlan, IndexError>
+  // Remove files from the index
+  readonly deletePaths: (
+    repoId: string,
+    paths: ReadonlyArray<string>
+  ) => Effect.Effect<void, IndexError>
+  // Read, embed and upsert files; writes the whole batch at once
+  readonly indexBatch: (
+    repoId: string,
+    repoPath: string,
+    files: ReadonlyArray<IndexPlanFile>,
+    options?: IndexBatchOptions
+  ) => Effect.Effect<IndexBatchResult, IndexError>
+  // Compact the table and rebuild the full-text index
+  readonly finalizeIndex: () => Effect.Effect<void, IndexError>
 
   // Search
   readonly searchKeyword: (
@@ -256,14 +316,8 @@ function hashBuffer(buffer: Uint8Array): string {
  * Check if a path should be ignored based on patterns
  */
 function shouldIgnore(path: string): boolean {
-  return DEFAULT_IGNORE_PATTERNS.some((pattern) => {
-    // Convert glob pattern to regex
-    const regexStr = pattern
-      .replace(/\*\*/g, ".*")
-      .replace(/\*/g, "[^/]*")
-      .replace(/\./g, "\\.")
-    return new RegExp(regexStr).test(path)
-  })
+  // Same patterns and dotfile handling as the fast-glob scan in planFullIndex
+  return micromatch.isMatch(path, DEFAULT_IGNORE_PATTERNS, { dot: true })
 }
 
 /**
@@ -308,9 +362,36 @@ function validatePath(filePath: string): Effect.Effect<void, IndexError> {
 }
 
 /**
- * Create the Indexer service implementation
+ * Quote a value as an SQL string literal for LanceDB filters
  */
-export const make = Effect.gen(function* () {
+const sqlString = (value: string) => `'${value.replaceAll("'", "''")}'`
+
+/**
+ * Row id of a file in the index
+ */
+const recordId = (repoId: string, path: string) => `${repoId}:${path}`
+
+/**
+ * LanceDB rejects a write whose base version changed underneath it when
+ * another writer (a worker thread or the MCP server) committed first. It
+ * retries internally; this covers conflicts that still surface.
+ */
+const isCommitConflict = (error: IndexError) =>
+  /commit conflict|conflicting|retryable|concurrent/i.test(error.message)
+
+const retryOnCommitConflict = <A>(effect: Effect.Effect<A, IndexError>) =>
+  effect.pipe(
+    Effect.retry({
+      while: isCommitConflict,
+      schedule: Schedule.exponential("50 millis"),
+      times: 5
+    })
+  )
+
+/**
+ * Create an Indexer for a given index directory
+ */
+export const makeWith = (config: IndexerConfig) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
 
   // Initialize LanceDB connection lazily
@@ -323,15 +404,15 @@ export const make = Effect.gen(function* () {
 
   const getDb = Effect.gen(function* () {
     if (db) return db
-    yield* fs.makeDirectory(INDEX_DIR, { recursive: true }).pipe(Effect.ignore)
-    
+    yield* fs.makeDirectory(config.indexDir, { recursive: true }).pipe(Effect.ignore)
+
     const lancedb = yield* Effect.tryPromise({
       try: () => import("@lancedb/lancedb"),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to import lancedb: ${e}` })
     })
-    
+
     db = yield* Effect.tryPromise({
-      try: () => lancedb.connect(INDEX_DIR),
+      try: () => lancedb.connect(config.indexDir),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to connect to LanceDB: ${e}` })
     })
     return db
@@ -383,12 +464,12 @@ export const make = Effect.gen(function* () {
 
     const transformers = yield* Effect.tryPromise({
       try: () => import("@xenova/transformers"),
-      catch: (e) => new IndexError({ operation: "embed", message: `Failed to import transformers: ${e}` })
+      catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to import transformers: ${e}` })
     })
 
     embedder = yield* Effect.tryPromise({
       try: () => transformers.pipeline("feature-extraction", MODEL_ID),
-      catch: (e) => new IndexError({ operation: "embed", message: `Failed to load embedding model: ${e}` })
+      catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to load embedding model: ${e}` })
     })
 
     return embedder
@@ -396,6 +477,13 @@ export const make = Effect.gen(function* () {
 
   const embedText = (text: string): Effect.Effect<number[], IndexError> =>
     Effect.gen(function* () {
+      if (config.embed) {
+        const embed = config.embed
+        return yield* Effect.tryPromise({
+          try: async () => [...(await embed(text))],
+          catch: (e) => new IndexError({ operation: "embed", message: `Failed to embed text: ${e}` })
+        })
+      }
       const model = yield* getEmbedder
       const output = yield* Effect.tryPromise({
         try: () => model(text.trim() || " ", { pooling: "mean", normalize: true }),
@@ -405,40 +493,37 @@ export const make = Effect.gen(function* () {
       return Array.from((output as any).data as Float32Array)
     })
 
-  // Full repository indexing
-  const indexRepo: IndexerService["indexRepo"] = (repoId, repoPath, options) =>
+  // Read a file for indexing; None if it is gone, unreadable or binary
+  const readIndexable = (repoPath: string, filePath: string) =>
+    fs.readFile(`${repoPath}/${filePath}`).pipe(
+      Effect.map((buffer) => (isBinary(buffer) ? Option.none() : Option.some(buffer))),
+      Effect.orElseSucceed(() => Option.none<Uint8Array>())
+    )
+
+  const planFullIndex: IndexerService["planFullIndex"] = (repoId, repoPath, options) =>
     Effect.gen(function* () {
-      const startTime = Date.now()
-      const tbl = yield* getTable
       const force = options?.force ?? false
-      const progressRef = options?.progressRef
-
-      // Helper to update progress
-      const updateProgress = (update: Partial<IndexingProgress>) =>
-        progressRef
-          ? SubscriptionRef.update(progressRef, (prev) => ({ ...prev, ...update }))
-          : Effect.void
-
-      yield* updateProgress({ phase: "scanning", filesProcessed: 0, totalFiles: 0 })
+      const tbl = yield* getTable.pipe(
+        Effect.mapError((e) => new IndexError({ ...e, operation: "planIndex.queryExisting" }))
+      )
 
       // Get existing records for this repo
       const existing = yield* Effect.tryPromise({
         try: () =>
           tbl
             .query()
-            .where(`repo = '${repoId}'`)
+            .where(`repo = ${sqlString(repoId)}`)
             .select(["path", "hash"])
             .toArray() as Promise<Array<{ path: string; hash: string }>>,
-        catch: (e) => new IndexError({ operation: "indexRepo", message: `Failed to query existing: ${e}` })
+        catch: (e) =>
+          new IndexError({ operation: "planIndex.queryExisting", message: `Failed to query existing: ${e}` })
       })
-      const existingByPath = new Map(
-        existing.map((r) => [r.path, r.hash])
-      )
+      const existingByPath = new Map(existing.map((r) => [r.path, r.hash]))
 
       // Find all files using glob
       const glob = yield* Effect.tryPromise({
         try: () => import("fast-glob"),
-        catch: (e) => new IndexError({ operation: "indexRepo", message: `Failed to import fast-glob: ${e}` })
+        catch: (e) => new IndexError({ operation: "planIndex.glob", message: `Failed to import fast-glob: ${e}` })
       })
 
       const files = yield* Effect.tryPromise({
@@ -449,253 +534,234 @@ export const make = Effect.gen(function* () {
             onlyFiles: true,
             dot: true
           }),
-        catch: (e) => new IndexError({ operation: "indexRepo", message: `Failed to glob files: ${e}` })
+        catch: (e) => new IndexError({ operation: "planIndex.glob", message: `Failed to glob files: ${e}` })
       })
 
       const seenPaths = new Set<string>()
-      const toIndex: Array<{ path: string; contents: string; hash: string }> = []
+      const toIndex: Array<IndexPlanFile> = []
       let skipped = 0
 
       for (const filePath of files) {
         seenPaths.add(filePath)
-        const fullPath = `${repoPath}/${filePath}`
-
-        // Read file
-        const bufferResult = yield* fs.readFile(fullPath).pipe(
-          Effect.option,
-          Effect.catch(() => Effect.succeed({ _tag: "None" as const }))
-        )
-
-        if (bufferResult._tag === "None") {
-          skipped++
-          continue
-        }
-        const buffer = bufferResult.value
-
-        // Skip binary files
-        if (isBinary(buffer)) {
+        const buffer = yield* readIndexable(repoPath, filePath)
+        if (Option.isNone(buffer)) {
           skipped++
           continue
         }
 
         // Check hash for changes
-        const hash = hashBuffer(buffer)
+        const hash = hashBuffer(buffer.value)
         if (!force && existingByPath.get(filePath) === hash) {
           skipped++
           continue
         }
-
-        const contents = new TextDecoder().decode(buffer).slice(0, MAX_FILE_SIZE)
-        toIndex.push({ path: filePath, contents, hash })
+        toIndex.push({ path: filePath, hash })
       }
 
-      // Find deleted files
+      // Indexed files that are no longer in the repo
       const toDelete = [...existingByPath.keys()].filter((p) => !seenPaths.has(p))
 
-      // Update progress with total files to index
-      yield* updateProgress({ 
-        phase: "indexing", 
-        filesProcessed: 0, 
-        totalFiles: toIndex.length 
+      return { toIndex, toDelete, skipped }
+    })
+
+  const planChanges: IndexerService["planChanges"] = (_repoId, repoPath, changes) =>
+    Effect.gen(function* () {
+      const toIndex: Array<IndexPlanFile> = []
+      const toDelete: Array<string> = []
+      let skipped = 0
+
+      for (const change of changes) {
+        if (change.status === "D") {
+          toDelete.push(change.path)
+          continue
+        }
+        if (shouldIgnore(change.path)) {
+          skipped++
+          continue
+        }
+        const buffer = yield* readIndexable(repoPath, change.path)
+        if (Option.isNone(buffer)) {
+          // Added/modified but gone or now binary: drop any stale row
+          toDelete.push(change.path)
+          continue
+        }
+        toIndex.push({ path: change.path, hash: hashBuffer(buffer.value) })
+      }
+
+      return { toIndex, toDelete, skipped }
+    })
+
+  const deletePaths: IndexerService["deletePaths"] = (repoId, paths) =>
+    Effect.gen(function* () {
+      if (paths.length === 0) return
+      const tbl = yield* getTable
+      for (const chunk of Arr.chunksOf(paths, DELETE_CHUNK_SIZE)) {
+        const ids = chunk.map((p) => sqlString(recordId(repoId, p))).join(", ")
+        yield* retryOnCommitConflict(
+          Effect.tryPromise({
+            try: () => tbl.delete(`id IN (${ids})`),
+            catch: (e) => new IndexError({ operation: "deletePaths", message: `Failed to delete: ${e}` })
+          })
+        )
+      }
+    })
+
+  const indexBatch: IndexerService["indexBatch"] = (repoId, repoPath, files, options) =>
+    Effect.gen(function* () {
+      const tbl = yield* getTable
+      const records: Array<Record<string, unknown>> = []
+      const gone: Array<string> = []
+
+      for (const file of files) {
+        if (options?.onFile) yield* options.onFile(file.path)
+
+        // Re-read: the file may have changed or disappeared since planning
+        const buffer = yield* readIndexable(repoPath, file.path)
+        if (Option.isNone(buffer)) {
+          gone.push(file.path)
+          continue
+        }
+
+        const contents = new TextDecoder().decode(buffer.value).slice(0, MAX_FILE_SIZE)
+        const vector = yield* embedText(contents).pipe(
+          Effect.mapError((e) =>
+            new IndexError({
+              operation: e.operation === "loadEmbedder" ? e.operation : "indexBatch.embed",
+              message: e.message,
+              path: file.path
+            })
+          )
+        )
+        const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
+          Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
+        )
+        const mtimeMs = Option.match(stat.mtime as Option.Option<Date>, {
+          onNone: () => Date.now(),
+          onSome: (d) => d.getTime()
+        })
+
+        records.push({
+          id: recordId(repoId, file.path),
+          repo: repoId,
+          path: file.path,
+          filename: file.path.split("/").pop() ?? file.path,
+          contents,
+          mtime_ms: Math.trunc(mtimeMs),
+          size_bytes: Number(stat.size),
+          hash: hashBuffer(buffer.value),
+          vector
+        })
+      }
+
+      // Upsert by id, so re-running a batch never duplicates rows
+      if (records.length > 0) {
+        yield* retryOnCommitConflict(
+          Effect.tryPromise({
+            try: () =>
+              tbl.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(records),
+            catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to write batch: ${e}` })
+          })
+        )
+      }
+      yield* deletePaths(repoId, gone).pipe(
+        Effect.mapError((e) => new IndexError({ ...e, operation: "indexBatch.write" }))
+      )
+
+      return { indexed: records.length, skipped: gone.length }
+    })
+
+  const finalizeIndex: IndexerService["finalizeIndex"] = () =>
+    Effect.gen(function* () {
+      const tbl = yield* getTable
+      const lancedb = yield* Effect.tryPromise({
+        try: () => import("@lancedb/lancedb"),
+        catch: (e) => new IndexError({ operation: "finalizeIndex", message: `Failed to import lancedb: ${e}` })
+      })
+      // Merge the small fragments left by per-batch writes, then rebuild FTS
+      yield* retryOnCommitConflict(
+        Effect.tryPromise({
+          try: () => tbl.optimize(),
+          catch: (e) => new IndexError({ operation: "finalizeIndex", message: `Failed to compact index: ${e}` })
+        })
+      )
+      yield* retryOnCommitConflict(
+        Effect.tryPromise({
+          try: () => tbl.createIndex("contents", { config: lancedb.Index.fts(), replace: true }),
+          catch: (e) =>
+            new IndexError({ operation: "finalizeIndex", message: `Failed to build full-text index: ${e}` })
+        })
+      )
+    })
+
+  // Apply a plan: drop removed files, index in batches, finalize
+  const applyPlan = (
+    repoId: string,
+    repoPath: string,
+    plan: IndexPlan,
+    updateProgress: (update: Partial<IndexingProgress>) => Effect.Effect<void>
+  ) =>
+    Effect.gen(function* () {
+      const startTime = Date.now()
+      yield* updateProgress({ phase: "indexing", filesProcessed: 0, totalFiles: plan.toIndex.length })
+
+      yield* deletePaths(repoId, plan.toDelete)
+
+      let processed = 0
+      let indexed = 0
+      let skipped = plan.skipped
+      for (const batch of Arr.chunksOf(plan.toIndex, INDEX_BATCH_SIZE)) {
+        const result = yield* indexBatch(repoId, repoPath, batch, {
+          onFile: (path) =>
+            Effect.suspend(() => updateProgress({ filesProcessed: processed++, currentFile: path }))
+        })
+        indexed += result.indexed
+        skipped += result.skipped
+      }
+
+      yield* updateProgress({
+        phase: "finalizing",
+        filesProcessed: plan.toIndex.length,
+        totalFiles: plan.toIndex.length,
+        currentFile: undefined
       })
 
-      // Delete removed files from index
-      if (toDelete.length > 0) {
-        for (const path of toDelete) {
-          yield* Effect.tryPromise({
-            try: () => tbl.delete(`id = '${repoId}:${path}'`),
-            catch: (e) => new IndexError({ operation: "indexRepo", message: `Failed to delete: ${e}` })
-          })
-        }
-      }
-
-      // Index new/changed files
-      if (toIndex.length > 0) {
-        // Delete existing records for files being re-indexed
-        for (const file of toIndex) {
-          yield* Effect.tryPromise({
-            try: () => tbl.delete(`id = '${repoId}:${file.path}'`),
-            catch: () => void 0 // Ignore delete errors for non-existent records
-          }).pipe(Effect.ignore)
-        }
-
-        // Generate embeddings and insert - with progress updates
-        let processed = 0
-        const records = yield* Effect.forEach(
-          toIndex,
-          (file) =>
-            Effect.gen(function* () {
-              // Update progress before processing each file
-              yield* updateProgress({ 
-                filesProcessed: processed, 
-                currentFile: file.path 
-              })
-
-              const vector = yield* embedText(file.contents)
-              const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
-                Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
-              )
-
-              const mtimeMs = Option.match(stat.mtime as Option.Option<Date>, {
-                onNone: () => Date.now(),
-                onSome: (d) => d.getTime()
-              })
-
-              processed++
-              
-              return {
-                id: `${repoId}:${file.path}`,
-                repo: repoId,
-                path: file.path,
-                filename: file.path.split("/").pop() ?? file.path,
-                contents: file.contents,
-                mtime_ms: Math.trunc(mtimeMs),
-                size_bytes: Number(stat.size),
-                hash: file.hash,
-                vector
-              }
-            }),
-          { concurrency: 1 } // Process sequentially to avoid overwhelming the embedder
-        )
-
-        yield* updateProgress({ 
-          phase: "finalizing", 
-          filesProcessed: toIndex.length, 
-          totalFiles: toIndex.length,
-          currentFile: undefined
-        })
-
-        yield* Effect.tryPromise({
-          try: () => tbl.add(records),
-          catch: (e) => new IndexError({ operation: "indexRepo", message: `Failed to add records: ${e}` })
-        })
-      }
-
-      // Create/update FTS index (ignore errors for small tables)
-      yield* Effect.tryPromise({
-        try: async () => {
-          const lancedb = await import("@lancedb/lancedb")
-          await tbl.createIndex("contents", {
-            config: lancedb.Index.fts(),
-            replace: true
-          })
-        },
-        catch: () => void 0
-      }).pipe(Effect.ignore)
+      // FTS creation can fail on tiny or empty tables; search still works without it
+      yield* finalizeIndex().pipe(
+        Effect.catch((e) => Effect.logWarning(`Finalizing index for ${repoId} failed: ${e.message}`))
+      )
 
       return {
         repo: repoId,
-        filesIndexed: toIndex.length,
-        filesDeleted: toDelete.length,
+        filesIndexed: indexed,
+        filesDeleted: plan.toDelete.length,
         filesSkipped: skipped,
         durationMs: Date.now() - startTime
       }
+    })
+
+  // Full repository indexing
+  const indexRepo: IndexerService["indexRepo"] = (repoId, repoPath, options) =>
+    Effect.gen(function* () {
+      const startTime = Date.now()
+      const progressRef = options?.progressRef
+      const updateProgress = (update: Partial<IndexingProgress>) =>
+        progressRef
+          ? SubscriptionRef.update(progressRef, (prev) => ({ ...prev, ...update }))
+          : Effect.void
+
+      yield* updateProgress({ phase: "scanning", filesProcessed: 0, totalFiles: 0 })
+      const plan = yield* planFullIndex(repoId, repoPath, { force: options?.force ?? false })
+      const summary = yield* applyPlan(repoId, repoPath, plan, updateProgress)
+      return { ...summary, durationMs: Date.now() - startTime }
     })
 
   // Incremental indexing based on git diff
   const indexChanges: IndexerService["indexChanges"] = (repoId, repoPath, changes) =>
     Effect.gen(function* () {
       const startTime = Date.now()
-      const tbl = yield* getTable
-
-      const deleted = changes.filter((c) => c.status === "D")
-      const addedOrModified = changes.filter(
-        (c) => c.status === "A" || c.status === "M"
-      )
-
-      // Delete removed files
-      for (const change of deleted) {
-        yield* Effect.tryPromise({
-          try: () => tbl.delete(`id = '${repoId}:${change.path}'`),
-          catch: () => void 0
-        }).pipe(Effect.ignore)
-      }
-
-      // Index added/modified files
-      let indexed = 0
-      let skipped = 0
-
-      for (const change of addedOrModified) {
-        const fullPath = `${repoPath}/${change.path}`
-
-        // Check if file should be ignored
-        if (shouldIgnore(change.path)) {
-          skipped++
-          continue
-        }
-
-        const exists = yield* fs.exists(fullPath).pipe(
-          Effect.catch(() => Effect.succeed(false))
-        )
-
-        if (!exists) {
-          skipped++
-          continue
-        }
-
-        const bufferResult = yield* fs.readFile(fullPath).pipe(
-          Effect.option,
-          Effect.catch(() => Effect.succeed({ _tag: "None" as const }))
-        )
-
-        if (bufferResult._tag === "None") {
-          skipped++
-          continue
-        }
-        const buffer = bufferResult.value
-
-        if (isBinary(buffer)) {
-          skipped++
-          continue
-        }
-
-        // Delete existing record
-        yield* Effect.tryPromise({
-          try: () => tbl.delete(`id = '${repoId}:${change.path}'`),
-          catch: () => void 0
-        }).pipe(Effect.ignore)
-
-        // Insert new record
-        const contents = new TextDecoder().decode(buffer).slice(0, MAX_FILE_SIZE)
-        const vector = yield* embedText(contents)
-        
-        const stat = yield* fs.stat(fullPath).pipe(
-          Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
-        )
-
-        const mtimeMs = Option.match(stat.mtime as Option.Option<Date>, {
-          onNone: () => Date.now(),
-          onSome: (d) => d.getTime()
-        })
-
-        yield* Effect.tryPromise({
-          try: () =>
-            tbl.add([
-              {
-                id: `${repoId}:${change.path}`,
-                repo: repoId,
-                path: change.path,
-                filename: change.path.split("/").pop() ?? change.path,
-                contents,
-                mtime_ms: Math.trunc(mtimeMs),
-                size_bytes: Number(stat.size),
-                hash: hashBuffer(buffer),
-                vector
-              }
-            ]),
-          catch: (e) => new IndexError({ operation: "indexChanges", message: `Failed to add: ${e}` })
-        })
-
-        indexed++
-      }
-
-      return {
-        repo: repoId,
-        filesIndexed: indexed,
-        filesDeleted: deleted.length,
-        filesSkipped: skipped,
-        durationMs: Date.now() - startTime
-      }
+      const plan = yield* planChanges(repoId, repoPath, changes)
+      const summary = yield* applyPlan(repoId, repoPath, plan, () => Effect.void)
+      return { ...summary, durationMs: Date.now() - startTime }
     })
 
   // Remove all index data for a repo
@@ -703,7 +769,7 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const tbl = yield* getTable
       yield* Effect.tryPromise({
-        try: () => tbl.delete(`repo = '${repoId}'`),
+        try: () => tbl.delete(`repo = ${sqlString(repoId)}`),
         catch: (e) => new IndexError({ operation: "removeIndex", message: `Failed to delete: ${e}` })
       })
     })
@@ -719,13 +785,14 @@ export const make = Effect.gen(function* () {
       let search = tbl.query().fullTextSearch(query)
 
       if (options?.repo) {
-        search = search.where(`repo = '${options.repo}'`)
+        search = search.where(`repo = ${sqlString(options.repo)}`)
       }
 
+      // Select scores explicitly: LanceDB warns (on stderr, over the TUI) when they're implied
       const results = yield* Effect.tryPromise({
         try: () =>
           search
-            .select(["repo", "path", "filename", "contents"])
+            .select(["repo", "path", "filename", "contents", "_score"])
             .limit(limit)
             .toArray(),
         catch: (e) => new SearchError({ message: `Keyword search failed: ${e}` })
@@ -755,13 +822,13 @@ export const make = Effect.gen(function* () {
       let search = tbl.search(queryVector).column("vector")
 
       if (options?.repo) {
-        search = search.where(`repo = '${options.repo}'`)
+        search = search.where(`repo = ${sqlString(options.repo)}`)
       }
 
       const results = yield* Effect.tryPromise({
         try: () =>
           search
-            .select(["repo", "path", "filename", "contents"])
+            .select(["repo", "path", "filename", "contents", "_distance"])
             .limit(limit)
             .toArray(),
         catch: (e) => new SearchError({ message: `Semantic search failed: ${e}` })
@@ -805,7 +872,7 @@ export const make = Effect.gen(function* () {
         .rerank(reranker)
 
       if (options?.repo) {
-        search = search.where(`repo = '${options.repo}'`)
+        search = search.where(`repo = ${sqlString(options.repo)}`)
       }
 
       const results = yield* Effect.tryPromise({
@@ -1186,6 +1253,11 @@ export const make = Effect.gen(function* () {
     indexRepo,
     indexChanges,
     removeIndex,
+    planFullIndex,
+    planChanges,
+    deletePaths,
+    indexBatch,
+    finalizeIndex,
     searchKeyword,
     searchSemantic,
     searchHybrid,
@@ -1197,6 +1269,16 @@ export const make = Effect.gen(function* () {
 })
 
 /**
+ * Create the Indexer service implementation for ~/.repobase/index
+ */
+export const make = makeWith({ indexDir: INDEX_DIR })
+
+/**
  * Indexer layer - requires FileSystem
  */
 export const layer = Layer.effect(Indexer, make)
+
+/**
+ * Indexer layer for a custom index directory (and, in tests, a fake embedder)
+ */
+export const layerWith = (config: IndexerConfig) => Layer.effect(Indexer, makeWith(config))
