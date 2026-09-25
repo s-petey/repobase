@@ -11,6 +11,18 @@ export const jobFailureMessage = (job: Job): string => {
   return job.status === "interrupted" ? "Stopped before it finished" : `Job ${job.status}`
 }
 
+/**
+ * Whether a finished sync job pulled new commits (it got as far as recording
+ * them), as opposed to being up to date or pinned
+ */
+export const syncUpdated = (job: Job): boolean =>
+  job.status === "completed" && job.steps.some((s) => s.key === "updateStore" && s.status === "done")
+
+/**
+ * Whether a job ended without doing what it set out to
+ */
+export const jobFailed = (job: Job): boolean => job.status === "failed" || job.status === "interrupted"
+
 // The step to describe: the one running, or else the next one to run
 const currentStep = (job: Job) =>
   job.steps.find((s) => s.status === "running") ?? job.steps.find((s) => s.status === "pending")

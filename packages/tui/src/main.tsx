@@ -31,7 +31,7 @@ import {
 } from "@repobase/engine"
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
-import { addRepoProgress, jobFailureMessage } from "./jobProgress.js"
+import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
 
 // File logger for debugging - writes to ~/.repobase/tui.log
 const tuiLogPath = logPath("tui")
@@ -47,7 +47,7 @@ const workerUrl = new URL(
 const workerCount = resolveHostWorkerCount()
 const jobWorkers = splitPools(workerCount.count).jobs
 
-// Add-repo runs as a job: steps checkpointed on disk, heavy work on workers
+// Add and sync run as jobs: steps checkpointed on disk, heavy work on workers
 const JobsLive = JobRunnerLayer(makeJobDefinitions(defaultDefinitionsConfig()), {
   concurrency: jobWorkers
 }).pipe(
@@ -56,8 +56,8 @@ const JobsLive = JobRunnerLayer(makeJobDefinitions(defaultDefinitionsConfig()), 
   )
 )
 
-// Sync and search still run through RepobaseEngine on this thread until they
-// move to jobs too. RepoStore is shared by the engine and the job definitions.
+// Search and remove still run through RepobaseEngine on this thread. RepoStore
+// is shared by the engine and the job definitions.
 const EngineLive = Layer.mergeAll(
   RepobaseEngineLayer.pipe(Layer.provide(GitClientLayer), Layer.provide(IndexerLayer)),
   JobsLive
@@ -103,6 +103,12 @@ const program = Effect.gen(function* () {
   // Completed by the App when the user quits
   const quit = yield* Deferred.make<void>()
 
+  // Run a sync job to the end
+  const runSync = (repoId: string) =>
+    runner
+      .start({ kind: "syncRepo", repoId, payload: {} })
+      .pipe(Effect.flatMap((job) => runner.await(job.id)))
+
   // Render the app
   createRoot(renderer).render(
     <App
@@ -145,14 +151,41 @@ const program = Effect.gen(function* () {
       onRemoveRepo={(id: string) => runPromise(engine.removeRepo(id))}
       onSyncRepo={(id: string) =>
         runPromise(
-          engine.syncRepo(id).pipe(Effect.map((result) => ({ updated: result.updated })))
+          runSync(id).pipe(
+            Effect.flatMap((job) =>
+              jobFailed(job)
+                ? Effect.fail(new Error(jobFailureMessage(job)))
+                : Effect.succeed({ updated: syncUpdated(job) })
+            )
+          )
         )
       }
       onSyncAll={() =>
         runPromise(
-          engine
-            .syncAll()
-            .pipe(Effect.map((results) => results.map((r) => ({ id: r.id, updated: r.updated }))))
+          Effect.gen(function* () {
+            const { repos } = yield* repoStore.load()
+            // One job per repo, all at once; their batches share the worker pool.
+            // A repo that already has a job running is left to that job.
+            const jobs = yield* Effect.forEach(
+              repos,
+              (repo) =>
+                runSync(repo.id).pipe(
+                  Effect.map(Option.some),
+                  Effect.catchTag("JobAlreadyRunningError", () => Effect.succeed(Option.none()))
+                ),
+              { concurrency: "unbounded" }
+            )
+            const finished = jobs.filter(Option.isSome).map((j) => j.value)
+            const failed = finished.filter(jobFailed)
+            if (failed.length > 0) {
+              return yield* Effect.fail(
+                new Error(
+                  `${failed.length} of ${finished.length} syncs failed; ${failed[0].repoId}: ${jobFailureMessage(failed[0])}`
+                )
+              )
+            }
+            return finished.map((job) => ({ id: job.repoId, updated: syncUpdated(job) }))
+          })
         )
       }
       onRefreshRepos={() => runPromise(engine.listRepos())}

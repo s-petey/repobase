@@ -4,9 +4,12 @@ import {
   CloneFailedError,
   DeleteRemovedFailedError,
   EmbedderLoadFailedError,
+  FetchFailedError,
   FinalizeFtsFailedError,
   IndexBatchFailedError,
   PlanIndexFailedError,
+  RemoteBranchMissingError,
+  ResetFailedError,
   ResolveHeadFailedError
 } from "../jobs/errors.js"
 
@@ -93,6 +96,48 @@ export class FinalizeIndex extends Rpc.make("FinalizeIndex", {
 }) {}
 
 /**
+ * Fetch from origin
+ */
+export class Fetch extends Rpc.make("Fetch", {
+  payload: { repoId: Schema.String, localPath: Schema.String },
+  error: FetchFailedError
+}) {}
+
+/**
+ * The commit origin/<branch> points at after a fetch
+ */
+export class RemoteHead extends Rpc.make("RemoteHead", {
+  payload: { repoId: Schema.String, localPath: Schema.String, branch: Schema.String },
+  success: Schema.Struct({ commit: Schema.String }),
+  error: Schema.Union([RemoteBranchMissingError, ResolveHeadFailedError])
+}) {}
+
+/**
+ * Point the working tree at `ref`
+ */
+export class ResetHard extends Rpc.make("ResetHard", {
+  payload: { repoId: Schema.String, localPath: Schema.String, ref: Schema.String },
+  error: ResetFailedError
+}) {}
+
+/**
+ * Plan a sync: diff `from..to` and plan just those files, or scan the whole
+ * repo when there's no previous commit or the diff can't be computed. Writes
+ * the job's plan.json and returns counts, like PlanFullIndex.
+ */
+export class PlanChanges extends Rpc.make("PlanChanges", {
+  payload: {
+    jobId: Schema.String,
+    repoId: Schema.String,
+    localPath: Schema.String,
+    from: Schema.NullOr(Schema.String),
+    to: Schema.String
+  },
+  success: Schema.Struct({ ...PlanSummary.fields, fullScan: Schema.Boolean }),
+  error: PlanIndexFailedError
+}) {}
+
+/**
  * Every operation a worker thread can run for the main thread
  */
 export class StepRpcs extends RpcGroup.make(
@@ -101,5 +146,9 @@ export class StepRpcs extends RpcGroup.make(
   PlanFullIndex,
   DeleteRemoved,
   IndexBatch,
-  FinalizeIndex
+  FinalizeIndex,
+  Fetch,
+  RemoteHead,
+  ResetHard,
+  PlanChanges
 ) {}

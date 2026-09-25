@@ -1,13 +1,7 @@
 import { describe, it, expect } from "@effect/vitest"
-import { BunServices } from "@effect/platform-bun"
-import { Effect, Fiber, Layer, Option, Ref, Stream } from "effect"
-import { RpcTest } from "effect/unstable/rpc"
-import { execSync } from "node:child_process"
-import * as crypto from "node:crypto"
+import { Effect, Fiber, Option, Stream } from "effect"
 import * as nodeFs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
-import { makeJobDefinitions } from "../src/jobs/definitions.js"
 import {
   CloneFailedError,
   formatStepError,
@@ -15,87 +9,11 @@ import {
   isRetryable,
   RepoAlreadyAddedError
 } from "../src/jobs/errors.js"
-import type { Job } from "../src/jobs/Job.js"
-import { JobProgress, layer as JobProgressLayer } from "../src/jobs/JobProgress.js"
-import { JobRunner, layer as JobRunnerLayer } from "../src/jobs/JobRunner.js"
-import { layerWith as JobStoreLayerWith } from "../src/jobs/JobStore.js"
-import type { RepoStoreData } from "../src/schemas.js"
-import { layer as GitClientLayer } from "../src/services/GitClient.js"
-import { Indexer, layerWith as IndexerLayerWith } from "../src/services/Indexer.js"
+import { JobProgress } from "../src/jobs/JobProgress.js"
+import { JobRunner } from "../src/jobs/JobRunner.js"
+import { Indexer } from "../src/services/Indexer.js"
 import { RepoStore } from "../src/services/RepoStore.js"
-import { WorkerClient } from "../src/worker/client.js"
-import { StepRpcs } from "../src/worker/rpcs.js"
-import { HandlersLayer } from "../src/worker/server.js"
-import { trackingMode } from "../src/utils.js"
-
-// The addRepo job end to end: the real step definitions and the real worker
-// handlers (in-process, through RpcTest instead of a thread), with git, LanceDB
-// and the job store in temp directories. Only the embedding model is faked.
-
-const tempDir = (prefix: string) => nodeFs.mkdtempSync(path.join(os.tmpdir(), `repobase-${prefix}-`))
-
-// A git repo with enough files for two index batches
-const makeSourceRepo = (files = 60) => {
-  const dir = tempDir("source")
-  for (let i = 0; i < files; i++) {
-    nodeFs.writeFileSync(path.join(dir, `file-${String(i).padStart(2, "0")}.ts`), `export const value${i} = ${i}\n`)
-  }
-  execSync("git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init", { cwd: dir })
-  return { dir, head: execSync("git rev-parse HEAD", { cwd: dir }).toString().trim() }
-}
-
-let explode = false
-const fakeEmbed = async (text: string) => {
-  if (explode && text.includes("EXPLODE")) throw new Error("model crashed")
-  const seed = crypto.createHash("sha256").update(text).digest()
-  return Array.from({ length: 384 }, (_, i) => seed[i % seed.length] / 255 + 0.01)
-}
-
-const MemoryRepoStore = Layer.effect(
-  RepoStore,
-  Effect.gen(function* () {
-    const data = yield* Ref.make<RepoStoreData>({ version: 1, repos: [] })
-    const load = () => Ref.get(data)
-    return RepoStore.of({
-      load,
-      save: (next) => Ref.set(data, next),
-      getRepo: (id) => load().pipe(Effect.map((d) => Option.fromNullishOr(d.repos.find((r) => r.id === id)))),
-      addRepo: (repo) => Ref.update(data, (d) => ({ ...d, repos: [...d.repos, repo] })),
-      updateRepo: (id, update) =>
-        Ref.update(data, (d) => ({ ...d, repos: d.repos.map((r) => (r.id === id ? { ...r, ...update } : r)) })),
-      removeRepo: (id) => Ref.update(data, (d) => ({ ...d, repos: d.repos.filter((r) => r.id !== id) }))
-    })
-  })
-)
-
-const testEnv = () => {
-  const reposDir = tempDir("repos")
-  const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir: tempDir("index"), embed: fakeEmbed }))
-  const Workers = Layer.effect(WorkerClient)(RpcTest.makeClient(StepRpcs)).pipe(
-    Layer.provide(HandlersLayer),
-    Layer.provideMerge(WorkerSide)
-  )
-  const layer = JobRunnerLayer(makeJobDefinitions({ reposDir }), { concurrency: 2 }).pipe(
-    Layer.provideMerge(Layer.mergeAll(Workers, MemoryRepoStore, JobProgressLayer)),
-    Layer.provideMerge(JobStoreLayerWith({ dir: tempDir("jobs") })),
-    Layer.provide(BunServices.layer)
-  )
-  return { reposDir, layer }
-}
-
-const addRepo = (url: string, repoId = "acme-widgets") =>
-  JobRunner.use((runner) =>
-    runner
-      .start({ kind: "addRepo", repoId, payload: { url, mode: trackingMode("main") } })
-      .pipe(Effect.flatMap((job) => runner.await(job.id)))
-  )
-
-const stepOf = (job: Job, key: string) => job.steps.find((s) => s.key === key)!
-
-const indexedPaths = (repo: string) =>
-  Indexer.use((indexer) => indexer.globFiles("**", { repo, limit: 10_000 })).pipe(
-    Effect.map((files) => files.map((f) => f.path).sort())
-  )
+import { addRepo, embedFailures, indexedPaths, makeSourceRepo, stepOf, testEnv } from "./fixtures/jobEnv.js"
 
 describe("addRepo job", () => {
   it.effect("clones, saves the config and indexes in batches", () => {
@@ -124,7 +42,7 @@ describe("addRepo job", () => {
       const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
       expect(repo.url).toBe(source.dir)
       expect(repo.localPath).toBe(path.join(env.reposDir, "acme-widgets"))
-      expect(Option.getOrThrow(repo.lastSyncedCommit)).toBe(source.head)
+      expect(Option.getOrThrow(repo.lastSyncedCommit)).toBe(source.head())
       expect(nodeFs.existsSync(path.join(repo.localPath, "file-00.ts"))).toBe(true)
 
       expect(yield* indexedPaths("acme-widgets")).toHaveLength(60)
@@ -189,11 +107,11 @@ describe("addRepo job", () => {
 
   it.effect("retries only the failed batch", () => {
     const source = makeSourceRepo()
-    nodeFs.writeFileSync(path.join(source.dir, "file-55.ts"), "EXPLODE\n")
-    execSync("git -c user.email=t@t -c user.name=t commit -qam boom", { cwd: source.dir })
+    source.write("file-55.ts", "EXPLODE\n")
+    source.commit("boom")
     const env = testEnv()
     return Effect.gen(function* () {
-      explode = true
+      embedFailures.explode = true
       const failed = yield* addRepo(source.dir)
 
       // Glob order decides which batch file-55.ts lands in; exactly one fails
@@ -209,7 +127,7 @@ describe("addRepo job", () => {
         /^Indexing batch [12]\/2 failed while embedding file-55\.ts$/
       )
 
-      explode = false
+      embedFailures.explode = false
       const runner = yield* JobRunner
       yield* runner.retry(failed.id)
       const job = yield* runner.await(failed.id)
@@ -221,7 +139,7 @@ describe("addRepo job", () => {
       expect(yield* indexedPaths("acme-widgets")).toHaveLength(60)
     }).pipe(
       Effect.provide(env.layer),
-      Effect.ensuring(Effect.sync(() => (explode = false)))
+      Effect.ensuring(Effect.sync(() => (embedFailures.explode = false)))
     )
   }, 60_000)
 })

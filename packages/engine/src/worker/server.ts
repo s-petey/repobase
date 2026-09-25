@@ -8,11 +8,14 @@ import {
   cloneFailed,
   DeleteRemovedFailedError,
   type EmbedderLoadFailedError,
+  fetchFailed,
   FinalizeFtsFailedError,
   IndexBatchFailedError,
   indexBatchFailed,
   PlanIndexFailedError,
   planIndexFailed,
+  remoteHeadFailed,
+  ResetFailedError,
   ResolveHeadFailedError
 } from "../jobs/errors.js"
 import { JobStore, layer as JobStoreLayer } from "../jobs/JobStore.js"
@@ -117,7 +120,52 @@ export const HandlersLayer = StepRpcs.toLayer(
       FinalizeIndex: ({ repoId }) =>
         indexer
           .finalizeIndex()
-          .pipe(Effect.mapError((e) => new FinalizeFtsFailedError({ repoId, message: e.message })))
+          .pipe(Effect.mapError((e) => new FinalizeFtsFailedError({ repoId, message: e.message }))),
+
+      Fetch: ({ repoId, localPath }) =>
+        git.fetch(localPath).pipe(Effect.mapError(fetchFailed({ repoId }))),
+
+      RemoteHead: ({ repoId, localPath, branch }) =>
+        git.getRemoteHead(localPath, branch).pipe(
+          Effect.map((commit) => ({ commit })),
+          Effect.mapError(remoteHeadFailed({ repoId, branch }))
+        ),
+
+      ResetHard: ({ repoId, localPath, ref }) =>
+        git
+          .resetHard(localPath, ref)
+          .pipe(Effect.mapError((e) => new ResetFailedError({ repoId, ref, message: e.message }))),
+
+      PlanChanges: ({ jobId, repoId, localPath, from, to }) =>
+        Effect.gen(function* () {
+          // Only the files that changed, if git can tell us; otherwise scan everything
+          const changes =
+            from === null
+              ? Option.none()
+              : yield* git.diffNameStatus(localPath, from, to).pipe(
+                  Effect.map(Option.some),
+                  Effect.catch((e) =>
+                    Effect.logWarning(`${repoId}: diff ${from}..${to} failed, re-indexing everything: ${e.message}`).pipe(
+                      Effect.as(Option.none())
+                    )
+                  )
+                )
+          const plan = yield* Option.match(changes, {
+            onNone: () => indexer.planFullIndex(repoId, localPath),
+            onSome: (changed) => indexer.planChanges(repoId, localPath, changed)
+          }).pipe(Effect.mapError(planIndexFailed({ repoId })))
+          yield* jobs
+            .writePlan(jobId, plan)
+            .pipe(
+              Effect.mapError((e) => new PlanIndexFailedError({ repoId, phase: "savePlan", message: e.message }))
+            )
+          return {
+            toIndex: plan.toIndex.length,
+            toDelete: plan.toDelete.length,
+            skipped: plan.skipped,
+            fullScan: Option.isNone(changes)
+          }
+        })
     })
   })
 )

@@ -1,0 +1,110 @@
+// Shared setup for end-to-end job tests: the real step definitions and worker
+// handlers (in-process through RpcTest instead of a thread), with git, LanceDB
+// and the job store in temp directories. Only the embedding model is faked.
+import { BunServices } from "@effect/platform-bun"
+import { Effect, Layer, Option, Ref } from "effect"
+import { RpcTest } from "effect/unstable/rpc"
+import { execSync } from "node:child_process"
+import * as crypto from "node:crypto"
+import * as nodeFs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { makeJobDefinitions } from "../../src/jobs/definitions.js"
+import type { Job } from "../../src/jobs/Job.js"
+import { layer as JobProgressLayer } from "../../src/jobs/JobProgress.js"
+import { JobRunner, layer as JobRunnerLayer } from "../../src/jobs/JobRunner.js"
+import { layerWith as JobStoreLayerWith } from "../../src/jobs/JobStore.js"
+import type { RepoStoreData } from "../../src/schemas.js"
+import { layer as GitClientLayer } from "../../src/services/GitClient.js"
+import { Indexer, layerWith as IndexerLayerWith } from "../../src/services/Indexer.js"
+import { RepoStore } from "../../src/services/RepoStore.js"
+import { trackingMode } from "../../src/utils.js"
+import { WorkerClient } from "../../src/worker/client.js"
+import { StepRpcs } from "../../src/worker/rpcs.js"
+import { HandlersLayer } from "../../src/worker/server.js"
+
+export const tempDir = (prefix: string) => nodeFs.mkdtempSync(path.join(os.tmpdir(), `repobase-${prefix}-`))
+
+const gitCommit = (dir: string, message: string) =>
+  execSync(`git add -A && git -c user.email=t@t -c user.name=t commit -qm ${JSON.stringify(message)}`, { cwd: dir })
+
+/**
+ * A git repo on branch main with `files` small TypeScript files (enough for
+ * two index batches by default), plus helpers to change it
+ */
+export const makeSourceRepo = (files = 60) => {
+  const dir = tempDir("source")
+  for (let i = 0; i < files; i++) {
+    nodeFs.writeFileSync(path.join(dir, `file-${String(i).padStart(2, "0")}.ts`), `export const value${i} = ${i}\n`)
+  }
+  execSync("git init -q -b main", { cwd: dir })
+  gitCommit(dir, "init")
+  const head = () => execSync("git rev-parse HEAD", { cwd: dir }).toString().trim()
+  return {
+    dir,
+    head,
+    write: (file: string, contents: string) => nodeFs.writeFileSync(path.join(dir, file), contents),
+    remove: (file: string) => nodeFs.rmSync(path.join(dir, file)),
+    rename: (from: string, to: string) => execSync(`git mv ${from} ${to}`, { cwd: dir }),
+    commit: (message = "change") => gitCommit(dir, message)
+  }
+}
+
+// Files containing EXPLODE fail to embed while this is on
+export const embedFailures = { explode: false }
+
+const fakeEmbed = async (text: string) => {
+  if (embedFailures.explode && text.includes("EXPLODE")) throw new Error("model crashed")
+  const seed = crypto.createHash("sha256").update(text).digest()
+  return Array.from({ length: 384 }, (_, i) => seed[i % seed.length] / 255 + 0.01)
+}
+
+// config.json in memory, so tests never touch ~/.repobase
+const MemoryRepoStore = Layer.effect(
+  RepoStore,
+  Effect.gen(function* () {
+    const data = yield* Ref.make<RepoStoreData>({ version: 1, repos: [] })
+    const load = () => Ref.get(data)
+    return RepoStore.of({
+      load,
+      save: (next) => Ref.set(data, next),
+      getRepo: (id) => load().pipe(Effect.map((d) => Option.fromNullishOr(d.repos.find((r) => r.id === id)))),
+      addRepo: (repo) => Ref.update(data, (d) => ({ ...d, repos: [...d.repos, repo] })),
+      updateRepo: (id, update) =>
+        Ref.update(data, (d) => ({ ...d, repos: d.repos.map((r) => (r.id === id ? { ...r, ...update } : r)) })),
+      removeRepo: (id) => Ref.update(data, (d) => ({ ...d, repos: d.repos.filter((r) => r.id !== id) }))
+    })
+  })
+)
+
+export const testEnv = () => {
+  const reposDir = tempDir("repos")
+  const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir: tempDir("index"), embed: fakeEmbed }))
+  const Workers = Layer.effect(WorkerClient)(RpcTest.makeClient(StepRpcs)).pipe(
+    Layer.provide(HandlersLayer),
+    Layer.provideMerge(WorkerSide)
+  )
+  const layer = JobRunnerLayer(makeJobDefinitions({ reposDir }), { concurrency: 2 }).pipe(
+    Layer.provideMerge(Layer.mergeAll(Workers, MemoryRepoStore, JobProgressLayer)),
+    Layer.provideMerge(JobStoreLayerWith({ dir: tempDir("jobs") })),
+    Layer.provide(BunServices.layer)
+  )
+  return { reposDir, layer }
+}
+
+const runToEnd = (input: Parameters<JobRunner["Service"]["start"]>[0]) =>
+  JobRunner.use((runner) => runner.start(input).pipe(Effect.flatMap((job) => runner.await(job.id))))
+
+export const addRepo = (url: string, repoId = "acme-widgets") =>
+  runToEnd({ kind: "addRepo", repoId, payload: { url, mode: trackingMode("main") } })
+
+export const syncRepo = (repoId = "acme-widgets") => runToEnd({ kind: "syncRepo", repoId, payload: {} })
+
+export const stepOf = (job: Job, key: string) => job.steps.find((s) => s.key === key)!
+
+export const statuses = (job: Job) => Object.fromEntries(job.steps.map((s) => [s.key, s.status]))
+
+export const indexedPaths = (repo: string) =>
+  Indexer.use((indexer) => indexer.globFiles("**", { repo, limit: 10_000 })).pipe(
+    Effect.map((files) => files.map((f) => f.path).sort())
+  )
