@@ -55,6 +55,75 @@ export const SyncManifest = Schema.Struct({
   files: Schema.Record(Schema.String, SyncManifestFile)
 })
 
+// A file change from git diff: Added, Modified or Deleted (renames arrive as D + A)
+export const FileChange = Schema.Struct({
+  status: Schema.Literals(["A", "M", "D"]),
+  path: Schema.String
+})
+
+// A file the indexer should (re-)index, identified by its content hash
+export const IndexPlanFile = Schema.Struct({
+  path: Schema.String,
+  hash: Schema.String
+})
+
+// What an indexing run will change: files to embed and paths to drop
+export const IndexPlan = Schema.Struct({
+  toIndex: Schema.Array(IndexPlanFile),
+  toDelete: Schema.Array(Schema.String)
+})
+
+// Summary of an indexing operation
+export const IndexSummary = Schema.Struct({
+  repo: Schema.String,
+  filesIndexed: Schema.Number,
+  filesDeleted: Schema.Number,
+  filesSkipped: Schema.Number,
+  durationMs: Schema.Number
+})
+
+// Progress state for indexing operations
+export const IndexingProgress = Schema.Struct({
+  phase: Schema.Literals(["scanning", "indexing", "finalizing"]),
+  filesProcessed: Schema.Number,
+  totalFiles: Schema.Number,
+  currentFile: Schema.optional(Schema.String)
+})
+
+// Search mode
+export const SearchMode = Schema.Literals(["keyword", "semantic", "hybrid"])
+
+// A single search result
+export const SearchResult = Schema.Struct({
+  repo: Schema.String,
+  path: Schema.String,
+  filename: Schema.String,
+  score: Schema.Number,
+  snippet: Schema.optional(Schema.String)
+})
+
+// Stage of adding a repository
+export const AddRepoStage = Schema.Literals(["cloning", "indexing", "complete", "error"])
+
+// Progress state for adding a repository
+export const AddRepoProgress = Schema.Struct({
+  stage: AddRepoStage,
+  progress: Schema.Number, // 0-100
+  message: Schema.String,
+  filesIndexed: Schema.optional(Schema.Number),
+  totalFiles: Schema.optional(Schema.Number),
+  currentFile: Schema.optional(Schema.String)
+})
+
+// Result of a sync operation
+export const SyncResult = Schema.Struct({
+  id: Schema.String,
+  updated: Schema.Boolean,
+  previousCommit: Schema.OptionFromNullOr(Schema.String),
+  currentCommit: Schema.String,
+  indexSummary: Schema.optional(IndexSummary)
+})
+
 // Derive types from schemas
 export type TrackingMode = Schema.Schema.Type<typeof TrackingMode>
 export type PinnedMode = Schema.Schema.Type<typeof PinnedMode>
@@ -64,3 +133,13 @@ export type RepoStoreData = Schema.Schema.Type<typeof RepoStoreData>
 export type CloudConfig = Schema.Schema.Type<typeof CloudConfig>
 export type SyncManifestFile = Schema.Schema.Type<typeof SyncManifestFile>
 export type SyncManifest = Schema.Schema.Type<typeof SyncManifest>
+export type FileChange = Schema.Schema.Type<typeof FileChange>
+export type IndexPlanFile = Schema.Schema.Type<typeof IndexPlanFile>
+export type IndexPlan = Schema.Schema.Type<typeof IndexPlan>
+export type IndexSummary = Schema.Schema.Type<typeof IndexSummary>
+export type IndexingProgress = Schema.Schema.Type<typeof IndexingProgress>
+export type SearchMode = Schema.Schema.Type<typeof SearchMode>
+export type SearchResult = Schema.Schema.Type<typeof SearchResult>
+export type AddRepoStage = Schema.Schema.Type<typeof AddRepoStage>
+export type AddRepoProgress = Schema.Schema.Type<typeof AddRepoProgress>
+export type SyncResult = Schema.Schema.Type<typeof SyncResult>

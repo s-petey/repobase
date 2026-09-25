@@ -8,6 +8,16 @@ export {
   type CloudConfig,
   type SyncManifestFile,
   type SyncManifest,
+  type FileChange,
+  type IndexPlanFile,
+  type IndexPlan,
+  type IndexSummary,
+  type IndexingProgress,
+  type SearchMode,
+  type SearchResult,
+  type AddRepoStage,
+  type AddRepoProgress,
+  type SyncResult,
   TrackingMode as TrackingModeSchema,
   PinnedMode as PinnedModeSchema,
   RepoMode as RepoModeSchema,
@@ -15,7 +25,17 @@ export {
   RepoStoreData as RepoStoreDataSchema,
   CloudConfig as CloudConfigSchema,
   SyncManifestFile as SyncManifestFileSchema,
-  SyncManifest as SyncManifestSchema
+  SyncManifest as SyncManifestSchema,
+  FileChange as FileChangeSchema,
+  IndexPlanFile as IndexPlanFileSchema,
+  IndexPlan as IndexPlanSchema,
+  IndexSummary as IndexSummarySchema,
+  IndexingProgress as IndexingProgressSchema,
+  SearchMode as SearchModeSchema,
+  SearchResult as SearchResultSchema,
+  AddRepoStage as AddRepoStageSchema,
+  AddRepoProgress as AddRepoProgressSchema,
+  SyncResult as SyncResultSchema
 } from "./schemas.js"
 
 // Utils
@@ -37,17 +57,13 @@ export {
 } from "./errors.js"
 
 // Services
-export { GitClient, type GitClientService, type FileChange } from "./services/GitClient.js"
+export { GitClient, type GitClientService } from "./services/GitClient.js"
 export { RepoStore, type RepoStoreService } from "./services/RepoStore.js"
 export {
   Indexer,
   type IndexerService,
-  type IndexSummary,
-  type SearchResult,
   type SearchOptions,
-  type SearchMode,
   type IndexOptions,
-  type IndexingProgress,
   initialIndexingProgress,
   type FileInfo,
   type FileContent,
@@ -62,9 +78,6 @@ export {
   RepobaseEngine,
   type RepobaseEngineService,
   type AddRepoOptions,
-  type AddRepoProgress,
-  type AddRepoStage,
-  type SyncResult,
   initialProgress
 } from "./services/RepobaseEngine.js"
 export {

@@ -1,6 +1,11 @@
 import { Context, Effect, FileSystem, Layer, Option, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
-import type { FileChange } from "./GitClient.js"
+import type {
+  FileChange,
+  IndexingProgress,
+  IndexSummary,
+  SearchResult
+} from "../schemas.js"
 import * as os from "os"
 import * as crypto from "crypto"
 
@@ -59,48 +64,11 @@ const DEFAULT_IGNORE_PATTERNS = [
 ]
 
 /**
- * Summary of an indexing operation
- */
-export interface IndexSummary {
-  repo: string
-  filesIndexed: number
-  filesDeleted: number
-  filesSkipped: number
-  durationMs: number
-}
-
-/**
- * A single search result
- */
-export interface SearchResult {
-  repo: string
-  path: string
-  filename: string
-  score: number
-  snippet?: string
-}
-
-/**
  * Options for search operations
  */
 export interface SearchOptions {
   repo?: string // Filter to specific repo
   limit?: number // Max results (default: 20)
-}
-
-/**
- * Search mode
- */
-export type SearchMode = "keyword" | "semantic" | "hybrid"
-
-/**
- * Progress state for indexing operations
- */
-export interface IndexingProgress {
-  readonly phase: "scanning" | "indexing" | "finalizing"
-  readonly filesProcessed: number
-  readonly totalFiles: number
-  readonly currentFile?: string
 }
 
 /**

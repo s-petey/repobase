@@ -7,34 +7,21 @@ import {
   SearchError,
   StoreError
 } from "../errors.js"
-import { RepoConfig, RepoMode } from "../schemas.js"
+import type {
+  AddRepoProgress,
+  IndexSummary,
+  IndexingProgress,
+  RepoConfig,
+  RepoMode,
+  SearchMode,
+  SearchResult,
+  SyncResult
+} from "../schemas.js"
 import { deriveRepoId, trackingMode } from "../utils.js"
 import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
-import {
-  Indexer,
-  type IndexSummary,
-  type IndexingProgress,
-  type SearchMode,
-  type SearchOptions,
-  type SearchResult,
-  initialIndexingProgress
-} from "./Indexer.js"
+import { Indexer, type SearchOptions, initialIndexingProgress } from "./Indexer.js"
 import * as os from "os"
-
-/**
- * Progress state for adding a repository
- */
-export type AddRepoStage = "cloning" | "indexing" | "complete" | "error"
-
-export interface AddRepoProgress {
-  readonly stage: AddRepoStage
-  readonly progress: number // 0-100
-  readonly message: string
-  readonly filesIndexed?: number
-  readonly totalFiles?: number
-  readonly currentFile?: string
-}
 
 /**
  * Initial progress state
@@ -60,17 +47,6 @@ const calcIndexingProgress = (indexing: IndexingProgress): number => {
 export interface AddRepoOptions {
   readonly mode?: RepoMode
   readonly progressRef?: SubscriptionRef.SubscriptionRef<AddRepoProgress>
-}
-
-/**
- * Result of a sync operation
- */
-export interface SyncResult {
-  readonly id: string
-  readonly updated: boolean
-  readonly previousCommit: Option.Option<string>
-  readonly currentCommit: string
-  readonly indexSummary?: IndexSummary
 }
 
 /**

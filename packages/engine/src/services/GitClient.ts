@@ -1,14 +1,7 @@
 import { Context, Effect, Layer, type PlatformError, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitError } from "../errors.js"
-
-/**
- * Represents a file change from git diff
- */
-export interface FileChange {
-  status: "A" | "M" | "D" // Added, Modified, Deleted
-  path: string
-}
+import type { FileChange } from "../schemas.js"
 
 /**
  * Git client service interface
