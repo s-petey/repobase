@@ -25,11 +25,11 @@ export class Clone extends Rpc.make("Clone", {
 }) {}
 
 /**
- * The commit checked out in a local clone
+ * The commit and branch checked out in a local clone
  */
 export class ResolveHead extends Rpc.make("ResolveHead", {
   payload: { repoId: Schema.String, localPath: Schema.String },
-  success: Schema.Struct({ commit: Schema.String }),
+  success: Schema.Struct({ commit: Schema.String, branch: Schema.String }),
   error: ResolveHeadFailedError
 }) {}
 

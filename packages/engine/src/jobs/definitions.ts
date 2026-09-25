@@ -5,6 +5,7 @@ import * as os from "os"
 import type { RepoConfig } from "../schemas.js"
 import { IndexBatchResult } from "../schemas.js"
 import { INDEX_BATCH_SIZE } from "../services/Indexer.js"
+import { trackingMode } from "../utils.js"
 import { RepoStore } from "../services/RepoStore.js"
 import { WorkerClient } from "../worker/client.js"
 import { PlanSummary } from "../worker/rpcs.js"
@@ -135,9 +136,9 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
         .pipe(Effect.as(null))
   })
 
-  const resolveHead = workerStep<AddRepoJob, { readonly commit: string }>({
+  const resolveHead = workerStep<AddRepoJob, { readonly commit: string; readonly branch?: string }>({
     name: "resolveHead",
-    output: Schema.Struct({ commit: Schema.String }),
+    output: Schema.Struct({ commit: Schema.String, branch: Schema.optional(Schema.String) }),
     run: (ctx, client) => client.ResolveHead({ repoId: ctx.job.repoId, localPath: localPath(ctx.job.repoId) })
   })
 
@@ -149,7 +150,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       Effect.gen(function* () {
         const store = yield* RepoStore
         const { repoId, payload } = ctx.job
-        const { commit } = yield* ctx.output(resolveHead)
+        const { commit, branch } = yield* ctx.output(resolveHead)
         const saveFailed = (e: { readonly message: string }) =>
           new SaveConfigFailedError({ repoId, message: e.message })
 
@@ -169,7 +170,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
           id: repoId,
           url: payload.url,
           localPath: localPath(repoId),
-          mode: payload.mode,
+          mode: payload.mode ?? trackingMode(branch ?? "main"),
           lastSyncedCommit: Option.some(commit),
           lastSyncedAt: Option.some(now),
           addedAt: now,

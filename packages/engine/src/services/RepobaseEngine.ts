@@ -150,8 +150,8 @@ export const make = Effect.gen(function* () {
       // Get current commit
       const currentCommit = yield* git.getCurrentCommit(localPath)
 
-      // Build config
-      const mode = options?.mode ?? trackingMode("main")
+      // Build config: by default, track the branch the clone checked out (the remote's default)
+      const mode = options?.mode ?? trackingMode(yield* git.getCurrentBranch(localPath))
       const repo: RepoConfig = {
         id,
         url,

@@ -13,7 +13,16 @@ import { JobProgress } from "../src/jobs/JobProgress.js"
 import { JobRunner } from "../src/jobs/JobRunner.js"
 import { Indexer } from "../src/services/Indexer.js"
 import { RepoStore } from "../src/services/RepoStore.js"
-import { addRepo, embedFailures, indexedPaths, makeSourceRepo, stepOf, testEnv } from "./fixtures/jobEnv.js"
+import { pinnedMode } from "../src/utils.js"
+import {
+  addRepo,
+  embedFailures,
+  indexedPaths,
+  makeSourceRepo,
+  stepOf,
+  syncRepo,
+  testEnv
+} from "./fixtures/jobEnv.js"
 
 describe("addRepo job", () => {
   it.effect("clones, saves the config and indexes in batches", () => {
@@ -48,6 +57,44 @@ describe("addRepo job", () => {
       expect(yield* indexedPaths("acme-widgets")).toHaveLength(60)
       const results = yield* Indexer.use((indexer) => indexer.searchKeyword("value42", { repo: "acme-widgets" }))
       expect(results.map((r) => r.path)).toContain("file-42.ts")
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
+  it.effect("tracks the repo's default branch, even when it isn't main", () => {
+    const source = makeSourceRepo(3, "master")
+    const env = testEnv()
+    return Effect.gen(function* () {
+      expect((yield* addRepo(source.dir)).status).toBe("completed")
+
+      const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
+      expect(repo.mode).toEqual({ _tag: "tracking", branch: "master" })
+
+      // And syncing that branch works
+      source.write("new.ts", "export const n = 1\n")
+      source.commit()
+      const sync = yield* syncRepo()
+      expect(sync.status).toBe("completed")
+      expect(stepOf(sync, "updateStore").status).toBe("done")
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
+  it.effect("keeps an explicitly requested mode", () => {
+    const source = makeSourceRepo(3, "master")
+    const env = testEnv()
+    return Effect.gen(function* () {
+      const job = yield* JobRunner.use((runner) =>
+        runner
+          .start({
+            kind: "addRepo",
+            repoId: "acme-widgets",
+            payload: { url: source.dir, mode: pinnedMode("v1.0.0") }
+          })
+          .pipe(Effect.flatMap((j) => runner.await(j.id)))
+      )
+      expect(job.status).toBe("completed")
+
+      const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
+      expect(repo.mode).toEqual({ _tag: "pinned", ref: "v1.0.0" })
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 

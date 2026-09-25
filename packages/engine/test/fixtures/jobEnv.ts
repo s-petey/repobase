@@ -18,7 +18,6 @@ import type { RepoStoreData } from "../../src/schemas.js"
 import { layer as GitClientLayer } from "../../src/services/GitClient.js"
 import { Indexer, layerWith as IndexerLayerWith } from "../../src/services/Indexer.js"
 import { RepoStore } from "../../src/services/RepoStore.js"
-import { trackingMode } from "../../src/utils.js"
 import { WorkerClient } from "../../src/worker/client.js"
 import { StepRpcs } from "../../src/worker/rpcs.js"
 import { HandlersLayer } from "../../src/worker/server.js"
@@ -29,15 +28,15 @@ const gitCommit = (dir: string, message: string) =>
   execSync(`git add -A && git -c user.email=t@t -c user.name=t commit -qm ${JSON.stringify(message)}`, { cwd: dir })
 
 /**
- * A git repo on branch main with `files` small TypeScript files (enough for
- * two index batches by default), plus helpers to change it
+ * A git repo whose default branch is `branch`, with `files` small TypeScript
+ * files (enough for two index batches by default), plus helpers to change it
  */
-export const makeSourceRepo = (files = 60) => {
+export const makeSourceRepo = (files = 60, branch = "main") => {
   const dir = tempDir("source")
   for (let i = 0; i < files; i++) {
     nodeFs.writeFileSync(path.join(dir, `file-${String(i).padStart(2, "0")}.ts`), `export const value${i} = ${i}\n`)
   }
-  execSync("git init -q -b main", { cwd: dir })
+  execSync(`git init -q -b ${branch}`, { cwd: dir })
   gitCommit(dir, "init")
   const head = () => execSync("git rev-parse HEAD", { cwd: dir }).toString().trim()
   return {
@@ -95,8 +94,9 @@ export const testEnv = () => {
 const runToEnd = (input: Parameters<JobRunner["Service"]["start"]>[0]) =>
   JobRunner.use((runner) => runner.start(input).pipe(Effect.flatMap((job) => runner.await(job.id))))
 
+// Like the TUI: no mode, so the repo tracks its default branch
 export const addRepo = (url: string, repoId = "acme-widgets") =>
-  runToEnd({ kind: "addRepo", repoId, payload: { url, mode: trackingMode("main") } })
+  runToEnd({ kind: "addRepo", repoId, payload: { url } })
 
 export const syncRepo = (repoId = "acme-widgets") => runToEnd({ kind: "syncRepo", repoId, payload: {} })
 

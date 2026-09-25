@@ -52,8 +52,7 @@ export const HandlersLayer = StepRpcs.toLayer(
         }),
 
       ResolveHead: ({ repoId, localPath }) =>
-        git.getCurrentCommit(localPath).pipe(
-          Effect.map((commit) => ({ commit })),
+        Effect.all({ commit: git.getCurrentCommit(localPath), branch: git.getCurrentBranch(localPath) }).pipe(
           Effect.mapError((e) => new ResolveHeadFailedError({ repoId, message: e.message }))
         ),
 

@@ -48,7 +48,7 @@ export type JobStatus = typeof JobStatus.Type
 
 export const AddRepoPayload = Schema.Struct({
   url: Schema.String,
-  mode: RepoMode
+  mode: Schema.optional(RepoMode)
 })
 export type AddRepoPayload = typeof AddRepoPayload.Type
 

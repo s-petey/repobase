@@ -20,7 +20,6 @@ import {
   makeJobDefinitions,
   defaultDefinitionsConfig,
   deriveRepoId,
-  trackingMode,
   fileLoggerLayer,
   layerWorkerPool,
   logPath,
@@ -120,11 +119,7 @@ const program = Effect.gen(function* () {
               try: () => deriveRepoId(url),
               catch: () => new Error(`Not a GitHub repository URL: ${url}`)
             })
-            const job = yield* runner.start({
-              kind: "addRepo",
-              repoId,
-              payload: { url, mode: trackingMode("main") }
-            })
+            const job = yield* runner.start({ kind: "addRepo", repoId, payload: { url } })
 
             // Show the job's steps and per-file indexing progress in the modal
             const reporter = yield* Stream.zipLatest(runner.changes, progress.changes).pipe(

@@ -19,6 +19,7 @@ const mockCommands: Record<string, MockCommand> = {
   "git clone --depth 1 https://github.com/test/repo /tmp/repo": { exitCode: 0 },
   "git -C /tmp/repo fetch origin": { exitCode: 0 },
   "git -C /tmp/repo rev-parse HEAD": { stdout: "abc123def456\n" },
+  "git -C /tmp/repo rev-parse --abbrev-ref HEAD": { stdout: "master\n" },
   "git -C /tmp/repo rev-parse origin/main": { stdout: "xyz789abc\n" },
   "git -C /tmp/repo reset --hard abc123": { exitCode: 0 },
   "git -C /tmp/repo checkout v1.0.0": { exitCode: 0 },
@@ -182,6 +183,15 @@ describe("GitClient", () => {
         const error = yield* expectGitError(git.getCurrentCommit("/tmp/missing"))
         expect(error.command).toBe("rev-parse")
         expect(error.message).toContain("cannot change to '/tmp/missing'")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+  })
+
+  describe("getCurrentBranch", () => {
+    it.effect("returns the checked-out branch trimmed", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        expect(yield* git.getCurrentBranch("/tmp/repo")).toBe("master")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
   })

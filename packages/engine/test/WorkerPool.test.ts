@@ -14,8 +14,9 @@ describe("worker pool", () => {
   it.effect("resolves HEAD in a worker thread", () =>
     Effect.gen(function* () {
       const client = yield* WorkerClient
-      const { commit } = yield* client.ResolveHead({ repoId: "repobase", localPath: repoRoot })
+      const { commit, branch } = yield* client.ResolveHead({ repoId: "repobase", localPath: repoRoot })
       expect(commit).toBe(execSync("git rev-parse HEAD", { cwd: repoRoot }).toString().trim())
+      expect(branch).toBe(execSync("git rev-parse --abbrev-ref HEAD", { cwd: repoRoot }).toString().trim())
     }).pipe(Effect.provide(PoolLayer)), 30_000)
 
   it.effect("serializes the step error back from the worker", () =>
