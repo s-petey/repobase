@@ -76,6 +76,18 @@ export {
   type CloudConfigInput
 } from "./services/CloudSync.js"
 
+// Worker limits
+export {
+  MAX_WORKERS_ENV,
+  resolveWorkerCount,
+  resolveHostWorkerCount,
+  splitPools,
+  onnxThreadsPerWorker,
+  type WorkerCount,
+  type WorkerCountInput,
+  type PoolSizes
+} from "./worker/limits.js"
+
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"
 export { layer as RepoStoreLayer } from "./services/RepoStore.js"
