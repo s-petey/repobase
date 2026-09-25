@@ -24,6 +24,7 @@ import {
   ResolveHeadFailedError,
   SaveConfigFailedError,
   StepError,
+  UnexpectedStepError,
   UpdateStoreFailedError,
   WorkerCrashedError,
   workerCrashed
@@ -77,6 +78,10 @@ const examples: ReadonlyArray<readonly [StepError, string]> = [
   [
     new WorkerCrashedError({ repoId, message: "worker exited", step: "indexBatch:3" }),
     "A worker thread stopped during indexBatch:3"
+  ],
+  [
+    new UnexpectedStepError({ repoId, message: "undefined is not a function", step: "planChanges" }),
+    "Unexpected error during planChanges"
   ]
 ]
 

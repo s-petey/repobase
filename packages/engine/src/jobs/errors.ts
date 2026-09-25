@@ -131,6 +131,13 @@ export class WorkerCrashedError extends Schema.TaggedError<WorkerCrashedError>()
   step: Schema.String
 }) {}
 
+// Any step: it failed with something other than a StepError (a bug), so the
+// failure is still recorded and the step can be retried
+export class UnexpectedStepError extends Schema.TaggedError<UnexpectedStepError>()("UnexpectedStepError", {
+  ...common,
+  step: Schema.String
+}) {}
+
 /**
  * Every error a job step can fail with
  */
@@ -150,7 +157,8 @@ export const StepError = Schema.Union([
   EmbedderLoadFailedError,
   FinalizeFtsFailedError,
   UpdateStoreFailedError,
-  WorkerCrashedError
+  WorkerCrashedError,
+  UnexpectedStepError
 ])
 export type StepError = typeof StepError.Type
 
@@ -385,6 +393,12 @@ export const formatStepError = (error: StepError): StepErrorDisplay => {
         title: `A worker thread stopped during ${error.step}`,
         detail,
         hint: "Retry; see ~/.repobase/worker.log if it keeps happening"
+      }
+    case "UnexpectedStepError":
+      return {
+        title: `Unexpected error during ${error.step}`,
+        detail,
+        hint: "Retry; see ~/.repobase/tui.log and ~/.repobase/worker.log if it keeps happening"
       }
   }
 }

@@ -15,9 +15,10 @@ export type StepRunsOn = typeof StepRunsOn.Type
 
 /**
  * pending: not started · running: in progress · done: finished, output saved ·
- * failed: finished with `error` · interrupted: the process stopped mid-step
+ * failed: finished with `error` · interrupted: the process stopped mid-step ·
+ * skipped: not needed because an earlier step ended the job early
  */
-export const StepStatus = Schema.Literals(["pending", "running", "done", "failed", "interrupted"])
+export const StepStatus = Schema.Literals(["pending", "running", "done", "failed", "interrupted", "skipped"])
 export type StepStatus = typeof StepStatus.Type
 
 export const Step = Schema.Struct({

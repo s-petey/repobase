@@ -123,6 +123,7 @@ export {
   FinalizeFtsFailedError,
   UpdateStoreFailedError,
   WorkerCrashedError,
+  UnexpectedStepError,
   isRetryable,
   classifyGitFailure,
   cloneFailed,
@@ -155,6 +156,24 @@ export {
   layerWith as JobStoreLayerWith,
   layerMemory as JobStoreLayerMemory
 } from "./jobs/JobStore.js"
+export {
+  JobRunner,
+  type JobRunnerService,
+  type JobRunnerError,
+  JobAlreadyRunningError,
+  JobNotFoundError,
+  JobNotRetryableError,
+  type JobDefinition,
+  type JobDefinitions,
+  type StepDefinition,
+  type FanOutDefinition,
+  type StepContext,
+  type OutputSchema,
+  step,
+  fanOut,
+  fanOutKey,
+  layer as JobRunnerLayer
+} from "./jobs/JobRunner.js"
 
 // Worker pool
 export { StepRpcs, GitResolveHead } from "./worker/rpcs.js"
