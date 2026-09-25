@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Exit } from "effect"
+import { Effect } from "effect"
 import { execSync } from "node:child_process"
 import * as path from "node:path"
 import { GitError } from "../src/errors.js"
@@ -18,16 +18,13 @@ describe("worker pool", () => {
       expect(commit).toBe(execSync("git rev-parse HEAD", { cwd: repoRoot }).toString().trim())
     }).pipe(Effect.provide(PoolLayer)), 30_000)
 
-  // Skipped until GitClient checks git's exit code: rev-parse on a missing repo currently succeeds with ""
-  it.effect.skip("serializes GitError back from the worker", () =>
+  it.effect("serializes GitError back from the worker", () =>
     Effect.gen(function* () {
       const client = yield* WorkerClient
-      const exit = yield* client.GitResolveHead({ localPath: "/nonexistent/repo" }).pipe(Effect.exit)
-      expect(Exit.isFailure(exit)).toBe(true)
       const error = yield* Effect.flip(client.GitResolveHead({ localPath: "/nonexistent/repo" }))
       expect(error).toBeInstanceOf(GitError)
-      expect(error._tag).toBe("GitError")
       expect((error as GitError).command).toBe("rev-parse")
+      expect((error as GitError).message).toContain("/nonexistent/repo")
     }).pipe(Effect.provide(PoolLayer)), 30_000)
 
   it.effect("runs concurrent requests across the pool", () =>

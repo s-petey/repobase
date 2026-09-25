@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, type PlatformError, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitError } from "../errors.js"
 
@@ -42,7 +42,10 @@ const toGitError =
   (error: unknown): GitError =>
     new GitError({
       command,
-      message: error instanceof Error ? error.message : String(error)
+      message:
+        typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : String(error)
     })
 
 /**
@@ -51,70 +54,67 @@ const toGitError =
 export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
-  const git = (...args: string[]) => ChildProcess.make("git", args)
+  const collectText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
+    stream.pipe(Stream.decodeText(), Stream.mkString)
 
-  // Run command and check exit code - fail on non-zero
-  const runCommand = (cmd: ChildProcess.Command, commandName: string) =>
-    spawner.exitCode(cmd).pipe(
-      Effect.flatMap((exitCode) =>
+  // Run a git command and return its stdout. A non-zero exit fails with a
+  // GitError carrying git's stderr, so callers never mistake a failed command
+  // for empty output.
+  const run = (commandName: string, ...args: string[]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* spawner.spawn(ChildProcess.make("git", args))
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [collectText(handle.stdout), collectText(handle.stderr), handle.exitCode],
+          { concurrency: "unbounded" }
+        )
+        return { stdout, stderr, exitCode }
+      })
+    ).pipe(
+      Effect.mapError(toGitError(commandName)),
+      Effect.flatMap(({ stdout, stderr, exitCode }) =>
         exitCode === 0
-          ? Effect.void
+          ? Effect.succeed(stdout)
           : Effect.fail(
               new GitError({
                 command: commandName,
-                message: `Command exited with code ${exitCode}`
+                message: stderr.trim() || `Command exited with code ${exitCode}`
               })
             )
       )
     )
 
-  const runString = (cmd: ChildProcess.Command) => spawner.string(cmd)
-
-  const runLines = (cmd: ChildProcess.Command) => spawner.lines(cmd)
-
   return GitClient.of({
-    clone: (url, path) =>
-      runCommand(
-        git("clone", "--depth", "1", url, path),
-        "clone"
-      ).pipe(Effect.mapError(toGitError("clone"))),
+    clone: (url, path) => run("clone", "clone", "--depth", "1", url, path).pipe(Effect.asVoid),
 
-    fetch: (path) =>
-      runCommand(
-        git("-C", path, "fetch", "origin"),
-        "fetch"
-      ).pipe(Effect.mapError(toGitError("fetch"))),
+    fetch: (path) => run("fetch", "-C", path, "fetch", "origin").pipe(Effect.asVoid),
 
     getCurrentCommit: (path) =>
-      runString(git("-C", path, "rev-parse", "HEAD")).pipe(
-        Effect.map((s) => s.trim()),
-        Effect.mapError(toGitError("rev-parse"))
-      ),
+      run("rev-parse", "-C", path, "rev-parse", "HEAD").pipe(Effect.map((s) => s.trim())),
 
     getRemoteHead: (path, branch) =>
-      runString(git("-C", path, "rev-parse", `origin/${branch}`)).pipe(
-        Effect.map((s) => s.trim()),
-        Effect.mapError(toGitError("rev-parse"))
+      run("rev-parse", "-C", path, "rev-parse", `origin/${branch}`).pipe(
+        Effect.map((s) => s.trim())
       ),
 
-    resetHard: (path, ref) =>
-      runCommand(
-        git("-C", path, "reset", "--hard", ref),
-        "reset"
-      ).pipe(Effect.mapError(toGitError("reset"))),
+    resetHard: (path, ref) => run("reset", "-C", path, "reset", "--hard", ref).pipe(Effect.asVoid),
 
-    checkout: (path, ref) =>
-      runCommand(
-        git("-C", path, "checkout", ref),
-        "checkout"
-      ).pipe(Effect.mapError(toGitError("checkout"))),
+    checkout: (path, ref) => run("checkout", "-C", path, "checkout", ref).pipe(Effect.asVoid),
 
+    // --no-renames reports a rename as D + A, so every change is one of A/M/D
     diffNameStatus: (path, fromCommit, toCommit) =>
-      runLines(
-        git("-C", path, "diff", "--name-status", `${fromCommit}..${toCommit}`)
+      run(
+        "diff",
+        "-C",
+        path,
+        "diff",
+        "--name-status",
+        "--no-renames",
+        `${fromCommit}..${toCommit}`
       ).pipe(
-        Effect.map((lines) =>
-          lines
+        Effect.map((stdout) =>
+          stdout
+            .split("\n")
             .filter((line) => line.trim().length > 0)
             .map((line) => {
               const [status, ...pathParts] = line.split("\t")
@@ -123,8 +123,7 @@ export const make = Effect.gen(function* () {
                 path: pathParts.join("\t")
               }
             })
-        ),
-        Effect.mapError(toGitError("diff"))
+        )
       )
   })
 })

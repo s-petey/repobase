@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Cause, Effect, Layer, PlatformError, Stream } from "effect"
+import { Cause, Effect, Layer, PlatformError, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitClient, GitError } from "../src/index.js"
 import { layer as GitClientLayer } from "../src/services/GitClient.js"
@@ -9,7 +9,9 @@ import { layer as GitClientLayer } from "../src/services/GitClient.js"
  */
 interface MockCommand {
   stdout?: string
+  stderr?: string
   exitCode?: number
+  // Fail to spawn at all (e.g. git not installed)
   error?: string
 }
 
@@ -20,13 +22,30 @@ const mockCommands: Record<string, MockCommand> = {
   "git -C /tmp/repo rev-parse origin/main": { stdout: "xyz789abc\n" },
   "git -C /tmp/repo reset --hard abc123": { exitCode: 0 },
   "git -C /tmp/repo checkout v1.0.0": { exitCode: 0 },
-  "git -C /tmp/repo diff --name-status abc..xyz": {
+  "git -C /tmp/repo diff --name-status --no-renames abc..xyz": {
     stdout: "A\tnew-file.ts\nM\tmodified.ts\nD\tdeleted.ts\n"
   },
   // Failure cases
   "git clone --depth 1 https://github.com/invalid/repo /tmp/invalid": {
-    error: "Repository not found"
-  }
+    exitCode: 128,
+    stderr: "Cloning into '/tmp/invalid'...\nfatal: repository 'https://github.com/invalid/repo/' not found\n"
+  },
+  "git clone --depth 1 https://github.com/test/repo /tmp/no-git": {
+    error: "spawn git ENOENT"
+  },
+  "git -C /tmp/missing rev-parse HEAD": {
+    exitCode: 128,
+    stderr: "fatal: cannot change to '/tmp/missing': No such file or directory\n"
+  },
+  "git -C /tmp/repo rev-parse origin/gone": {
+    exitCode: 128,
+    stderr: "fatal: ambiguous argument 'origin/gone': unknown revision or path not in the working tree.\n"
+  },
+  "git -C /tmp/repo diff --name-status --no-renames abc..missing": {
+    exitCode: 128,
+    stderr: "fatal: bad revision 'abc..missing'\n"
+  },
+  "git -C /tmp/repo reset --hard nope": { exitCode: 1 }
 }
 
 const lookup = (
@@ -53,21 +72,44 @@ const lookup = (
   return Effect.succeed(mock)
 }
 
+const textStream = (text: string | undefined) =>
+  text ? Stream.make(new TextEncoder().encode(text)) : Stream.empty
+
+// A finished process: its output is already buffered and its exit code known
+const mockHandle = (mock: MockCommand) =>
+  ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(mock.exitCode ?? 0)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.void,
+    stdin: Sink.drain,
+    stdout: textStream(mock.stdout),
+    stderr: textStream(mock.stderr),
+    all: Stream.concat(textStream(mock.stdout), textStream(mock.stderr)),
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+    unref: Effect.succeed(Effect.void)
+  })
+
 const MockChildProcessSpawner = Layer.succeed(
   ChildProcessSpawner.ChildProcessSpawner,
   ChildProcessSpawner.ChildProcessSpawner.of({
-    spawn: () => Effect.die("spawn not implemented in mock"),
-    exitCode: (command) =>
-      lookup(command).pipe(Effect.map((mock) => ChildProcessSpawner.ExitCode(mock.exitCode ?? 0))),
-    string: (command) => lookup(command).pipe(Effect.map((mock) => mock.stdout ?? "")),
-    lines: (command) =>
-      lookup(command).pipe(
-        Effect.map((mock) => (mock.stdout ?? "").split("\n").filter((l) => l.length > 0))
-      ),
+    spawn: (command) => lookup(command).pipe(Effect.map(mockHandle)),
+    exitCode: () => Effect.die("GitClient should spawn, not use exitCode"),
+    string: () => Effect.die("GitClient should spawn, not use string"),
+    lines: () => Effect.die("GitClient should spawn, not use lines"),
     streamString: () => Stream.die("streamString not implemented in mock"),
     streamLines: () => Stream.die("streamLines not implemented in mock")
   })
 )
+
+// Run an effect expected to fail and return its GitError
+const expectGitError = <A>(effect: Effect.Effect<A, GitError>) =>
+  Effect.gen(function* () {
+    const error = yield* Effect.flip(effect)
+    expect(error).toBeInstanceOf(GitError)
+    return error
+  })
 
 const TestGitClientLayer = GitClientLayer.pipe(Layer.provide(MockChildProcessSpawner))
 
@@ -94,6 +136,26 @@ describe("GitClient", () => {
         }
       }).pipe(Effect.provide(TestGitClientLayer))
     )
+
+    it.effect("keeps git's stderr in the GitError", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(
+          git.clone("https://github.com/invalid/repo", "/tmp/invalid")
+        )
+        expect(error.command).toBe("clone")
+        expect(error.message).toContain("repository 'https://github.com/invalid/repo/' not found")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("returns GitError when git cannot be spawned", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(git.clone("https://github.com/test/repo", "/tmp/no-git"))
+        expect(error.command).toBe("clone")
+        expect(error.message).toBe("spawn git ENOENT")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
   })
 
   describe("fetch", () => {
@@ -113,6 +175,15 @@ describe("GitClient", () => {
         expect(commit).toBe("abc123def456")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
+
+    it.effect("fails instead of returning an empty commit for a missing repo", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(git.getCurrentCommit("/tmp/missing"))
+        expect(error.command).toBe("rev-parse")
+        expect(error.message).toContain("cannot change to '/tmp/missing'")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
   })
 
   describe("getRemoteHead", () => {
@@ -123,6 +194,14 @@ describe("GitClient", () => {
         expect(commit).toBe("xyz789abc")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
+
+    it.effect("fails when the remote branch does not exist", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(git.getRemoteHead("/tmp/repo", "gone"))
+        expect(error.message).toContain("unknown revision")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
   })
 
   describe("resetHard", () => {
@@ -130,6 +209,15 @@ describe("GitClient", () => {
       Effect.gen(function* () {
         const git = yield* GitClient
         yield* git.resetHard("/tmp/repo", "abc123")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("falls back to the exit code when git writes no stderr", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(git.resetHard("/tmp/repo", "nope"))
+        expect(error.command).toBe("reset")
+        expect(error.message).toBe("Command exited with code 1")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
   })
@@ -153,6 +241,15 @@ describe("GitClient", () => {
         expect(changes[0]).toEqual({ status: "A", path: "new-file.ts" })
         expect(changes[1]).toEqual({ status: "M", path: "modified.ts" })
         expect(changes[2]).toEqual({ status: "D", path: "deleted.ts" })
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("fails instead of returning no changes for a bad revision", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(git.diffNameStatus("/tmp/repo", "abc", "missing"))
+        expect(error.command).toBe("diff")
+        expect(error.message).toContain("bad revision")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
   })
