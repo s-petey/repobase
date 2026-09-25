@@ -13,6 +13,6 @@
   },
   "dependencies": {
     "@repobase/engine": "workspace:*",
-    "effect": "4.0.0-rc.115"
+    "effect": "catalog:"
   }
 }

@@ -8,14 +8,14 @@
     "start": "bun run src/main.tsx"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.115",
-    "@opentui/core": "^0.5.11",
-    "@opentui/react": "^0.5.11",
+    "@effect/platform-bun": "catalog:",
+    "@opentui/core": "catalog:",
+    "@opentui/react": "catalog:",
     "@repobase/engine": "workspace:*",
-    "effect": "4.0.0-rc.115",
-    "react": "^19.3.0"
+    "effect": "catalog:",
+    "react": "catalog:"
   },
   "devDependencies": {
-    "@types/react": "^19.3.0"
+    "@types/react": "catalog:"
   }
 }

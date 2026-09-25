@@ -80,6 +80,12 @@ bun run test
 bun run build
 ```
 
+### Dependency versions
+
+Versions shared between workspace packages live in the [catalog](https://bun.com/docs/pm/catalogs) under `workspaces.catalog` in the root `package.json`; packages reference them with `"catalog:"`. To bump a shared dependency, change it in the catalog.
+
+The root package's `dependencies` are the exception: releases publish with `npm publish`, which can't resolve `catalog:`, so they stay literal versions. When you bump one of them in the catalog, update the matching entry in the root `dependencies` too.
+
 ## Architecture
 
 ```
