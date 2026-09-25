@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
-import { BunServices } from "@effect/platform-bun"
-import { Effect, Layer, SubscriptionRef, Stream, Fiber } from "effect"
+import { BunRuntime, BunServices } from "@effect/platform-bun"
+import { Deferred, Effect, FiberSet, Layer, SubscriptionRef, Stream, Fiber } from "effect"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
@@ -10,9 +10,7 @@ import {
   RepoStoreLayer,
   IndexerLayer,
   initialProgress,
-  type RepoConfig,
   type SearchMode,
-  type SearchResult,
   type AddRepoProgress,
 } from "@repobase/engine"
 import { App } from "./App.js"
@@ -38,90 +36,82 @@ const MainLayer = EngineLive.pipe(
   Layer.provide(BunServices.layer)
 )
 
-// Helper to run Effect programs
-const runEffect = <A, E>(
-  effect: Effect.Effect<A, E, RepobaseEngine>
-): Promise<A> =>
-  Effect.runPromise(effect.pipe(Effect.provide(MainLayer))) as Promise<A>
+// The whole TUI session is one Effect program. MainLayer is built once for the
+// session, and BunRuntime.runMain interrupts the program on SIGINT/SIGTERM so
+// every finalizer below runs on the way out.
+const program = Effect.gen(function* () {
+  yield* Effect.log(`TUI starting - logs written to ${defaultLogPath}`)
 
-// Main entry point
-const main = async () => {
-  // Log startup to file
-  await runEffect(Effect.log(`TUI starting - logs written to ${defaultLogPath}`))
-  
-  // Create the renderer - disable exitOnCtrlC so we can handle cleanup properly
-  const renderer = await createCliRenderer({
-    exitOnCtrlC: false,
-  })
-  
-  // Handle Ctrl+C (SIGINT) manually for clean shutdown
-  process.on('SIGINT', () => {
-    renderer.destroy()
-    process.exit(0)
-  })
+  const engine = yield* RepobaseEngine
+
+  // Runs effects from React callbacks as fibers owned by this program's scope,
+  // so anything still in flight is interrupted on shutdown
+  const runPromise = yield* FiberSet.makeRuntimePromise()
+
+  // Disable exitOnCtrlC so shutdown goes through the program's finalizers
+  const renderer = yield* Effect.acquireRelease(
+    Effect.promise(() => createCliRenderer({ exitOnCtrlC: false })),
+    (renderer) => Effect.sync(() => renderer.destroy())
+  )
 
   // Load initial repos
-  const initialRepos = await runEffect(RepobaseEngine.use((engine) => engine.listRepos()))
-  
+  const initialRepos = yield* engine.listRepos()
+
   // Cloud config is only checked when the feature is enabled
   const cloudConfigured = featureFlags.cloudSync ? false : false
+
+  // Completed by the App when the user quits
+  const quit = yield* Deferred.make<void>()
 
   // Render the app
   createRoot(renderer).render(
     <App
       initialRepos={initialRepos}
-      onAddRepo={async (url: string, onProgress: (p: AddRepoProgress) => void) => {
-        // Create the effect that sets up progress tracking
-        const addWithProgress = Effect.gen(function* () {
-          const engine = yield* RepobaseEngine
+      onAddRepo={(url: string, onProgress: (p: AddRepoProgress) => void) =>
+        runPromise(
+          Effect.gen(function* () {
+            // Create a SubscriptionRef for progress updates
+            const progressRef = yield* SubscriptionRef.make<AddRepoProgress>(initialProgress)
 
-          // Create a SubscriptionRef for progress updates
-          const progressRef = yield* SubscriptionRef.make<AddRepoProgress>(initialProgress)
-          
-          // Fork a fiber to listen for progress updates and call the callback
-          const listenerFiber = yield* Stream.runForEach(
-            SubscriptionRef.changes(progressRef),
-            (progress) => Effect.sync(() => onProgress(progress))
-          ).pipe(Effect.forkChild)
+            // Fork a fiber to listen for progress updates and call the callback
+            const listenerFiber = yield* Stream.runForEach(
+              SubscriptionRef.changes(progressRef),
+              (progress) => Effect.sync(() => onProgress(progress))
+            ).pipe(Effect.forkChild)
 
-          // Run addRepo with the progress ref
-          const result = yield* engine.addRepo(url, { progressRef })
-          
-          // Clean up the listener fiber
-          yield* Fiber.interrupt(listenerFiber)
-          
-          return result
-        })
-        
-        return await runEffect(addWithProgress)
-      }}
-      onRemoveRepo={async (id: string) => {
-        await runEffect(RepobaseEngine.use((engine) => engine.removeRepo(id)))
-      }}
-      onSyncRepo={async (id: string) => {
-        const result = await runEffect(RepobaseEngine.use((engine) => engine.syncRepo(id)))
-        return { updated: result.updated }
-      }}
-      onSyncAll={async () => {
-        const results = await runEffect(RepobaseEngine.use((engine) => engine.syncAll()))
-        return results.map((r) => ({ id: r.id, updated: r.updated }))
-      }}
-      onRefreshRepos={async () => {
-        return await runEffect(RepobaseEngine.use((engine) => engine.listRepos()))
-      }}
-      onSearch={async (query: string, mode: SearchMode) => {
-        return await runEffect(RepobaseEngine.use((engine) => engine.search(query, mode)))
-      }}
+            // Run addRepo with the progress ref
+            const result = yield* engine.addRepo(url, { progressRef })
+
+            // Clean up the listener fiber
+            yield* Fiber.interrupt(listenerFiber)
+
+            return result
+          })
+        )
+      }
+      onRemoveRepo={(id: string) => runPromise(engine.removeRepo(id))}
+      onSyncRepo={(id: string) =>
+        runPromise(
+          engine.syncRepo(id).pipe(Effect.map((result) => ({ updated: result.updated })))
+        )
+      }
+      onSyncAll={() =>
+        runPromise(
+          engine
+            .syncAll()
+            .pipe(Effect.map((results) => results.map((r) => ({ id: r.id, updated: r.updated }))))
+        )
+      }
+      onRefreshRepos={() => runPromise(engine.listRepos())}
+      onSearch={(query: string, mode: SearchMode) => runPromise(engine.search(query, mode))}
       onQuit={() => {
-        renderer.destroy()
-        process.exit(0)
+        Deferred.doneUnsafe(quit, Effect.void)
       }}
       cloudConfigured={cloudConfigured}
     />
   )
-}
 
-main().catch((error) => {
-  console.error("Failed to start TUI:", error)
-  process.exit(1)
+  yield* Deferred.await(quit)
 })
+
+BunRuntime.runMain(program.pipe(Effect.scoped, Effect.provide(MainLayer)))
