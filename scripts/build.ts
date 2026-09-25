@@ -22,7 +22,11 @@ async function buildTUI() {
   console.log("📦 Building TUI...")
   
   await Bun.build({
-    entrypoints: [join(ROOT, "packages/tui/src/main.tsx")],
+    // worker.ts is spawned by main.tsx as ./worker.js, so both are built into the same directory
+    entrypoints: [
+      join(ROOT, "packages/tui/src/main.tsx"),
+      join(ROOT, "packages/tui/src/worker.ts"),
+    ],
     outdir: join(DIST, "tui"),
     target: "node",
     format: "esm",
@@ -40,10 +44,11 @@ async function buildTUI() {
       "effect",
       "@effect/platform",
       "@effect/platform-node",
+      "@effect/platform-bun",
     ],
   })
-  
-  console.log("  ✓ TUI built to dist/tui/main.js")
+
+  console.log("  ✓ TUI built to dist/tui/main.js and dist/tui/worker.js")
 }
 
 async function buildMCP() {

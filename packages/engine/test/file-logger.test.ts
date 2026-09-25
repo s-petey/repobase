@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { Effect, FileSystem, Layer } from "effect"
-import { fileLoggerLayer } from "./file-logger.js"
+import { fileLoggerLayer } from "../src/file-logger.js"
 
 /**
  * In-memory FileSystem: records directories created and everything the

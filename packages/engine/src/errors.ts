@@ -1,12 +1,12 @@
-import { Data } from "effect"
+import { Data, Schema } from "effect"
 
 /**
  * Error from git command execution
  */
-export class GitError extends Data.TaggedError("GitError")<{
-  readonly command: string
-  readonly message: string
-}> {}
+export class GitError extends Schema.TaggedError<GitError>()("GitError", {
+  command: Schema.String,
+  message: Schema.String
+}) {}
 
 /**
  * Error from store operations (load/save config)

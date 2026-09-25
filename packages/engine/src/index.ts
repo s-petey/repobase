@@ -88,6 +88,19 @@ export {
   type PoolSizes
 } from "./worker/limits.js"
 
+// Worker pool
+export { StepRpcs, GitResolveHead } from "./worker/rpcs.js"
+export { WorkerClient, layerWorkerPool } from "./worker/client.js"
+export { runWorker } from "./worker/server.js"
+
+// Logging
+export {
+  logPath,
+  fileLoggerLayer,
+  addFileLoggerLayer,
+  silentLoggerLayer
+} from "./file-logger.js"
+
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"
 export { layer as RepoStoreLayer } from "./services/RepoStore.js"

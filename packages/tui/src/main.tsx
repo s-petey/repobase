@@ -10,21 +10,33 @@ import {
   RepoStoreLayer,
   IndexerLayer,
   initialProgress,
+  fileLoggerLayer,
+  layerWorkerPool,
+  logPath,
   type SearchMode,
   type AddRepoProgress,
 } from "@repobase/engine"
 import { App } from "./App.js"
-import { fileLoggerLayer, defaultLogPath } from "./file-logger.js"
 import { featureFlags } from "./config.js"
 
 // File logger for debugging - writes to ~/.repobase/tui.log
-const FileLogger = fileLoggerLayer()
+const tuiLogPath = logPath("tui")
+const FileLogger = fileLoggerLayer(tuiLogPath)
+
+// Worker threads run from source in dev and from the bundled worker.js in dist
+const workerUrl = new URL(
+  import.meta.url.endsWith(".tsx") ? "./worker.ts" : "./worker.js",
+  import.meta.url
+)
 
 // Layer composition with file-based logging
-const EngineLive = RepobaseEngineLayer.pipe(
-  Layer.provide(GitClientLayer),
-  Layer.provide(RepoStoreLayer),
-  Layer.provide(IndexerLayer)
+const EngineLive = Layer.mergeAll(
+  RepobaseEngineLayer.pipe(
+    Layer.provide(GitClientLayer),
+    Layer.provide(RepoStoreLayer),
+    Layer.provide(IndexerLayer)
+  ),
+  layerWorkerPool({ workerUrl })
 )
 
 // provideMerge (not provide) so the file logger is also part of MainLayer's
@@ -40,7 +52,7 @@ const MainLayer = EngineLive.pipe(
 // session, and BunRuntime.runMain interrupts the program on SIGINT/SIGTERM so
 // every finalizer below runs on the way out.
 const program = Effect.gen(function* () {
-  yield* Effect.log(`TUI starting - logs written to ${defaultLogPath}`)
+  yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
 
   const engine = yield* RepobaseEngine
 

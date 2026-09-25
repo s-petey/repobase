@@ -1,6 +1,6 @@
 /**
- * File-based logger for TUI debugging
- * 
+ * File-based logger for the TUI and its worker threads
+ *
  * Uses Effect's Logger.toFile to write logs to a file,
  * keeping the terminal UI clean while capturing all log output
  * for debugging purposes.
@@ -11,12 +11,9 @@ import * as path from "node:path"
 import * as os from "node:os"
 
 /**
- * Default log file path: ~/.repobase/tui.log
+ * Log file path for a component: ~/.repobase/<name>.log
  */
-const getDefaultLogPath = () => {
-  const homeDir = os.homedir()
-  return path.join(homeDir, ".repobase", "tui.log")
-}
+export const logPath = (name: string) => path.join(os.homedir(), ".repobase", `${name}.log`)
 
 /**
  * Ensures the directory for the log file exists, creating it if necessary.
@@ -37,13 +34,13 @@ const ensureLogDirectory = (filePath: string) =>
  * The logger writes logs in logfmt format to the specified file.
  * Logs are batched for efficiency (default: 500ms window).
  * 
- * @param logPath - Path to the log file (defaults to ~/.repobase/tui.log)
+ * @param filePath - Path to the log file (see `logPath`)
  * @param options - Logger options
  * @returns A Layer that replaces the default logger with a file logger.
  *   Requires a FileSystem (e.g. BunFileSystem.layer), so tests can supply an in-memory one.
  */
 export const fileLoggerLayer = (
-  logPath?: string,
+  filePath: string,
   options?: {
     /** Minimum log level to capture (defaults to Debug) */
     minLevel?: LogLevel.LogLevel
@@ -51,7 +48,6 @@ export const fileLoggerLayer = (
     batchWindow?: number
   }
 ): Layer.Layer<never, PlatformError.PlatformError, FileSystem.FileSystem> => {
-  const filePath = logPath ?? getDefaultLogPath()
   const minLevel = options?.minLevel ?? "Debug"
   const batchWindow = options?.batchWindow ?? 500
 
@@ -81,13 +77,12 @@ export const fileLoggerLayer = (
  * console output interfering with the UI.
  */
 export const addFileLoggerLayer = (
-  logPath?: string,
+  filePath: string,
   options?: {
     minLevel?: LogLevel.LogLevel
     batchWindow?: number
   }
 ): Layer.Layer<never, PlatformError.PlatformError, FileSystem.FileSystem> => {
-  const filePath = logPath ?? getDefaultLogPath()
   const batchWindow = options?.batchWindow ?? 500
 
   // Create the file logger effect, ensuring the directory exists first
@@ -109,9 +104,4 @@ export const addFileLoggerLayer = (
  * Use this when you don't want any log output at all.
  */
 export const silentLoggerLayer: Layer.Layer<never> = Layer.succeed(References.MinimumLogLevel, "None")
-
-/**
- * Get the default log file path
- */
-export const defaultLogPath = getDefaultLogPath()
 
