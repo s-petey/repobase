@@ -133,6 +133,29 @@ export {
   type StepErrorDisplay
 } from "./jobs/errors.js"
 
+// Jobs
+export {
+  Job,
+  AddRepoJob,
+  SyncRepoJob,
+  AddRepoPayload,
+  SyncRepoPayload,
+  JobStatus,
+  Step,
+  StepStatus,
+  StepRunsOn,
+  makeJobId,
+  type JobKind
+} from "./jobs/Job.js"
+export {
+  JobStore,
+  type JobStoreService,
+  defaultJobsDir,
+  layer as JobStoreLayer,
+  layerWith as JobStoreLayerWith,
+  layerMemory as JobStoreLayerMemory
+} from "./jobs/JobStore.js"
+
 // Worker pool
 export { StepRpcs, GitResolveHead } from "./worker/rpcs.js"
 export { WorkerClient, layerWorkerPool } from "./worker/client.js"
