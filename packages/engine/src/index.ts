@@ -19,7 +19,7 @@ export {
 } from "./schemas.js"
 
 // Utils
-export { deriveRepoId, trackingMode, pinnedMode } from "./utils.js"
+export { deriveRepoId, extractRepoParts, trackingMode, pinnedMode } from "./utils.js"
 
 // Errors
 export {

@@ -3,8 +3,13 @@ import type { RepoConfig } from "@repobase/engine"
 import { Option } from "effect"
 import { colors } from "../theme/index.js"
 
+export type FlatRow =
+  | { kind: "header"; owner: string; repoCount: number; collapsed: boolean }
+  | { kind: "repo"; repo: RepoConfig; label: string; indented: boolean }
+
 interface RepoListProps {
-  repos: RepoConfig[]
+  flatRows: FlatRow[]
+  totalRepos: number
   selectedIndex: number
 }
 
@@ -39,8 +44,12 @@ const formatCloudStatus = (repo: RepoConfig): string => {
   return ""
 }
 
-export const RepoList = ({ repos, selectedIndex }: RepoListProps) => {
-  if (repos.length === 0) {
+const repoCountLabel = (count: number): string => {
+  return `${count} repo${count !== 1 ? "s" : ""}`
+}
+
+export const RepoList = ({ flatRows, totalRepos, selectedIndex }: RepoListProps) => {
+  if (totalRepos === 0) {
     return (
       <box
         style={{
@@ -71,7 +80,7 @@ export const RepoList = ({ repos, selectedIndex }: RepoListProps) => {
       }}
     >
       <text
-        content={`Repositories (${repos.length})`}
+        content={`Repositories (${totalRepos})`}
         style={{
           fg: colors.text.primary,
           attributes: TextAttributes.BOLD,
@@ -84,12 +93,37 @@ export const RepoList = ({ repos, selectedIndex }: RepoListProps) => {
           flexGrow: 1,
         }}
       >
-        {repos.map((repo, index) => {
+        {flatRows.map((row, index) => {
           const isSelected = index === selectedIndex
+          const prefix = isSelected ? "> " : "  "
+
+          if (row.kind === "header") {
+            const icon = row.collapsed ? "▶" : "▼"
+            return (
+              <box
+                key={`header-${row.owner}`}
+                style={{
+                  flexDirection: "row",
+                  backgroundColor: isSelected ? colors.bg.selected : undefined,
+                  padding: 0,
+                }}
+              >
+                <text
+                  content={`${prefix}${icon} ${row.owner} (${repoCountLabel(row.repoCount)})`}
+                  style={{
+                    fg: isSelected ? colors.text.primary : colors.accent.default,
+                    attributes: isSelected ? TextAttributes.BOLD : TextAttributes.DIM,
+                  }}
+                />
+              </box>
+            )
+          }
+
+          const repo = row.repo
           const status = formatStatus(repo)
           const mode = formatMode(repo)
           const cloudStatus = formatCloudStatus(repo)
-          const prefix = isSelected ? "> " : "  "
+          const indent = row.indented ? "  " : ""
 
           return (
             <box
@@ -101,7 +135,7 @@ export const RepoList = ({ repos, selectedIndex }: RepoListProps) => {
               }}
             >
               <text
-                content={`${prefix}${repo.id.padEnd(24)} ${mode.padEnd(18)} ${status.text.padEnd(12)} ${cloudStatus}`}
+                content={`${prefix}${indent}${row.label.padEnd(24 - indent.length)} ${mode.padEnd(18)} ${status.text.padEnd(12)} ${cloudStatus}`}
                 style={{
                   fg: isSelected ? colors.text.primary : colors.interactive.default,
                   attributes: isSelected ? TextAttributes.BOLD : undefined,

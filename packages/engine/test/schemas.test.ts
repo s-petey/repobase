@@ -7,7 +7,7 @@ import {
   RepoConfig,
   RepoStoreData
 } from "../src/schemas.js"
-import { deriveRepoId, trackingMode, pinnedMode } from "../src/utils.js"
+import { deriveRepoId, extractRepoParts, trackingMode, pinnedMode } from "../src/utils.js"
 
 describe("schemas", () => {
   describe("deriveRepoId", () => {
@@ -21,6 +21,26 @@ describe("schemas", () => {
 
     it("throws for invalid URLs", () => {
       expect(() => deriveRepoId("not-a-url")).toThrow("Invalid GitHub URL")
+    })
+  })
+
+  describe("extractRepoParts", () => {
+    it("extracts owner and name from GitHub URL", () => {
+      expect(extractRepoParts("https://github.com/Effect-TS/effect")).toEqual({
+        owner: "Effect-TS",
+        name: "effect"
+      })
+    })
+
+    it("handles .git suffix", () => {
+      expect(extractRepoParts("https://github.com/Effect-TS/effect.git")).toEqual({
+        owner: "Effect-TS",
+        name: "effect"
+      })
+    })
+
+    it("throws for invalid URLs", () => {
+      expect(() => extractRepoParts("not-a-url")).toThrow("Invalid GitHub URL")
     })
   })
 

@@ -1,8 +1,9 @@
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress } from "@repobase/engine"
-import { initialProgress } from "@repobase/engine"
-import { useCallback, useState } from "react"
+import { extractRepoParts, initialProgress } from "@repobase/engine"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog } from "./components/index.js"
+import type { FlatRow } from "./components/RepoList.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
 
@@ -18,6 +19,30 @@ interface AppProps {
   onSearch: (query: string, mode: SearchMode) => Promise<SearchResult[]>
   onQuit: () => void
   cloudConfigured?: boolean
+}
+
+const repoParts = (repo: RepoConfig): { owner: string; name: string } => {
+  try {
+    return extractRepoParts(repo.url)
+  } catch {
+    return { owner: repo.id, name: repo.id }
+  }
+}
+
+function buildFlatRows(repos: RepoConfig[], collapsed: Set<string>): FlatRow[] {
+  const sorted = repos.toSorted((a, b) => a.id.localeCompare(b.id))
+
+  return [...Map.groupBy(sorted, (repo) => repoParts(repo).owner)].flatMap(([owner, group]): FlatRow[] => {
+    if (group.length === 1) {
+      return [{ kind: "repo", repo: group[0], label: group[0].id, indented: false }]
+    }
+
+    const isCollapsed = collapsed.has(owner)
+    const header: FlatRow = { kind: "header", owner, repoCount: group.length, collapsed: isCollapsed }
+    if (isCollapsed) return [header]
+
+    return [header, ...group.map((repo): FlatRow => ({ kind: "repo", repo, label: repoParts(repo).name, indented: true }))]
+  })
 }
 
 export const App = ({
@@ -36,18 +61,31 @@ export const App = ({
   const [mode, setMode] = useState<AppMode>("list")
   const [message, setMessage] = useState<string | undefined>()
   const [inputValue, setInputValue] = useState("")
-  
+
   // Progress state for adding repos
   const [addProgress, setAddProgress] = useState<AddRepoProgress>(initialProgress)
-  
+
   // Search state
   const [searchQuery, setSearchQuery] = useState("")
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid")
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchResultIndex, setSearchResultIndex] = useState(0)
-  
+
   // Delete confirmation state
   const [repoToDelete, setRepoToDelete] = useState<RepoConfig | null>(null)
+
+  // Owner groups the user has collapsed
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+
+  const flatRows = useMemo(() => buildFlatRows(repos, collapsedGroups), [repos, collapsedGroups])
+
+  // Clamp selectedIndex when flatRows shrinks (deletion, collapsing)
+  useEffect(() => {
+    const max = Math.max(0, flatRows.length - 1)
+    if (selectedIndex > max) {
+      setSelectedIndex(max)
+    }
+  }, [flatRows.length, selectedIndex])
 
   const showMessage = useCallback((msg: string, duration = 3000) => {
     setMessage(msg)
@@ -59,11 +97,11 @@ export const App = ({
       setMode("list")
       return
     }
-    
+
     // Reset progress and show progress modal
     setAddProgress(initialProgress)
     setMode("adding")
-    
+
     try {
       await onAddRepo(url, (progress) => {
         setAddProgress(progress)
@@ -87,50 +125,38 @@ export const App = ({
         setMode("list")
       }, 2000)
     }
-    
+
     setInputValue("")
   }, [onAddRepo, onRefreshRepos, showMessage])
 
-  const handleRequestDelete = useCallback(() => {
-    if (repos.length === 0) return
-    
-    const repo = repos[selectedIndex]
-    setRepoToDelete(repo)
-    setMode("confirmDelete")
-  }, [repos, selectedIndex])
-
   const handleConfirmDelete = useCallback(async () => {
     if (!repoToDelete) return
-    
+
     setMode("syncing")
     setMessage(`Removing ${repoToDelete.id}...`)
-    
+
     try {
       await onRemoveRepo(repoToDelete.id)
       const updatedRepos = await onRefreshRepos()
       setRepos(updatedRepos)
-      setSelectedIndex(Math.max(0, selectedIndex - 1))
       showMessage(`[OK] Removed ${repoToDelete.id}`)
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to remove"}`)
     }
-    
+
     setRepoToDelete(null)
     setMode("list")
-  }, [repoToDelete, onRemoveRepo, onRefreshRepos, showMessage, selectedIndex])
+  }, [repoToDelete, onRemoveRepo, onRefreshRepos, showMessage])
 
   const handleCancelDelete = useCallback(() => {
     setRepoToDelete(null)
     setMode("list")
   }, [])
 
-  const handleSyncRepo = useCallback(async () => {
-    if (repos.length === 0) return
-    
-    const repo = repos[selectedIndex]
+  const handleSyncRepo = useCallback(async (repo: RepoConfig) => {
     setMode("syncing")
     setMessage(`Syncing ${repo.id}...`)
-    
+
     try {
       const result = await onSyncRepo(repo.id)
       const updatedRepos = await onRefreshRepos()
@@ -139,14 +165,14 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
-    
+
     setMode("list")
-  }, [repos, selectedIndex, onSyncRepo, onRefreshRepos, showMessage])
+  }, [onSyncRepo, onRefreshRepos, showMessage])
 
   const handleSyncAll = useCallback(async () => {
     setMode("syncing")
     setMessage("Syncing all repositories...")
-    
+
     try {
       const results = await onSyncAll()
       const updatedRepos = await onRefreshRepos()
@@ -156,7 +182,7 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
-    
+
     setMode("list")
   }, [onSyncAll, onRefreshRepos, showMessage])
 
@@ -165,12 +191,12 @@ export const App = ({
       setMode("list")
       return
     }
-    
+
     setMode("syncing")
     setMessage(`Searching: "${query}"...`)
     setSearchQuery(query)
     setSearchMode(searchModeParam)
-    
+
     try {
       const results = await onSearch(query, searchModeParam)
       setSearchResults(results)
@@ -181,7 +207,7 @@ export const App = ({
       showMessage(`Error: ${error instanceof Error ? error.message : "Search failed"}`)
       setMode("list")
     }
-    
+
     setInputValue("")
   }, [onSearch, showMessage])
 
@@ -200,13 +226,13 @@ export const App = ({
     }
   }
 }`
-    
+
     try {
       // Use platform-specific clipboard command
       const platform = process.platform
       let command: string
       let args: string[]
-      
+
       if (platform === "darwin") {
         // macOS
         command = "pbcopy"
@@ -222,18 +248,18 @@ export const App = ({
       } else {
         throw new Error("Unsupported platform for clipboard")
       }
-      
+
       const proc = Bun.spawn([command, ...args], {
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
       })
-      
+
       await proc.stdin.write(mcpConfig)
       proc.stdin.end()
-      
+
       await proc.exited
-      
+
       if (proc.exitCode !== 0) {
         // Try xsel on Linux if xclip failed
         if (platform === "linux") {
@@ -245,7 +271,7 @@ export const App = ({
           await proc2.stdin.write(mcpConfig)
           proc2.stdin.end()
           await proc2.exited
-          
+
           if (proc2.exitCode !== 0) {
             throw new Error("Failed to copy to clipboard")
           }
@@ -253,12 +279,21 @@ export const App = ({
           throw new Error("Failed to copy to clipboard")
         }
       }
-      
+
       showMessage("[OK] MCP configuration copied to clipboard")
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to copy to clipboard"}`)
     }
   }, [showMessage])
+
+  const toggleGroup = useCallback((owner: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(owner)) next.delete(owner)
+      else next.add(owner)
+      return next
+    })
+  }, [])
 
   useKeyboard((key) => {
     // Handle escape/quit in any mode
@@ -279,6 +314,8 @@ export const App = ({
     // Only handle navigation in list mode
     if (mode !== "list") return
 
+    const row = flatRows[selectedIndex]
+
     switch (key.name) {
       case "up":
       case "k":
@@ -286,19 +323,38 @@ export const App = ({
         break
       case "down":
       case "j":
-        setSelectedIndex(Math.min(repos.length - 1, selectedIndex + 1))
+        setSelectedIndex(Math.min(flatRows.length - 1, selectedIndex + 1))
+        break
+      case "enter":
+      case "return":
+        if (row?.kind === "header") {
+          toggleGroup(row.owner)
+        }
+        break
+      case "left":
+        if (row?.kind === "header" && !row.collapsed) {
+          toggleGroup(row.owner)
+        }
+        break
+      case "right":
+        if (row?.kind === "header" && row.collapsed) {
+          toggleGroup(row.owner)
+        }
         break
       case "a":
         setMode("add")
         break
       case "d":
-        handleRequestDelete()
+        if (row?.kind === "repo") {
+          setRepoToDelete(row.repo)
+          setMode("confirmDelete")
+        }
         break
       case "s":
         if (key.shift) {
           handleSyncAll()
-        } else {
-          handleSyncRepo()
+        } else if (row?.kind === "repo") {
+          handleSyncRepo(row.repo)
         }
         break
       case "/":
@@ -344,10 +400,11 @@ export const App = ({
       }}
     >
       <Header version="1.0.3" />
-      <RepoList repos={repos} selectedIndex={selectedIndex} />
-      <StatusBar 
-        mode={mode} 
-        message={message} 
+      <RepoList flatRows={flatRows} totalRepos={repos.length} selectedIndex={selectedIndex} />
+      <StatusBar
+        mode={mode}
+        message={message}
+        grouped={flatRows.some(r => r.kind === "header")}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {
@@ -360,7 +417,7 @@ export const App = ({
           return localCommit !== cloudCommit
         }).length : 0}
       />
-      
+
       {mode === "add" && (
         <AddRepoModal
           onSubmit={handleAddRepo}
@@ -372,7 +429,7 @@ export const App = ({
           value={inputValue}
         />
       )}
-      
+
       {mode === "search" && (
         <SearchModal
           onSubmit={handleSearch}
@@ -384,11 +441,11 @@ export const App = ({
           value={inputValue}
         />
       )}
-      
+
       {mode === "adding" && (
         <ProgressModal progress={addProgress} />
       )}
-      
+
       {mode === "confirmDelete" && repoToDelete && (
         <ConfirmDialog
           message={`Are you sure you want to delete "${repoToDelete.id}"? This action cannot be undone.`}

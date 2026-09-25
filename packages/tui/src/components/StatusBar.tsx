@@ -8,9 +8,10 @@ interface StatusBarProps {
   mcpServerRunning?: boolean
   cloudConfigured?: boolean
   cloudPendingCount?: number
+  grouped?: boolean
 }
 
-export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cloudPendingCount }: StatusBarProps) => {
+export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped }: StatusBarProps) => {
   const getHelpText = () => {
     if (mode === "add" || mode === "search" || mode === "confirmDelete") {
       return "" // Help text shown in modal
@@ -21,7 +22,11 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
     if (mode === "results") {
       return "[Esc] Back"
     }
-    return "[a] Add  [d] Delete  [s] Sync  [S] Sync All  [/] Search  [c] Copy MCP Config  [q] Quit"
+    const base = "[a] Add  [d] Delete  [s] Sync  [S] Sync All  [/] Search  [c] Copy MCP Config  [q] Quit"
+    if (grouped) {
+      return `[Enter] Toggle group  ${base}`
+    }
+    return base
   }
 
   const getMessageColor = () => {

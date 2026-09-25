@@ -1,13 +1,16 @@
 import type { TrackingMode, PinnedMode } from "./schemas.js"
 
-// Utility: derive repo ID from GitHub URL
-// e.g., "https://github.com/Effect-TS/effect" -> "Effect-TS-effect"
 export function deriveRepoId(url: string): string {
+  const { owner, name } = extractRepoParts(url)
+  return `${owner}-${name}`
+}
+
+export function extractRepoParts(url: string): { owner: string; name: string } {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/)
   if (!match) {
     throw new Error(`Invalid GitHub URL: ${url}`)
   }
-  return `${match[1]}-${match[2]}`
+  return { owner: match[1], name: match[2] }
 }
 
 // Utility: create a default tracking mode
