@@ -1,6 +1,6 @@
-import { describe, expect, it, spyOn } from "bun:test"
+import { describe, expect, it, vi } from "vitest"
 import { Effect, FileSystem, Layer } from "effect"
-import { fileLoggerLayer } from "../src/file-logger.js"
+import { fileLoggerLayer } from "./file-logger.js"
 
 /**
  * In-memory FileSystem: records directories created and everything the
@@ -33,7 +33,7 @@ describe("fileLoggerLayer", () => {
   it("writes logs to the log file and not the console", async () => {
     const fs = makeMemoryFileSystem()
     const consoleSpies = (["log", "info", "warn", "error", "debug"] as const).map((m) =>
-      spyOn(console, m).mockImplementation(() => {})
+      vi.spyOn(console, m).mockImplementation(() => {})
     )
 
     try {

@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress } from "@repobase/engine"
 import { extractRepoParts, initialProgress } from "@repobase/engine"
+import { Array as Arr, Order } from "effect"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog } from "./components/index.js"
 import type { FlatRow } from "./components/RepoList.js"
@@ -29,19 +30,34 @@ const repoParts = (repo: RepoConfig): { owner: string; name: string } => {
   }
 }
 
-function buildFlatRows(repos: RepoConfig[], collapsed: Set<string>): FlatRow[] {
-  const sorted = repos.toSorted((a, b) => a.id.localeCompare(b.id))
+interface ParsedRepo {
+  readonly repo: RepoConfig
+  readonly owner: string
+  readonly name: string
+}
 
-  return [...Map.groupBy(sorted, (repo) => repoParts(repo).owner)].flatMap(([owner, group]): FlatRow[] => {
+const lowercaseCompare = Order.mapInput(Order.String, (s: string) => s.toLowerCase())
+const byOwnerThenName = Order.Struct({ owner: lowercaseCompare, name: lowercaseCompare })
+
+// Group repos by owner; owners with a single repo stay as flat rows
+function buildFlatRows(repos: RepoConfig[], collapsed: Set<string>): FlatRow[] {
+  const parsed = Arr.map(repos, (repo): ParsedRepo => ({ repo, ...repoParts(repo) }))
+  if (!Arr.isReadonlyArrayNonEmpty(parsed)) return []
+
+  // Sorted by owner, so groupWith collects each owner's repos into one adjacent group
+  const groups = Arr.groupWith(Arr.sort(parsed, byOwnerThenName), (a, b) => a.owner === b.owner)
+
+  return Arr.flatMap(groups, (group): FlatRow[] => {
+    const { owner, repo } = Arr.headNonEmpty(group)
     if (group.length === 1) {
-      return [{ kind: "repo", repo: group[0], label: group[0].id, indented: false }]
+      return [{ kind: "repo", repo, label: repo.id, indented: false }]
     }
 
     const isCollapsed = collapsed.has(owner)
     const header: FlatRow = { kind: "header", owner, repoCount: group.length, collapsed: isCollapsed }
     if (isCollapsed) return [header]
 
-    return [header, ...group.map((repo): FlatRow => ({ kind: "repo", repo, label: repoParts(repo).name, indented: true }))]
+    return [header, ...Arr.map(group, ({ repo, name }): FlatRow => ({ kind: "repo", repo, label: name, indented: true }))]
   })
 }
 

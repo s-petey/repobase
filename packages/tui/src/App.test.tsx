@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "vitest"
 import { testRender } from "@opentui/react/test-utils"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { Option } from "effect"
 import type { RepoConfig } from "@repobase/engine"
-import { App } from "../src/App.js"
-import { interact, teardown } from "./helpers.js"
+import { App } from "./App.js"
+import { interact, teardown } from "./test/helpers.js"
 
 const repo = (owner: string, name: string): RepoConfig => ({
   id: `${owner}-${name}`,
@@ -89,6 +89,30 @@ describe("App owner grouping", () => {
     await interact(setup, () => setup!.mockInput.pressKey("j"))
     await interact(setup, () => setup!.mockInput.pressKey("d"))
     expect(setup.captureCharFrame()).toContain('delete "Effect-TS-effect"')
+  })
+
+  it("orders owners case-insensitively, then repos by name", async () => {
+    setup = await renderApp([
+      repo("zeta", "one"),
+      repo("a-b", "y"),
+      repo("a", "z"),
+      repo("a", "x"),
+      repo("Alpha", "web"),
+      repo("Alpha", "api"),
+      repo("beta", "solo")
+    ])
+    await interact(setup, () => {})
+    const lines = setup.captureCharFrame().split("\n")
+    const at = (text: string) => lines.findIndex((l) => l.includes(text))
+
+    // Sorted by owner, not id: by id "a-b-y" < "a-x" would put owner "a-b" before "a"
+    expect(at("▼ a (2 repos)")).toBeLessThan(at("a-b-y"))
+    // Case-insensitive: "a-b" < "Alpha" < "beta" (code-point order would put "Alpha" first)
+    expect(at("a-b-y")).toBeLessThan(at("Alpha (2 repos)"))
+    expect(at("Alpha (2 repos)")).toBeLessThan(at(" api "))
+    expect(at(" api ")).toBeLessThan(at(" web "))
+    expect(at(" web ")).toBeLessThan(at("beta-solo"))
+    expect(at("beta-solo")).toBeLessThan(at("zeta-one"))
   })
 
   it("shows no headers or toggle hint when every owner has a single repo", async () => {
