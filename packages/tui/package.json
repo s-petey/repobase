@@ -5,8 +5,7 @@
   "main": "src/main.tsx",
   "types": "src/main.tsx",
   "scripts": {
-    "start": "bun run src/main.tsx",
-    "test": "bun test"
+    "start": "bun run src/main.tsx"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.115",

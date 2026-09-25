@@ -18,7 +18,8 @@
     "build": "bun run scripts/build.ts",
     "dev:tui": "bun run --cwd packages/tui start",
     "dev:mcp": "bun run --cwd packages/mcp-server start",
-    "test": "bun run --cwd packages/engine test",
+    "test": "bun --bun vitest run",
+    "test:watch": "bun --bun vitest",
     "prepublishOnly": "bun run build"
   },
   "keywords": [
@@ -60,6 +61,7 @@
     "@types/react": "^19.3.0",
     "conventional-changelog-conventionalcommits": "^10.4.0",
     "semantic-release": "^25.0.9",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
   }
 }
