@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import { execSync } from "node:child_process"
 import * as path from "node:path"
-import { GitError } from "../src/errors.js"
+import { ResolveHeadFailedError } from "../src/jobs/errors.js"
 import { layerWorkerPool, WorkerClient } from "../src/worker/client.js"
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..")
@@ -14,17 +14,19 @@ describe("worker pool", () => {
   it.effect("resolves HEAD in a worker thread", () =>
     Effect.gen(function* () {
       const client = yield* WorkerClient
-      const { commit } = yield* client.GitResolveHead({ localPath: repoRoot })
+      const { commit } = yield* client.ResolveHead({ repoId: "repobase", localPath: repoRoot })
       expect(commit).toBe(execSync("git rev-parse HEAD", { cwd: repoRoot }).toString().trim())
     }).pipe(Effect.provide(PoolLayer)), 30_000)
 
-  it.effect("serializes GitError back from the worker", () =>
+  it.effect("serializes the step error back from the worker", () =>
     Effect.gen(function* () {
       const client = yield* WorkerClient
-      const error = yield* Effect.flip(client.GitResolveHead({ localPath: "/nonexistent/repo" }))
-      expect(error).toBeInstanceOf(GitError)
-      expect((error as GitError).command).toBe("rev-parse")
-      expect((error as GitError).message).toContain("/nonexistent/repo")
+      const error = yield* Effect.flip(
+        client.ResolveHead({ repoId: "missing", localPath: "/nonexistent/repo" })
+      )
+      expect(error).toBeInstanceOf(ResolveHeadFailedError)
+      expect((error as ResolveHeadFailedError).repoId).toBe("missing")
+      expect((error as ResolveHeadFailedError).message).toContain("/nonexistent/repo")
     }).pipe(Effect.provide(PoolLayer)), 30_000)
 
   it.effect("runs concurrent requests across the pool", () =>
@@ -32,7 +34,7 @@ describe("worker pool", () => {
       const client = yield* WorkerClient
       const results = yield* Effect.forEach(
         Array.from({ length: 6 }),
-        () => client.GitResolveHead({ localPath: repoRoot }),
+        () => client.ResolveHead({ repoId: "repobase", localPath: repoRoot }),
         { concurrency: "unbounded" }
       )
       expect(new Set(results.map((r) => r.commit)).size).toBe(1)

@@ -5,6 +5,7 @@ import { GitError } from "../src/errors.js"
 import {
   classifyGitFailure,
   CloneFailedError,
+  ConfigReadFailedError,
   cloneFailed,
   DeleteRemovedFailedError,
   DiffFailedError,
@@ -36,6 +37,7 @@ const repoId = "acme-widgets"
 const examples: ReadonlyArray<readonly [StepError, string]> = [
   [new RepoAlreadyAddedError({ repoId, message: "exists" }), "acme-widgets is already added"],
   [new RepoMissingError({ repoId, message: "gone" }), "acme-widgets is no longer in your repositories"],
+  [new ConfigReadFailedError({ repoId, message: "Unexpected token" }), "Could not read your repositories config"],
   [
     new CloneFailedError({ repoId, message: "denied", url: "https://x", reason: "auth" }),
     "Clone failed: authentication required"

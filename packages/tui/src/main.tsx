@@ -4,22 +4,34 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Deferred, Effect, FiberSet, Layer, SubscriptionRef, Stream, Fiber } from "effect"
+import { Deferred, Effect, Fiber, FiberSet, Layer, Option, Stream } from "effect"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
   GitClientLayer,
   RepoStoreLayer,
+  RepoStore,
   IndexerLayer,
-  initialProgress,
+  JobRunner,
+  JobRunnerLayer,
+  JobStoreLayer,
+  JobProgress,
+  JobProgressLayer,
+  makeJobDefinitions,
+  defaultDefinitionsConfig,
+  deriveRepoId,
+  trackingMode,
   fileLoggerLayer,
   layerWorkerPool,
   logPath,
+  resolveHostWorkerCount,
+  splitPools,
   type SearchMode,
   type AddRepoProgress,
 } from "@repobase/engine"
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
+import { addRepoProgress, jobFailureMessage } from "./jobProgress.js"
 
 // File logger for debugging - writes to ~/.repobase/tui.log
 const tuiLogPath = logPath("tui")
@@ -31,15 +43,25 @@ const workerUrl = new URL(
   import.meta.url
 )
 
-// Layer composition with file-based logging
-const EngineLive = Layer.mergeAll(
-  RepobaseEngineLayer.pipe(
-    Layer.provide(GitClientLayer),
-    Layer.provide(RepoStoreLayer),
-    Layer.provide(IndexerLayer)
-  ),
-  layerWorkerPool({ workerUrl })
+// One worker per job step at a time, and one job's batches spread over all of them
+const workerCount = resolveHostWorkerCount()
+const jobWorkers = splitPools(workerCount.count).jobs
+
+// Add-repo runs as a job: steps checkpointed on disk, heavy work on workers
+const JobsLive = JobRunnerLayer(makeJobDefinitions(defaultDefinitionsConfig()), {
+  concurrency: jobWorkers
+}).pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(layerWorkerPool({ workerUrl, size: jobWorkers }), JobStoreLayer, JobProgressLayer)
+  )
 )
+
+// Sync and search still run through RepobaseEngine on this thread until they
+// move to jobs too. RepoStore is shared by the engine and the job definitions.
+const EngineLive = Layer.mergeAll(
+  RepobaseEngineLayer.pipe(Layer.provide(GitClientLayer), Layer.provide(IndexerLayer)),
+  JobsLive
+).pipe(Layer.provideMerge(RepoStoreLayer))
 
 // provideMerge (not provide) so the file logger is also part of MainLayer's
 // output; in Effect v4 loggers are context references, so a merely-provided
@@ -55,8 +77,12 @@ const MainLayer = EngineLive.pipe(
 // every finalizer below runs on the way out.
 const program = Effect.gen(function* () {
   yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
+  if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
 
   const engine = yield* RepobaseEngine
+  const runner = yield* JobRunner
+  const progress = yield* JobProgress
+  const repoStore = yield* RepoStore
 
   // Runs effects from React callbacks as fibers owned by this program's scope,
   // so anything still in flight is interrupted on shutdown
@@ -84,22 +110,35 @@ const program = Effect.gen(function* () {
       onAddRepo={(url: string, onProgress: (p: AddRepoProgress) => void) =>
         runPromise(
           Effect.gen(function* () {
-            // Create a SubscriptionRef for progress updates
-            const progressRef = yield* SubscriptionRef.make<AddRepoProgress>(initialProgress)
+            const repoId = yield* Effect.try({
+              try: () => deriveRepoId(url),
+              catch: () => new Error(`Not a GitHub repository URL: ${url}`)
+            })
+            const job = yield* runner.start({
+              kind: "addRepo",
+              repoId,
+              payload: { url, mode: trackingMode("main") }
+            })
 
-            // Fork a fiber to listen for progress updates and call the callback
-            const listenerFiber = yield* Stream.runForEach(
-              SubscriptionRef.changes(progressRef),
-              (progress) => Effect.sync(() => onProgress(progress))
-            ).pipe(Effect.forkChild)
+            // Show the job's steps and per-file indexing progress in the modal
+            const reporter = yield* Stream.zipLatest(runner.changes, progress.changes).pipe(
+              Stream.map(([jobs, files]) => {
+                const current = jobs.find((j) => j.id === job.id)
+                return current ? addRepoProgress(current, files.get(job.id)) : undefined
+              }),
+              Stream.runForEach((p) => (p ? Effect.sync(() => onProgress(p)) : Effect.void)),
+              Effect.forkChild
+            )
 
-            // Run addRepo with the progress ref
-            const result = yield* engine.addRepo(url, { progressRef })
+            const done = yield* runner.await(job.id)
+            onProgress(addRepoProgress(done))
+            yield* Fiber.interrupt(reporter)
+            yield* progress.clear(job.id)
 
-            // Clean up the listener fiber
-            yield* Fiber.interrupt(listenerFiber)
-
-            return result
+            if (done.status !== "completed") {
+              return yield* Effect.fail(new Error(jobFailureMessage(done)))
+            }
+            return Option.getOrThrow(yield* repoStore.getRepo(repoId))
           })
         )
       }

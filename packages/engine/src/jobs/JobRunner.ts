@@ -337,15 +337,26 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         return yield* Effect.fail(error)
       })
 
+    // Free the repo before publishing the final status, so whoever awaits the
+    // job can start the next one for the same repo straight away
+    const releaseJobRepo = (jobId: string) =>
+      current(jobId).pipe(
+        Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (job) => releaseRepo(job.repoId) }))
+      )
+
     const finish = (jobId: string, status: JobStatus) =>
-      updateJob(jobId, (job) => ({
-        ...job,
-        status,
-        steps:
-          status === "completed" || status === "skipped"
-            ? job.steps.map((s) => (s.status === "pending" ? { ...s, status: "skipped" as const } : s))
-            : job.steps
-      }))
+      releaseJobRepo(jobId).pipe(
+        Effect.andThen(
+          updateJob(jobId, (job) => ({
+            ...job,
+            status,
+            steps:
+              status === "completed" || status === "skipped"
+                ? job.steps.map((s) => (s.status === "pending" ? { ...s, status: "skipped" as const } : s))
+                : job.steps
+          }))
+        )
+      )
 
     // Run a fan-out. Its own step lists the items (every attempt: it is cheap
     // and must give the same items each time); the first time, one step per
@@ -441,13 +452,18 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
               })
         ),
         Effect.onInterrupt(() =>
-          updateJob(jobId, (job, now) => ({
-            ...job,
-            status: "interrupted",
-            steps: job.steps.map((s) =>
-              s.status === "running" ? { ...s, status: "interrupted" as const, finishedAt: now } : s
-            )
-          })).pipe(Effect.ignore)
+          releaseJobRepo(jobId).pipe(
+            Effect.andThen(
+              updateJob(jobId, (job, now) => ({
+                ...job,
+                status: "interrupted",
+                steps: job.steps.map((s) =>
+                  s.status === "running" ? { ...s, status: "interrupted" as const, finishedAt: now } : s
+                )
+              }))
+            ),
+            Effect.ignore
+          )
         )
       )
 

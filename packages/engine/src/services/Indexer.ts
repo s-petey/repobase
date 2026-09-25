@@ -113,7 +113,8 @@ export interface IndexBatchOptions {
  * Where the index lives and, for tests, how text is embedded
  */
 export interface IndexerConfig {
-  readonly indexDir: string
+  // Defaults to ~/.repobase/index
+  readonly indexDir?: string
   // Replaces the transformers embedding model (e.g. a deterministic fake in tests)
   readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
 }
@@ -391,8 +392,9 @@ const retryOnCommitConflict = <A>(effect: Effect.Effect<A, IndexError>) =>
 /**
  * Create an Indexer for a given index directory
  */
-export const makeWith = (config: IndexerConfig) => Effect.gen(function* () {
+export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
+  const config = { ...options, indexDir: options.indexDir ?? INDEX_DIR }
 
   // Initialize LanceDB connection lazily
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1271,7 +1273,7 @@ export const makeWith = (config: IndexerConfig) => Effect.gen(function* () {
 /**
  * Create the Indexer service implementation for ~/.repobase/index
  */
-export const make = makeWith({ indexDir: INDEX_DIR })
+export const make = makeWith({})
 
 /**
  * Indexer layer - requires FileSystem

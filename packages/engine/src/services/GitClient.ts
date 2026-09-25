@@ -47,6 +47,16 @@ const toGitError =
 export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
+  // Git must never wait for input: there's no terminal to answer a password
+  // prompt in a worker thread, and a prompt on /dev/tty would draw over the
+  // TUI. With prompts off, a repo needing credentials fails fast with
+  // "terminal prompts disabled" instead of hanging. A user-provided
+  // GIT_SSH_COMMAND is kept as is.
+  const gitEnv: Record<string, string> = {
+    GIT_TERMINAL_PROMPT: "0",
+    ...(process.env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" })
+  }
+
   const collectText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
     stream.pipe(Stream.decodeText(), Stream.mkString)
 
@@ -56,7 +66,9 @@ export const make = Effect.gen(function* () {
   const run = (commandName: string, ...args: string[]) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const handle = yield* spawner.spawn(ChildProcess.make("git", args))
+        const handle = yield* spawner.spawn(
+          ChildProcess.make("git", args, { env: gitEnv, extendEnv: true })
+        )
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [collectText(handle.stdout), collectText(handle.stderr), handle.exitCode],
           { concurrency: "unbounded" }

@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import type { RpcClientError } from "effect/unstable/rpc"
-import type { GitError } from "../errors.js"
+import type { GitError, IndexError } from "../errors.js"
 
 // One error class per job step, so a failed step can be shown to the user
 // with a specific message and hint. Each is a Schema class: it travels back
@@ -25,7 +25,7 @@ export type GitFailureReason = typeof GitFailureReason.Type
 /**
  * Where indexing planning failed
  */
-export const PlanIndexPhase = Schema.Literals(["glob", "read", "queryExisting"])
+export const PlanIndexPhase = Schema.Literals(["glob", "read", "queryExisting", "savePlan"])
 export type PlanIndexPhase = typeof PlanIndexPhase.Type
 
 /**
@@ -42,6 +42,12 @@ export class RepoAlreadyAddedError extends Schema.TaggedError<RepoAlreadyAddedEr
 
 // syncRepo: the repo was removed from the store before the job ran
 export class RepoMissingError extends Schema.TaggedError<RepoMissingError>()("RepoMissingError", common) {}
+
+// Any step reading ~/.repobase/config.json: it can't be read or parsed
+export class ConfigReadFailedError extends Schema.TaggedError<ConfigReadFailedError>()(
+  "ConfigReadFailedError",
+  common
+) {}
 
 export class CloneFailedError extends Schema.TaggedError<CloneFailedError>()("CloneFailedError", {
   ...common,
@@ -144,6 +150,7 @@ export class UnexpectedStepError extends Schema.TaggedError<UnexpectedStepError>
 export const StepError = Schema.Union([
   RepoAlreadyAddedError,
   RepoMissingError,
+  ConfigReadFailedError,
   CloneFailedError,
   ResolveHeadFailedError,
   SaveConfigFailedError,
@@ -240,6 +247,41 @@ export const remoteHeadFailed =
       : new ResolveHeadFailedError({ repoId: ctx.repoId, message: error.message })
 
 /**
+ * Map an Indexer failure while planning to PlanIndexFailedError
+ */
+export const planIndexFailed =
+  (ctx: { readonly repoId: string }) =>
+  (error: IndexError): PlanIndexFailedError =>
+    new PlanIndexFailedError({
+      repoId: ctx.repoId,
+      phase:
+        error.operation === "planIndex.glob"
+          ? "glob"
+          : error.operation === "planIndex.queryExisting"
+            ? "queryExisting"
+            : "read",
+      message: error.message
+    })
+
+/**
+ * Map an Indexer failure while indexing a batch: a model that won't load gets
+ * its own error, anything else is a batch failure at the phase it happened
+ */
+export const indexBatchFailed =
+  (ctx: { readonly repoId: string; readonly batch: number; readonly total: number }) =>
+  (error: IndexError): IndexBatchFailedError | EmbedderLoadFailedError =>
+    error.operation === "loadEmbedder"
+      ? new EmbedderLoadFailedError({ repoId: ctx.repoId, message: error.message })
+      : new IndexBatchFailedError({
+          repoId: ctx.repoId,
+          batch: ctx.batch,
+          total: ctx.total,
+          file: error.path,
+          phase: error.operation === "indexBatch.embed" ? "embed" : error.operation === "indexBatch.read" ? "read" : "write",
+          message: error.message
+        })
+
+/**
  * Map a transport failure (worker died, spawn failed, protocol error) for a step
  */
 export const workerCrashed =
@@ -309,6 +351,12 @@ export const formatStepError = (error: StepError): StepErrorDisplay => {
         detail,
         hint: "Discard this job"
       }
+    case "ConfigReadFailedError":
+      return {
+        title: "Could not read your repositories config",
+        detail,
+        hint: "Check that ~/.repobase/config.json is readable and valid JSON, then retry"
+      }
     case "CloneFailedError": {
       const reason = gitReasonDisplay[error.reason]
       return { title: `Clone failed: ${reason.title}`, detail, hint: reason.hint }
@@ -352,7 +400,9 @@ export const formatStepError = (error: StepError): StepErrorDisplay => {
         title:
           error.phase === "queryExisting"
             ? "Could not read the existing index"
-            : "Could not scan the repository files",
+            : error.phase === "savePlan"
+              ? "Could not save the indexing plan"
+              : "Could not scan the repository files",
         detail,
         hint: "Retry; check that ~/.repobase is readable if it keeps failing"
       }

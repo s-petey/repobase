@@ -1,20 +1,123 @@
 import { BunServices, BunWorkerRunner } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Array as Arr, Effect, FileSystem, Layer, Option, Queue, Stream } from "effect"
 import { RpcServer } from "effect/unstable/rpc"
+import * as path from "path"
 import { fileLoggerLayer, logPath } from "../file-logger.js"
+import {
+  CloneFailedError,
+  cloneFailed,
+  DeleteRemovedFailedError,
+  type EmbedderLoadFailedError,
+  FinalizeFtsFailedError,
+  IndexBatchFailedError,
+  indexBatchFailed,
+  PlanIndexFailedError,
+  planIndexFailed,
+  ResolveHeadFailedError
+} from "../jobs/errors.js"
+import { JobStore, layer as JobStoreLayer } from "../jobs/JobStore.js"
 import { GitClient, layer as GitClientLayer } from "../services/GitClient.js"
-import { StepRpcs } from "./rpcs.js"
+import { INDEX_BATCH_SIZE, Indexer, layer as IndexerLayer } from "../services/Indexer.js"
+import { type IndexBatchEvent, StepRpcs } from "./rpcs.js"
 
 /**
- * Handlers for StepRpcs, run inside the worker thread
+ * Handlers for StepRpcs, run inside the worker thread. Exported so tests can
+ * run them in-process against temp directories.
  */
-const HandlersLayer = StepRpcs.toLayer(
+export const HandlersLayer = StepRpcs.toLayer(
   Effect.gen(function* () {
     const git = yield* GitClient
+    const indexer = yield* Indexer
+    const jobs = yield* JobStore
+    const fs = yield* FileSystem.FileSystem
+
+    const readPlan = (jobId: string) => jobs.readPlan(jobId).pipe(Effect.map(Option.getOrUndefined))
 
     return StepRpcs.of({
-      GitResolveHead: ({ localPath }) =>
-        git.getCurrentCommit(localPath).pipe(Effect.map((commit) => ({ commit })))
+      Clone: ({ repoId, url, localPath }) =>
+        Effect.gen(function* () {
+          // A retried clone starts from scratch: drop whatever a failed attempt left
+          yield* Effect.all([
+            fs.remove(localPath, { recursive: true, force: true }),
+            fs.makeDirectory(path.dirname(localPath), { recursive: true })
+          ]).pipe(
+            Effect.mapError(
+              (e) => new CloneFailedError({ repoId, url, reason: "unknown", message: e.message })
+            )
+          )
+          yield* git.clone(url, localPath).pipe(Effect.mapError(cloneFailed({ repoId, url })))
+        }),
+
+      ResolveHead: ({ repoId, localPath }) =>
+        git.getCurrentCommit(localPath).pipe(
+          Effect.map((commit) => ({ commit })),
+          Effect.mapError((e) => new ResolveHeadFailedError({ repoId, message: e.message }))
+        ),
+
+      PlanFullIndex: ({ jobId, repoId, localPath }) =>
+        Effect.gen(function* () {
+          const plan = yield* indexer
+            .planFullIndex(repoId, localPath)
+            .pipe(Effect.mapError(planIndexFailed({ repoId })))
+          yield* jobs
+            .writePlan(jobId, plan)
+            .pipe(
+              Effect.mapError((e) => new PlanIndexFailedError({ repoId, phase: "savePlan", message: e.message }))
+            )
+          return { toIndex: plan.toIndex.length, toDelete: plan.toDelete.length, skipped: plan.skipped }
+        }),
+
+      DeleteRemoved: ({ jobId, repoId }) =>
+        Effect.gen(function* () {
+          const plan = yield* readPlan(jobId).pipe(
+            Effect.mapError((e) => new DeleteRemovedFailedError({ repoId, count: 0, message: e.message }))
+          )
+          if (!plan) {
+            return yield* new DeleteRemovedFailedError({
+              repoId,
+              count: 0,
+              message: `No indexing plan saved for job ${jobId}`
+            })
+          }
+          yield* indexer
+            .deletePaths(repoId, plan.toDelete)
+            .pipe(
+              Effect.mapError(
+                (e) => new DeleteRemovedFailedError({ repoId, count: plan.toDelete.length, message: e.message })
+              )
+            )
+          return { count: plan.toDelete.length }
+        }),
+
+      IndexBatch: ({ jobId, repoId, localPath, batch, total }) =>
+        Stream.callback<IndexBatchEvent, IndexBatchFailedError | EmbedderLoadFailedError>((queue) =>
+          Effect.gen(function* () {
+            const batchError = (message: string) =>
+              new IndexBatchFailedError({ repoId, batch, total, phase: "read", message })
+            const plan = yield* readPlan(jobId).pipe(Effect.mapError((e) => batchError(e.message)))
+            if (!plan) return yield* batchError(`No indexing plan saved for job ${jobId}`)
+
+            // The same chunking the main thread used to count batches
+            const files = Arr.chunksOf(plan.toIndex, INDEX_BATCH_SIZE)[batch] ?? []
+            const result = yield* indexer
+              .indexBatch(repoId, localPath, files, {
+                onFile: (file) => Queue.offer(queue, { _tag: "File", path: file }).pipe(Effect.asVoid)
+              })
+              .pipe(Effect.mapError(indexBatchFailed({ repoId, batch, total })))
+
+            yield* Queue.offer(queue, { _tag: "Done", ...result })
+            yield* Queue.end(queue)
+          }).pipe(
+            // Fail the stream itself; a failure left in the callback would
+            // leave the caller waiting on a queue that never ends
+            Effect.catch((error) => Queue.fail(queue, error))
+          )
+        ),
+
+      FinalizeIndex: ({ repoId }) =>
+        indexer
+          .finalizeIndex()
+          .pipe(Effect.mapError((e) => new FinalizeFtsFailedError({ repoId, message: e.message })))
     })
   })
 )
@@ -25,7 +128,7 @@ const WorkerLayer = RpcServer.layer(StepRpcs).pipe(
   Layer.provide(HandlersLayer),
   Layer.provide(RpcServer.layerProtocolWorkerRunner),
   Layer.provide(BunWorkerRunner.layer),
-  Layer.provide(GitClientLayer),
+  Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayer, JobStoreLayer)),
   Layer.provideMerge(fileLoggerLayer(logPath("worker"))),
   Layer.provide(BunServices.layer)
 )

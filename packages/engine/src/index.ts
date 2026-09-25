@@ -174,9 +174,31 @@ export {
   fanOutKey,
   layer as JobRunnerLayer
 } from "./jobs/JobRunner.js"
+export {
+  JobProgress,
+  type JobProgressService,
+  type FileProgress,
+  layer as JobProgressLayer
+} from "./jobs/JobProgress.js"
+export {
+  makeJobDefinitions,
+  defaultDefinitionsConfig,
+  type DefinitionsConfig,
+  type JobDefinitionsServices
+} from "./jobs/definitions.js"
 
 // Worker pool
-export { StepRpcs, GitResolveHead } from "./worker/rpcs.js"
+export {
+  StepRpcs,
+  Clone,
+  ResolveHead,
+  PlanFullIndex,
+  DeleteRemoved,
+  IndexBatch,
+  FinalizeIndex,
+  PlanSummary,
+  IndexBatchEvent
+} from "./worker/rpcs.js"
 export { WorkerClient, layerWorkerPool } from "./worker/client.js"
 export { runWorker } from "./worker/server.js"
 
