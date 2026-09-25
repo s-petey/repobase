@@ -101,6 +101,38 @@ export {
   type PoolSizes
 } from "./worker/limits.js"
 
+// Job step errors
+export {
+  StepError,
+  GitFailureReason,
+  PlanIndexPhase,
+  IndexBatchPhase,
+  RepoAlreadyAddedError,
+  RepoMissingError,
+  CloneFailedError,
+  ResolveHeadFailedError,
+  SaveConfigFailedError,
+  FetchFailedError,
+  RemoteBranchMissingError,
+  DiffFailedError,
+  ResetFailedError,
+  PlanIndexFailedError,
+  DeleteRemovedFailedError,
+  IndexBatchFailedError,
+  EmbedderLoadFailedError,
+  FinalizeFtsFailedError,
+  UpdateStoreFailedError,
+  WorkerCrashedError,
+  isRetryable,
+  classifyGitFailure,
+  cloneFailed,
+  fetchFailed,
+  remoteHeadFailed,
+  workerCrashed,
+  formatStepError,
+  type StepErrorDisplay
+} from "./jobs/errors.js"
+
 // Worker pool
 export { StepRpcs, GitResolveHead } from "./worker/rpcs.js"
 export { WorkerClient, layerWorkerPool } from "./worker/client.js"
