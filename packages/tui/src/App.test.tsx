@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { testRender } from "@opentui/react/test-utils"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import { Option } from "effect"
@@ -19,7 +19,7 @@ const repo = (owner: string, name: string): RepoConfig => ({
   lastPushedCommit: Option.none()
 })
 
-const renderApp = (repos: RepoConfig[]) =>
+const renderApp = (repos: RepoConfig[], onQuit: () => void = () => {}) =>
   testRender(
     <App
       initialRepos={repos}
@@ -29,7 +29,10 @@ const renderApp = (repos: RepoConfig[]) =>
       onSyncAll={async () => []}
       onRefreshRepos={async () => repos}
       onSearch={async () => []}
-      onQuit={() => {}}
+      onJobsChange={() => () => {}}
+      onRetryJob={async () => {}}
+      onDiscardJob={async () => {}}
+      onQuit={onQuit}
     />,
     { width: 160, height: 30 }
   )
@@ -113,6 +116,36 @@ describe("App owner grouping", () => {
     expect(at(" api ")).toBeLessThan(at(" web "))
     expect(at(" web ")).toBeLessThan(at("beta-solo"))
     expect(at("beta-solo")).toBeLessThan(at("zeta-one"))
+  })
+
+  it("opens the Tasks view with t or T and closes it with Esc", async () => {
+    setup = await renderApp(repos)
+    await interact(setup, () => {})
+    expect(setup.captureCharFrame()).toContain("[t] Tasks")
+
+    await interact(setup, () => setup!.mockInput.pressKey("t"))
+    expect(setup.captureCharFrame()).toContain("No tasks yet.")
+
+    // A lone Esc is only delivered after a short delay (it could start an escape sequence)
+    await interact(setup, async () => {
+      setup!.mockInput.pressEscape()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+    expect(setup.captureCharFrame()).not.toContain("No tasks yet.")
+
+    await interact(setup, () => setup!.mockInput.pressKey("t", { shift: true }))
+    expect(setup.captureCharFrame()).toContain("No tasks yet.")
+  })
+
+  it("closes the Tasks view with q without quitting the app", async () => {
+    const onQuit = vi.fn()
+    setup = await renderApp(repos, onQuit)
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressKey("t"))
+    await interact(setup, () => setup!.mockInput.pressKey("q"))
+    expect(setup.captureCharFrame()).not.toContain("No tasks yet.")
+    expect(onQuit).not.toHaveBeenCalled()
   })
 
   it("shows no headers or toggle hint when every owner has a single repo", async () => {

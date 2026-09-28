@@ -86,6 +86,7 @@ const program = Effect.gen(function* () {
   // Runs effects from React callbacks as fibers owned by this program's scope,
   // so anything still in flight is interrupted on shutdown
   const runPromise = yield* FiberSet.makeRuntimePromise()
+  const runFork = yield* FiberSet.makeRuntime()
 
   // Disable exitOnCtrlC so shutdown goes through the program's finalizers
   const renderer = yield* Effect.acquireRelease(
@@ -185,6 +186,14 @@ const program = Effect.gen(function* () {
       }
       onRefreshRepos={() => runPromise(engine.listRepos())}
       onSearch={(query: string, mode: SearchMode) => runPromise(engine.search(query, mode))}
+      onJobsChange={(listener) => {
+        const fiber = runFork(Stream.runForEach(runner.changes, (jobs) => Effect.sync(() => listener(jobs))))
+        return () => {
+          runFork(Fiber.interrupt(fiber))
+        }
+      }}
+      onRetryJob={(jobId) => runPromise(runner.retry(jobId).pipe(Effect.asVoid))}
+      onDiscardJob={(jobId) => runPromise(runner.discard(jobId))}
       onQuit={() => {
         Deferred.doneUnsafe(quit, Effect.void)
       }}

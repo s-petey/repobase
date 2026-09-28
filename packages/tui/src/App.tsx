@@ -1,14 +1,15 @@
 import { useKeyboard } from "@opentui/react"
-import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress } from "@repobase/engine"
+import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, Job } from "@repobase/engine"
 import { extractRepoParts, initialProgress } from "@repobase/engine"
-import { Array as Arr, Order } from "effect"
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog } from "./components/index.js"
+import { Array as Arr, DateTime, Order } from "effect"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, JobsModal } from "./components/index.js"
 import type { FlatRow } from "./components/RepoList.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
+import { jobCounts } from "./jobView.js"
 
-type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete"
+type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
 
 interface AppProps {
   initialRepos: RepoConfig[]
@@ -18,6 +19,9 @@ interface AppProps {
   onSyncAll: () => Promise<Array<{ id: string; updated: boolean }>>
   onRefreshRepos: () => Promise<RepoConfig[]>
   onSearch: (query: string, mode: SearchMode) => Promise<SearchResult[]>
+  onJobsChange: (listener: (jobs: ReadonlyArray<Job>) => void) => () => void
+  onRetryJob: (jobId: string) => Promise<void>
+  onDiscardJob: (jobId: string) => Promise<void>
   onQuit: () => void
   cloudConfigured?: boolean
 }
@@ -69,6 +73,9 @@ export const App = ({
   onSyncAll,
   onRefreshRepos,
   onSearch,
+  onJobsChange,
+  onRetryJob,
+  onDiscardJob,
   onQuit,
   cloudConfigured = false,
 }: AppProps) => {
@@ -92,6 +99,20 @@ export const App = ({
 
   // Owner groups the user has collapsed
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+
+  const [jobs, setJobs] = useState<ReadonlyArray<Job>>([])
+  const completedJobIds = useRef<ReadonlySet<string> | undefined>(undefined)
+
+  useEffect(() => onJobsChange(setJobs), [onJobsChange])
+
+  useEffect(() => {
+    const completed = new Set(jobs.filter((j) => j.status === "completed").map((j) => j.id))
+    const previous = completedJobIds.current
+    completedJobIds.current = completed
+    if (previous && [...completed].some((id) => !previous.has(id))) {
+      void onRefreshRepos().then(setRepos)
+    }
+  }, [jobs, onRefreshRepos])
 
   const flatRows = useMemo(() => buildFlatRows(repos, collapsedGroups), [repos, collapsedGroups])
 
@@ -376,6 +397,9 @@ export const App = ({
       case "/":
         setMode("search")
         break
+      case "t":
+        setMode("jobs")
+        break
       case "c":
         handleCopyMcpConfig()
         break
@@ -421,6 +445,7 @@ export const App = ({
         mode={mode}
         message={message}
         grouped={flatRows.some(r => r.kind === "header")}
+        jobCounts={jobCounts(jobs)}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {
@@ -460,6 +485,16 @@ export const App = ({
 
       {mode === "adding" && (
         <ProgressModal progress={addProgress} />
+      )}
+
+      {mode === "jobs" && (
+        <JobsModal
+          jobs={jobs}
+          now={DateTime.nowUnsafe()}
+          onRetry={onRetryJob}
+          onDiscard={onDiscardJob}
+          onClose={() => setMode("list")}
+        />
       )}
 
       {mode === "confirmDelete" && repoToDelete && (
