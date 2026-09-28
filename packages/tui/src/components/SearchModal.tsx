@@ -9,6 +9,7 @@ interface SearchModalProps {
   onCancel: () => void
   onInput: (value: string) => void
   value: string
+  initialMode?: SearchMode
 }
 
 const SEARCH_MODES: { mode: SearchMode; label: string; description: string }[] = [
@@ -18,9 +19,14 @@ const SEARCH_MODES: { mode: SearchMode; label: string; description: string }[] =
 ]
 
 // Paste is handled natively by the focused <input> (opentui >= 0.5)
-export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalProps) => {
-  const [selectedModeIndex, setSelectedModeIndex] = useState(2) // Default to hybrid
+export const SearchModal = ({ onSubmit, onCancel, onInput, value, initialMode = "hybrid" }: SearchModalProps) => {
+  const [selectedModeIndex, setSelectedModeIndex] = useState(() =>
+    Math.max(0, SEARCH_MODES.findIndex((m) => m.mode === initialMode))
+  )
   const [inputFocused, setInputFocused] = useState(true)
+  // The input's starting text (e.g. the last query when reopened from results);
+  // captured once, so re-renders while typing don't reset it
+  const [initialValue] = useState(value)
 
   // Handle keyboard navigation for mode selection
   useKeyboard((key) => {
@@ -68,7 +74,7 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
         top: "20%",
         left: "10%",
         width: "80%",
-        height: 12,
+        height: 14,
         backgroundColor: colors.bg.elevated,
         borderStyle: "double",
         borderColor: colors.status.info.default,
@@ -95,6 +101,7 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
       >
         <input
           placeholder="Enter search query..."
+          value={initialValue}
           onInput={onInput}
           // opentui types <input onSubmit> as both (value: string) and Textarea's
           // (event: SubmitEvent); at runtime an <input> always receives the string value.

@@ -243,17 +243,17 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Search failed"}`)
       setMode("list")
+      setInputValue("")
     }
-
-    setInputValue("")
   }, [onSearch, showMessage])
 
+  // Back to the search box with the last query and mode, to refine the search
   const handleCloseResults = useCallback(() => {
-    setMode("list")
+    setInputValue(searchQuery)
+    setMode("search")
     setSearchResults([])
-    setSearchQuery("")
     setSearchResultIndex(0)
-  }, [])
+  }, [searchQuery])
 
   const handleCopyMcpConfig = useCallback(async () => {
     const mcpConfig = `{
@@ -480,6 +480,7 @@ export const App = ({
           }}
           onInput={setInputValue}
           value={inputValue}
+          initialMode={searchMode}
         />
       )}
 

@@ -148,6 +148,30 @@ describe("App owner grouping", () => {
     expect(onQuit).not.toHaveBeenCalled()
   })
 
+  it("reopens the search box with the last query when leaving the results", async () => {
+    setup = await renderApp(repos)
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressKey("/"))
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("group repos"))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(setup.captureCharFrame()).toContain('Search Results: "group repos"')
+
+    await interact(setup, () => setup!.mockInput.pressKey("q"))
+    let frame = setup.captureCharFrame()
+    expect(frame).toContain("Search Repositories")
+    expect(frame).toContain("group repos")
+
+    // Esc from the search box goes back to the repo list
+    await interact(setup, async () => {
+      setup!.mockInput.pressEscape()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+    frame = setup.captureCharFrame()
+    expect(frame).not.toContain("Search Repositories")
+    expect(frame).toContain("Repositories (3)")
+  })
+
   it("shows no headers or toggle hint when every owner has a single repo", async () => {
     setup = await renderApp([repo("Effect-TS", "effect"), repo("sindresorhus", "ky")])
     await interact(setup, () => {})

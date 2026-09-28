@@ -12,6 +12,23 @@ afterEach(async () => {
 })
 
 describe("SearchModal", () => {
+  it("fits the mode picker, its description and the key help without overlapping", async () => {
+    setup = await testRender(
+      <SearchModal onSubmit={() => {}} onCancel={() => {}} onInput={() => {}} value="" />,
+      { width: 100, height: 30 }
+    )
+    await interact(setup, () => {})
+    const lines = setup.captureCharFrame().split("\n")
+    const lineOf = (text: string) => lines.findIndex((l) => l.includes(text))
+
+    const mode = lineOf("[*] Hybrid")
+    const description = lineOf("Combined keyword + semantic")
+    const help = lineOf("[Enter] Search  [Tab] Switch focus  [h/l] Change mode  [Esc] Cancel")
+    expect(mode).toBeGreaterThan(-1)
+    expect(description).toBeGreaterThan(mode)
+    expect(help).toBeGreaterThan(description)
+  })
+
   it("inserts pasted text exactly once", async () => {
     const onInput = vi.fn((_value: string) => {})
     setup = await testRender(
