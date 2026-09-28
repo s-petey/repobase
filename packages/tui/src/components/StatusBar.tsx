@@ -10,9 +10,10 @@ interface StatusBarProps {
   cloudPendingCount?: number
   grouped?: boolean
   jobCounts?: { readonly running: number; readonly failed: number }
+  activity?: string
 }
 
-export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped, jobCounts }: StatusBarProps) => {
+export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped, jobCounts, activity }: StatusBarProps) => {
   const getHelpText = () => {
     if (mode === "add" || mode === "search" || mode === "confirmDelete" || mode === "jobs") {
       return "" // Help text shown in modal
@@ -38,11 +39,11 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
   }
 
   const helpText = getHelpText()
-  
+
   // MCP server status (only shown if feature flag enabled)
   const mcpStatus = mcpServerRunning ? "MCP: *" : "MCP: o"
   const mcpColor = mcpServerRunning ? colors.status.success.default : colors.text.secondary
-  
+
   // Cloud sync status (only shown if feature flag enabled)
   const getCloudStatus = () => {
     if (!cloudConfigured) return "Cloud: o"
@@ -51,31 +52,35 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
   }
   const cloudStatus = getCloudStatus()
 
+  // Each count in its own colour, so running tasks don't look like failures
   const jobParts = [
-    jobCounts && jobCounts.running > 0 ? `${jobCounts.running} running` : undefined,
-    jobCounts && jobCounts.failed > 0 ? `${jobCounts.failed} failed` : undefined
+    jobCounts && jobCounts.running > 0
+      ? { text: `${jobCounts.running} running`, color: colors.status.warning.default }
+      : undefined,
+    jobCounts && jobCounts.failed > 0
+      ? { text: `${jobCounts.failed} failed`, color: colors.status.error.default }
+      : undefined
   ].filter((part) => part !== undefined)
-  const jobStatus = jobParts.length > 0 ? `Tasks: ${jobParts.join(", ")}` : undefined
-  const jobColor = jobCounts && jobCounts.failed > 0 ? colors.status.error.default : colors.status.warning.default
-  const cloudColor = !cloudConfigured 
-    ? colors.text.secondary 
-    : (cloudPendingCount && cloudPendingCount > 0) 
-      ? colors.status.warning.default 
+  const cloudColor = !cloudConfigured
+    ? colors.text.secondary
+    : (cloudPendingCount && cloudPendingCount > 0)
+      ? colors.status.warning.default
       : colors.status.success.default
 
   return (
     <box
       style={{
-        padding: 1,
+        paddingLeft: 1,
+        paddingRight: 1,
         borderStyle: "single",
         borderColor: colors.border.default,
         border: true,
-        flexDirection: "row",
-        justifyContent: "space-between",
-        height: 3,
+        flexDirection: "column",
+        height: 4,
+        flexShrink: 0,
       }}
     >
-      <box style={{ flexDirection: "row", gap: 2 }}>
+      <box style={{ flexDirection: "row", gap: 2, height: 1 }}>
         <text
           content={message || ""}
           style={{
@@ -83,7 +88,18 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
             attributes: message ? TextAttributes.BOLD : undefined,
           }}
         />
-        {jobStatus && <text content={jobStatus} style={{ fg: jobColor }} />}
+        {activity && <text content={activity} style={{ fg: colors.status.info.default }} />}
+        {jobParts.length > 0 && (
+          <box style={{ flexDirection: "row" }}>
+            <text content="Tasks: " style={{ fg: colors.text.secondary }} />
+            {jobParts.map((part, index) => (
+              <box key={part.text} style={{ flexDirection: "row" }}>
+                {index > 0 && <text content=", " style={{ fg: colors.text.secondary }} />}
+                <text content={part.text} style={{ fg: part.color }} />
+              </box>
+            ))}
+          </box>
+        )}
         {featureFlags.mcpServerToggle && (
           <text
             content={mcpStatus}
@@ -105,6 +121,7 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
         content={helpText}
         style={{
           fg: colors.text.secondary,
+          height: 1,
         }}
       />
     </box>
