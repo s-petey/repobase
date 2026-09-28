@@ -120,6 +120,10 @@ To see LanceDB's warnings or debug output while developing, set your own level; 
 
 Set `REPOBASE_DEBUG_LAG=1` to sample how responsive the main (render) thread is: `REPOBASE_DEBUG_LAG=1 bun run dev:tui`. Every 5 seconds, `~/.repobase/tui.log` gets a line with the maximum and 95th-percentile event-loop lag. It's logged as a warning when any tick was more than 50ms late, which is when rendering and input start to feel sluggish.
 
+### Forcing a full re-index on sync
+
+Set `REPOBASE_FORCE_SYNC=1` to make every sync re-index all of a repository's files, even when it's already up to date. It's useful for exercising many tasks indexing at once, for example with `S` (Sync All): `REPOBASE_FORCE_SYNC=1 REPOBASE_DEBUG_LAG=1 bun run dev:tui`. It only changes how new syncs run, not the saved history of tasks.
+
 ### Dependency versions
 
 Versions shared between workspace packages live in the [catalog](https://bun.com/docs/pm/catalogs) under `workspaces.catalog` in the root `package.json`; packages reference them with `"catalog:"`. To bump a shared dependency, change it in the catalog.

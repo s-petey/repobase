@@ -111,7 +111,8 @@ const runToEnd = (input: Parameters<JobRunner["Service"]["start"]>[0]) =>
 export const addRepo = (url: string, repoId = "acme-widgets") =>
   runToEnd({ kind: "addRepo", repoId, payload: { url } })
 
-export const syncRepo = (repoId = "acme-widgets") => runToEnd({ kind: "syncRepo", repoId, payload: {} })
+export const syncRepo = (repoId = "acme-widgets", options: { readonly force?: boolean } = {}) =>
+  runToEnd({ kind: "syncRepo", repoId, payload: options })
 
 export const stepOf = (job: Job, key: string) => job.steps.find((s) => s.key === key)!
 

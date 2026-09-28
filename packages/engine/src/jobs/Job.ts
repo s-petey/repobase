@@ -52,7 +52,10 @@ export const AddRepoPayload = Schema.Struct({
 })
 export type AddRepoPayload = typeof AddRepoPayload.Type
 
-export const SyncRepoPayload = Schema.Struct({})
+export const SyncRepoPayload = Schema.Struct({
+  // Re-index every file even when the repo is already up to date (a dev aid)
+  force: Schema.optional(Schema.Boolean)
+})
 export type SyncRepoPayload = typeof SyncRepoPayload.Type
 
 const jobFields = {

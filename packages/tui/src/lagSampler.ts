@@ -1,7 +1,6 @@
 import { Clock, Effect } from "effect"
 
 // Debug-only: how responsive the main (render) thread is while jobs run
-
 export const LAG_ENV = "REPOBASE_DEBUG_LAG"
 
 /** Main-thread lag above this makes rendering and input feel sluggish */

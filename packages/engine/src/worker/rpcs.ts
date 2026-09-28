@@ -133,7 +133,8 @@ export class PlanChanges extends Rpc.make("PlanChanges", {
     repoId: Schema.String,
     localPath: Schema.String,
     from: Schema.NullOr(Schema.String),
-    to: Schema.String
+    to: Schema.String,
+    force: Schema.optional(Schema.Boolean)
   },
   success: Schema.Struct({ ...PlanSummary.fields, fullScan: Schema.Boolean }),
   error: PlanIndexFailedError

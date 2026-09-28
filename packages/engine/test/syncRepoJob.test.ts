@@ -53,6 +53,22 @@ describe("syncRepo job", () => {
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 
+  it.effect("re-indexes every file when forced, even though nothing changed", () => {
+    const source = makeSourceRepo(60)
+    const env = testEnv()
+    return Effect.gen(function* () {
+      yield* addRepo(source.dir)
+
+      const job = yield* syncRepo(REPO, { force: true })
+
+      expect(job.status).toBe("completed")
+      expect(stepOf(job, "resolveRemoteHead").output).toEqual({ commit: source.head(), upToDate: false })
+      expect(stepOf(job, "planChanges").output).toMatchObject({ toIndex: 60, fullScan: true })
+      expect(stepOf(job, "finalizeIndex").status).toBe("done")
+      expect(yield* indexedPaths(REPO)).toHaveLength(60)
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
   it.effect("indexes only what changed, drops deleted files and records the new commit", () => {
     const source = makeSourceRepo()
     const env = testEnv()

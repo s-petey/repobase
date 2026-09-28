@@ -4,7 +4,7 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Deferred, Effect, Fiber, FiberSet, Layer, Option, Stream } from "effect"
+import { Config, Deferred, Effect, Fiber, FiberSet, Layer, Option, Stream } from "effect"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
@@ -36,6 +36,8 @@ import { App } from "./App.js"
 import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
+
+const FORCE_SYNC_ENV = "REPOBASE_FORCE_SYNC"
 
 // File logger for debugging - writes to ~/.repobase/tui.log
 const tuiLogPath = logPath("tui")
@@ -91,10 +93,12 @@ const MainLayer = EngineLive.pipe(
 const program = Effect.gen(function* () {
   yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
   const indexing = yield* hostIndexingConcurrency
+  const forceSync = yield* Config.Boolean(FORCE_SYNC_ENV).pipe(Config.withDefault(false))
   if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
   if (indexing.warning) yield* Effect.logWarning(indexing.warning)
   yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search; indexing ${indexing.count} batch(es) at a time`)
   if (process.env[LAG_ENV] === "1") yield* Effect.forkScoped(lagSampler)
+  if (forceSync) yield* Effect.logWarning(`${FORCE_SYNC_ENV}=1: every sync re-indexes all files`)
 
   const engine = yield* RepobaseEngine
   const runner = yield* JobRunner
@@ -125,7 +129,7 @@ const program = Effect.gen(function* () {
   // Run a sync job to the end
   const runSync = (repoId: string) =>
     runner
-      .start({ kind: "syncRepo", repoId, payload: {} })
+      .start({ kind: "syncRepo", repoId, payload: { force: forceSync } })
       .pipe(Effect.flatMap((job) => runner.await(job.id)))
 
   // Render the app

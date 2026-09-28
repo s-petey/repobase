@@ -135,7 +135,7 @@ export const HandlersLayer = StepRpcs.toLayer(
           .resetHard(localPath, ref)
           .pipe(Effect.mapError((e) => new ResetFailedError({ repoId, ref, message: e.message }))),
 
-      PlanChanges: ({ jobId, repoId, localPath, from, to }) =>
+      PlanChanges: ({ jobId, repoId, localPath, from, to, force }) =>
         Effect.gen(function* () {
           // Only the files that changed, if git can tell us; otherwise scan everything
           const changes =
@@ -150,7 +150,7 @@ export const HandlersLayer = StepRpcs.toLayer(
                   )
                 )
           const plan = yield* Option.match(changes, {
-            onNone: () => indexer.planFullIndex(repoId, localPath),
+            onNone: () => indexer.planFullIndex(repoId, localPath, { force }),
             onSome: (changed) => indexer.planChanges(repoId, localPath, changed)
           }).pipe(Effect.mapError(planIndexFailed({ repoId })))
           yield* jobs

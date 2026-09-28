@@ -252,7 +252,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
           localPath: target.localPath,
           branch: target.branch
         })
-        return { commit, upToDate: commit === target.previousCommit }
+        return { commit, upToDate: !ctx.job.payload.force && commit === target.previousCommit }
       }),
     // Nothing new on the remote: done, no re-index
     finishJob: (head) => (head.upToDate ? Option.some("completed" as const) : Option.none())
@@ -281,12 +281,15 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       Effect.gen(function* () {
         const target = yield* ctx.output(loadRepo)
         const head = yield* ctx.output(resolveRemoteHead)
+        const force = ctx.job.payload.force ?? false
         return yield* client.PlanChanges({
           jobId: ctx.job.id,
           repoId: ctx.job.repoId,
           localPath: target.localPath,
-          from: target.previousCommit,
-          to: head.commit
+          // A forced sync scans every file rather than just the diff
+          from: force ? null : target.previousCommit,
+          to: head.commit,
+          force
         })
       })
   })
