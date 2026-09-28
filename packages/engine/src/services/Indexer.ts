@@ -514,14 +514,11 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       Effect.orElseSucceed(() => Option.none<Uint8Array>())
     )
 
-  const planFullIndex: IndexerService["planFullIndex"] = (repoId, repoPath, options) =>
+  const existingHashes = (repoId: string) =>
     Effect.gen(function* () {
-      const force = options?.force ?? false
       const tbl = yield* getTable.pipe(
         Effect.mapError((e) => new IndexError({ operation: "planIndex.queryExisting", message: e.message, path: e.path }))
       )
-
-      // Get existing records for this repo
       const existing = yield* Effect.tryPromise({
         try: () =>
           tbl
@@ -532,7 +529,13 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         catch: (e) =>
           new IndexError({ operation: "planIndex.queryExisting", message: `Failed to query existing: ${e}` })
       })
-      const existingByPath = new Map(existing.map((r) => [r.path, r.hash]))
+      return new Map(existing.map((r) => [r.path, r.hash]))
+    })
+
+  const planFullIndex: IndexerService["planFullIndex"] = (repoId, repoPath, options) =>
+    Effect.gen(function* () {
+      const force = options?.force ?? false
+      const existingByPath = yield* existingHashes(repoId)
 
       // Find all files using glob
       const glob = yield* Effect.tryPromise({
@@ -578,8 +581,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       return { toIndex, toDelete, skipped }
     })
 
-  const planChanges: IndexerService["planChanges"] = (_repoId, repoPath, changes) =>
+  const planChanges: IndexerService["planChanges"] = (repoId, repoPath, changes) =>
     Effect.gen(function* () {
+      const existingByPath = yield* existingHashes(repoId)
       const toIndex: Array<IndexPlanFile> = []
       const toDelete: Array<string> = []
       let skipped = 0
@@ -599,7 +603,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           toDelete.push(change.path)
           continue
         }
-        toIndex.push({ path: change.path, hash: hashBuffer(buffer.value) })
+        const hash = hashBuffer(buffer.value)
+        if (existingByPath.get(change.path) === hash) {
+          skipped++
+          continue
+        }
+        toIndex.push({ path: change.path, hash })
       }
 
       return { toIndex, toDelete, skipped }

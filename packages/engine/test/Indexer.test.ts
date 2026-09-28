@@ -176,6 +176,24 @@ describe("Indexer", () => {
         expect(plan.skipped).toBe(3)
       }).pipe(Effect.provide(indexerLayer()))
     )
+
+    it.effect("skips changed files the index already has with the same content", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        // As if an earlier sync indexed this content, then stopped before recording the commit
+        yield* indexer.indexRepo(REPO, repoPath)
+        writeFile(repoPath, "src/utils.ts", "export const changed = true")
+
+        const plan = yield* indexer.planChanges(REPO, repoPath, [
+          { status: "M", path: "src/index.ts" }, // in the diff, but indexed as-is already
+          { status: "M", path: "src/utils.ts" } // really changed since
+        ])
+
+        expect(plan.toIndex.map((f) => f.path)).toEqual(["src/utils.ts"])
+        expect(plan.skipped).toBe(1)
+      }).pipe(Effect.provide(indexerLayer()))
+    )
   })
 
   describe("indexChanges", () => {
