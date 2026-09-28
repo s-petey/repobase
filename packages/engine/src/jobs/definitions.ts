@@ -7,7 +7,7 @@ import { IndexBatchResult } from "../schemas.js"
 import { INDEX_BATCH_SIZE } from "../services/Indexer.js"
 import { trackingMode } from "../utils.js"
 import { RepoStore } from "../services/RepoStore.js"
-import { WorkerClient } from "../worker/client.js"
+import { IndexingClient, WorkerClient } from "../worker/client.js"
 import { PlanSummary } from "../worker/rpcs.js"
 import {
   ConfigReadFailedError,
@@ -32,8 +32,8 @@ import {
 
 // What addRepo and syncRepo do, as JobRunner steps.
 //
-// Worker steps are built with workerStep/workerFanOut: their `run` gets only
-// the worker client, so any real work has to go through a worker thread, and
+// Worker steps are built with workerStep/indexingFanOut: their `run` gets only
+// a worker client, so any real work has to go through a worker thread, and
 // a worker that dies becomes the step's WorkerCrashedError. Main-thread steps
 // only touch config.json, which keeps it single-writer.
 
@@ -61,7 +61,8 @@ const workerStep = <J extends Job, O>(definition: {
     ...(definition.finishJob ? { finishJob: definition.finishJob } : {})
   })
 
-const workerFanOut = <J extends Job, I, O, R>(definition: {
+// Fan-out steps embed files, so they run on the indexing workers
+const indexingFanOut = <J extends Job, I, O, R>(definition: {
   readonly name: string
   readonly output: OutputSchema<O>
   readonly items: (ctx: StepContext<J>) => Effect.Effect<ReadonlyArray<I>, StepError, R>
@@ -69,17 +70,17 @@ const workerFanOut = <J extends Job, I, O, R>(definition: {
     item: I,
     position: { readonly index: number; readonly total: number },
     ctx: StepContext<J>,
-    client: WorkerClient["Service"]
+    client: IndexingClient["Service"]
   ) => Effect.Effect<O, StepError | RpcClientError.RpcClientError, JobProgress>
-}): FanOutDefinition<J, I, O, R | WorkerClient | JobProgress> =>
-  fanOut<J, I, O, R | WorkerClient | JobProgress>({
+}): FanOutDefinition<J, I, O, R | IndexingClient | JobProgress> =>
+  fanOut<J, I, O, R | IndexingClient | JobProgress>({
     name: definition.name,
     runsOn: "worker",
     output: definition.output,
     items: definition.items,
     run: (item, position, ctx) =>
       Effect.gen(function* () {
-        const client = yield* WorkerClient
+        const client = yield* IndexingClient
         return yield* definition
           .run(item, position, ctx, client)
           .pipe(
@@ -104,7 +105,7 @@ export const defaultDefinitionsConfig = (): Omit<DefinitionsConfig, "indexingCon
   reposDir: path.join(os.homedir(), ".repobase", "repos")
 })
 
-export type JobDefinitionsServices = WorkerClient | RepoStore | JobProgress
+export type JobDefinitionsServices = WorkerClient | IndexingClient | RepoStore | JobProgress
 
 export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<JobDefinitionsServices> => {
   const localPath = (repoId: string) => path.join(config.reposDir, repoId)
@@ -352,7 +353,7 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
     run: (ctx, client) => ctx.indexLock.write(client.DeleteRemoved({ jobId: ctx.job.id, repoId: ctx.job.repoId }))
   })
 
-  const indexBatch = workerFanOut<J, number, IndexBatchResult, JobProgress>({
+  const indexBatch = indexingFanOut<J, number, IndexBatchResult, JobProgress>({
     name: "indexBatch",
     output: IndexBatchResult,
     items: (ctx) =>

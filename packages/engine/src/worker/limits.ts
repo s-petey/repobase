@@ -7,8 +7,10 @@ import * as os from "os"
 export const MAX_WORKERS_ENV = "REPOBASE_MAX_WORKERS"
 
 /**
- * Upper bound on the default worker count. Each worker holds its own embedding
- * model and LanceDB connection, so more workers cost memory quickly.
+ * Upper bound on the default worker count. Each worker holds its own LanceDB
+ * connection, and the search worker its own embedding model, so more workers
+ * cost memory. The indexing workers are counted separately (see
+ * resolveIndexingConcurrency).
  */
 export const DEFAULT_MAX_WORKERS = 4
 
@@ -107,8 +109,9 @@ export const INDEXING_CPU_BUDGET = 0.5
 
 /**
  * Resolve how many index batches (embedding streams) may run at once across
- * all jobs. By default that's as many as fit in INDEXING_CPU_BUDGET of the
- * cores, and at least one; a valid override wins, clamped to the core count.
+ * all jobs, which is also how many indexing workers there are. By default
+ * that's as many as fit in INDEXING_CPU_BUDGET of the cores, and at least one;
+ * a valid override wins, clamped to the core count.
  */
 export const resolveIndexingConcurrency = (input: {
   readonly cores: number

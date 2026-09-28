@@ -203,7 +203,15 @@ export {
   IndexBatchEvent,
   Search
 } from "./worker/rpcs.js"
-export { WorkerClient, layerWorkerPool, QueryClient, layerQueryPool, layerQueryFromJobPool } from "./worker/client.js"
+export {
+  WorkerClient,
+  layerWorkerPool,
+  QueryClient,
+  layerQueryPool,
+  IndexingClient,
+  layerIndexingPool,
+  layerQueryFromIndexingPool
+} from "./worker/client.js"
 export { runWorker } from "./worker/server.js"
 
 // Logging

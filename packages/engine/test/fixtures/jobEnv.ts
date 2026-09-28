@@ -18,7 +18,7 @@ import type { RepoStoreData } from "../../src/schemas.js"
 import { layer as GitClientLayer } from "../../src/services/GitClient.js"
 import { Indexer, layerWith as IndexerLayerWith } from "../../src/services/Indexer.js"
 import { RepoStore } from "../../src/services/RepoStore.js"
-import { WorkerClient } from "../../src/worker/client.js"
+import { IndexingClient, WorkerClient } from "../../src/worker/client.js"
 import { StepRpcs } from "../../src/worker/rpcs.js"
 import { HandlersLayer } from "../../src/worker/server.js"
 
@@ -86,13 +86,27 @@ const MemoryRepoStore = Layer.effect(
   })
 )
 
+// A client that throws for RPCs meant for the other pool, so every job test
+// checks that embedding runs only on the indexing workers
+const onlyRpcs = (pool: string, allowed: (rpc: string) => boolean) =>
+  Effect.map(RpcTest.makeClient(StepRpcs), (client) =>
+    new Proxy(client, {
+      get: (target, key, receiver) =>
+        typeof key === "string" && key in target && !allowed(key)
+          ? () => {
+              throw new Error(`${key} ran on the ${pool} pool`)
+            }
+          : Reflect.get(target, key, receiver)
+    })
+  )
+
 export const testEnv = (options: { readonly indexingConcurrency?: number } = {}) => {
   const reposDir = tempDir("repos")
   const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir: tempDir("index"), embed: fakeEmbed }))
-  const Workers = Layer.effect(WorkerClient)(RpcTest.makeClient(StepRpcs)).pipe(
-    Layer.provide(HandlersLayer),
-    Layer.provideMerge(WorkerSide)
-  )
+  const Workers = Layer.mergeAll(
+    Layer.effect(WorkerClient)(onlyRpcs("job", (rpc) => rpc !== "IndexBatch")),
+    Layer.effect(IndexingClient)(onlyRpcs("indexing", (rpc) => rpc === "IndexBatch"))
+  ).pipe(Layer.provide(HandlersLayer), Layer.provideMerge(WorkerSide))
   const layer = JobRunnerLayer(
     makeJobDefinitions({ reposDir, indexingConcurrency: options.indexingConcurrency ?? 1_000 }),
     { concurrency: 2 }

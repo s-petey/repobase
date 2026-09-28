@@ -23,7 +23,8 @@ import {
   fileLoggerLayer,
   layerWorkerPool,
   layerQueryPool,
-  layerQueryFromJobPool,
+  layerQueryFromIndexingPool,
+  layerIndexingPool,
   QueryClient,
   logPath,
   hostWorkerCount,
@@ -64,10 +65,17 @@ const JobsLive = Layer.unwrap(
     ).pipe(
       Layer.provideMerge(
         Layer.mergeAll(
-          pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromJobPool,
+          pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromIndexingPool,
           JobStoreLayer,
           JobProgressLayer
-        ).pipe(Layer.provideMerge(layerWorkerPool({ workerUrl, size: pools.jobs })))
+        ).pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              layerWorkerPool({ workerUrl, size: pools.jobs }),
+              layerIndexingPool({ workerUrl, size: indexing.count })
+            )
+          )
+        )
       )
     )
   })
@@ -100,7 +108,7 @@ const program = Effect.gen(function* () {
   const debugLag = yield* Config.Boolean(LAG_ENV).pipe(Config.withDefault(false))
   if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
   if (indexing.warning) yield* Effect.logWarning(indexing.warning)
-  yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search; indexing ${indexing.count} batch(es) at a time`)
+  yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search, ${indexing.count} for indexing`)
   if (debugLag) yield* Effect.forkScoped(lagSampler)
   if (forceSync) yield* Effect.logWarning(`${FORCE_SYNC_ENV}=1: every sync re-indexes all files`)
 
