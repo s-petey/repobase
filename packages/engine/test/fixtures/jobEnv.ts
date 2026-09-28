@@ -52,10 +52,20 @@ export const makeSourceRepo = (files = 60, branch = "main") => {
 // Files containing EXPLODE fail to embed while this is on
 export const embedFailures = { explode: false }
 
+export const embedConcurrency = { current: 0, peak: 0 }
+
 const fakeEmbed = async (text: string) => {
-  if (embedFailures.explode && text.includes("EXPLODE")) throw new Error("model crashed")
-  const seed = crypto.createHash("sha256").update(text).digest()
-  return Array.from({ length: 384 }, (_, i) => seed[i % seed.length] / 255 + 0.01)
+  embedConcurrency.current++
+  embedConcurrency.peak = Math.max(embedConcurrency.peak, embedConcurrency.current)
+  try {
+    // Yield, so embeds from batches that run at the same time overlap
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    if (embedFailures.explode && text.includes("EXPLODE")) throw new Error("model crashed")
+    const seed = crypto.createHash("sha256").update(text).digest()
+    return Array.from({ length: 384 }, (_, i) => seed[i % seed.length] / 255 + 0.01)
+  } finally {
+    embedConcurrency.current--
+  }
 }
 
 // config.json in memory, so tests never touch ~/.repobase
@@ -76,14 +86,17 @@ const MemoryRepoStore = Layer.effect(
   })
 )
 
-export const testEnv = () => {
+export const testEnv = (options: { readonly indexingConcurrency?: number } = {}) => {
   const reposDir = tempDir("repos")
   const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir: tempDir("index"), embed: fakeEmbed }))
   const Workers = Layer.effect(WorkerClient)(RpcTest.makeClient(StepRpcs)).pipe(
     Layer.provide(HandlersLayer),
     Layer.provideMerge(WorkerSide)
   )
-  const layer = JobRunnerLayer(makeJobDefinitions({ reposDir }), { concurrency: 2 }).pipe(
+  const layer = JobRunnerLayer(
+    makeJobDefinitions({ reposDir, indexingConcurrency: options.indexingConcurrency ?? 1_000 }),
+    { concurrency: 2 }
+  ).pipe(
     Layer.provideMerge(Layer.mergeAll(Workers, MemoryRepoStore, JobProgressLayer)),
     Layer.provideMerge(JobStoreLayerWith({ dir: tempDir("jobs") })),
     Layer.provide(BunServices.layer)

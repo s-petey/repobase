@@ -92,8 +92,11 @@ export {
 // Worker limits
 export {
   MAX_WORKERS_ENV,
+  MAX_INDEXING_ENV,
   resolveWorkerCount,
   resolveHostWorkerCount,
+  resolveIndexingConcurrency,
+  hostIndexingConcurrency,
   splitPools,
   onnxThreadsPerWorker,
   type WorkerCount,

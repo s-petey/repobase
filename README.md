@@ -52,6 +52,8 @@ Press `t` to open the Tasks view:
 
 By default repobase uses up to 4 worker threads, fewer on machines with less CPU or memory. One of them is kept for search. To change the limit, set `REPOBASE_MAX_WORKERS`, for example `REPOBASE_MAX_WORKERS=1 repobase` to use a single worker.
 
+Indexing (computing the embeddings for search) is the CPU-heavy part: one batch of files uses about 5 cores. So however many tasks run, only a few batches index at once: as many as fit in about half of your cores, and at least one. Fetching and the other steps still run in parallel. To change it, set `REPOBASE_MAX_INDEXING`, for example `REPOBASE_MAX_INDEXING=2 repobase` to finish a large Sync All sooner at the cost of more CPU.
+
 ### MCP Server (Cursor, Claude, etc.)
 
 Add to your MCP configuration (`~/.cursor/mcp.json` or Claude config):

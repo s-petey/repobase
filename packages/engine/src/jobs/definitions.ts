@@ -1,4 +1,4 @@
-import { DateTime, Effect, Option, Ref, Schema, Stream } from "effect"
+import { DateTime, Effect, Option, Ref, Schema, Semaphore, Stream } from "effect"
 import type { RpcClientError } from "effect/unstable/rpc"
 import * as path from "path"
 import * as os from "os"
@@ -92,13 +92,15 @@ const workerFanOut = <J extends Job, I, O, R>(definition: {
   })
 
 /**
- * Where job definitions keep clones
+ * Where job definitions keep clones, and how many index batches may run at
+ * once across all jobs (see hostIndexingConcurrency)
  */
 export interface DefinitionsConfig {
   readonly reposDir: string
+  readonly indexingConcurrency: number
 }
 
-export const defaultDefinitionsConfig = (): DefinitionsConfig => ({
+export const defaultDefinitionsConfig = (): Omit<DefinitionsConfig, "indexingConcurrency"> => ({
   reposDir: path.join(os.homedir(), ".repobase", "repos")
 })
 
@@ -106,6 +108,10 @@ export type JobDefinitionsServices = WorkerClient | RepoStore | JobProgress
 
 export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<JobDefinitionsServices> => {
   const localPath = (repoId: string) => path.join(config.reposDir, repoId)
+
+  // Embedding is CPU-heavy (several cores per batch), so batches from every job share these slots.
+  // Fetching, planning and the rest still run in parallel
+  const indexingSlots = Semaphore.makeUnsafe(config.indexingConcurrency)
 
   // --- addRepo -------------------------------------------------------------
 
@@ -190,7 +196,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       client.PlanFullIndex({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath: localPath(ctx.job.repoId) })
   })
 
-  const addIndexing = indexingSteps(planFullIndex, (ctx) => Effect.succeed(localPath(ctx.job.repoId)))
+  const addIndexing = indexingSteps(planFullIndex, (ctx) => Effect.succeed(localPath(ctx.job.repoId)), indexingSlots)
 
   // --- syncRepo ------------------------------------------------------------
 
@@ -285,7 +291,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       })
   })
 
-  const syncIndexing = indexingSteps(planChanges, syncPath)
+  const syncIndexing = indexingSteps(planChanges, syncPath, indexingSlots)
 
   const updateStore = step<SyncRepoJob, null, RepoStore>({
     name: "updateStore",
@@ -334,7 +340,8 @@ type SyncPlanSummary = typeof SyncPlanSummary.Type
  */
 const indexingSteps = <J extends Job, P extends PlanSummary>(
   plan: StepDefinition<J, P, any>,
-  repoPath: (ctx: StepContext<J>) => Effect.Effect<string>
+  repoPath: (ctx: StepContext<J>) => Effect.Effect<string>,
+  indexingSlots: Semaphore.Semaphore
 ) => {
   const deleteRemoved = workerStep<J, { readonly count: number }>({
     name: "deleteRemoved",
@@ -364,7 +371,7 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
         const progress = yield* JobProgress
         const result = yield* Ref.make<IndexBatchResult>({ indexed: 0, skipped: 0 })
         const localPath = yield* repoPath(ctx)
-        yield* ctx.indexLock.write(
+        yield* indexingSlots.withPermit(ctx.indexLock.write(
           client.IndexBatch({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath, batch, total }).pipe(
             Stream.runForEach((event) =>
               event._tag === "File"
@@ -372,7 +379,7 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
                 : Ref.set(result, { indexed: event.indexed, skipped: event.skipped })
             )
           )
-        )
+        ))
         return yield* Ref.get(result)
       })
   })

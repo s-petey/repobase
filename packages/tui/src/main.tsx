@@ -27,6 +27,7 @@ import {
   QueryClient,
   logPath,
   resolveHostWorkerCount,
+  hostIndexingConcurrency,
   splitPools,
   type SearchMode,
   type AddRepoProgress,
@@ -51,10 +52,14 @@ const workerUrl = new URL(
 const workerCount = resolveHostWorkerCount()
 const pools = splitPools(workerCount.count)
 
-// Add and sync run as jobs: steps checkpointed on disk, heavy work on workers
-const JobsLive = JobRunnerLayer(makeJobDefinitions(defaultDefinitionsConfig()), {
-  concurrency: pools.jobs
-}).pipe(
+const JobsLive = Layer.unwrap(
+  Effect.map(hostIndexingConcurrency, (indexing) =>
+    JobRunnerLayer(
+      makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: indexing.count }),
+      { concurrency: pools.jobs }
+    )
+  )
+).pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromJobPool,
@@ -85,7 +90,10 @@ const MainLayer = EngineLive.pipe(
 // every finalizer below runs on the way out.
 const program = Effect.gen(function* () {
   yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
+  const indexing = yield* hostIndexingConcurrency
   if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
+  if (indexing.warning) yield* Effect.logWarning(indexing.warning)
+  yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search; indexing ${indexing.count} batch(es) at a time`)
   if (process.env[LAG_ENV] === "1") yield* Effect.forkScoped(lagSampler)
 
   const engine = yield* RepobaseEngine

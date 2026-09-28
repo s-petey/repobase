@@ -1,7 +1,11 @@
 import { describe, it, expect } from "@effect/vitest"
+import { ConfigProvider, Effect } from "effect"
 import {
+  hostIndexingConcurrency,
+  MAX_INDEXING_ENV,
   MAX_WORKERS_ENV,
   onnxThreadsPerWorker,
+  resolveIndexingConcurrency,
   resolveWorkerCount,
   splitPools
 } from "../src/worker/limits.js"
@@ -65,6 +69,62 @@ describe("worker limits", () => {
       expect(result.source).toBe("default")
       expect(result.warning).toContain(MAX_WORKERS_ENV)
     })
+  })
+
+  describe("resolveIndexingConcurrency", () => {
+    it.each([
+      { cores: 1, expected: 1 },
+      { cores: 10, expected: 1 },
+      { cores: 16, expected: 1 },
+      { cores: 20, expected: 2 },
+      { cores: 32, expected: 3 }
+    ])("fits about half the cores at ~5 cores per stream ($cores cores)", ({ cores, expected }) => {
+      expect(resolveIndexingConcurrency({ cores })).toEqual({ count: expected, source: "default" })
+    })
+
+    it("uses a valid override", () => {
+      expect(resolveIndexingConcurrency({ cores: 10, override: "3" })).toEqual({ count: 3, source: "override" })
+    })
+
+    it("clamps an override to the core count", () => {
+      const result = resolveIndexingConcurrency({ cores: 4, override: "9" })
+      expect(result.count).toBe(4)
+      expect(result.warning).toContain(MAX_INDEXING_ENV)
+    })
+
+    it.each(["0", "abc", "1.5"])("ignores invalid override %s", (override) => {
+      const result = resolveIndexingConcurrency({ cores: 10, override })
+      expect(result).toMatchObject({ count: 1, source: "default" })
+      expect(result.warning).toContain(MAX_INDEXING_ENV)
+    })
+  })
+
+  describe("hostIndexingConcurrency", () => {
+    const withEnv = (env: Record<string, string>) =>
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))
+
+    it.effect("reads the override from config", () =>
+      Effect.gen(function* () {
+        const result = yield* hostIndexingConcurrency.pipe(withEnv({ [MAX_INDEXING_ENV]: "1" }))
+        expect(result).toEqual({ count: 1, source: "override" })
+      })
+    )
+
+    it.effect("warns and falls back on an invalid override instead of failing", () =>
+      Effect.gen(function* () {
+        const result = yield* hostIndexingConcurrency.pipe(withEnv({ [MAX_INDEXING_ENV]: "lots" }))
+        expect(result.source).toBe("default")
+        expect(result.warning).toContain(MAX_INDEXING_ENV)
+      })
+    )
+
+    it.effect("uses the default when unset", () =>
+      Effect.gen(function* () {
+        const result = yield* hostIndexingConcurrency.pipe(withEnv({}))
+        expect(result).toMatchObject({ source: "default" })
+        expect(result.warning).toBeUndefined()
+      })
+    )
   })
 
   describe("splitPools", () => {

@@ -1,3 +1,4 @@
+import { Config, Effect, Option } from "effect"
 import * as os from "os"
 
 /**
@@ -57,16 +58,21 @@ export const resolveWorkerCount = (input: WorkerCountInput): WorkerCount => {
     1,
     Math.floor((input.totalMemBytes * MEMORY_BUDGET_FRACTION) / MEMORY_PER_WORKER_BYTES)
   )
-  const fallback: WorkerCount = { count: Math.min(byCpu, byMem), source: "default" }
+  return withOverride(MAX_WORKERS_ENV, input.override, Math.min(byCpu, byMem), cores)
+}
 
-  const raw = input.override?.trim()
-  if (raw === undefined || raw === "") return fallback
+/**
+ * A positive-integer env override of `fallback`, clamped to `cores`; an
+ * invalid value is ignored with a warning
+ */
+const withOverride = (env: string, override: string | undefined, fallback: number, cores: number): WorkerCount => {
+  const defaults: WorkerCount = { count: fallback, source: "default" }
+
+  const raw = override?.trim()
+  if (raw === undefined || raw === "") return defaults
 
   if (!/^\d+$/.test(raw) || Number(raw) < 1) {
-    return {
-      ...fallback,
-      warning: `Ignoring ${MAX_WORKERS_ENV}=${input.override}: expected a positive integer`
-    }
+    return { ...defaults, warning: `Ignoring ${env}=${override}: expected a positive integer` }
   }
 
   const requested = Number(raw)
@@ -74,12 +80,60 @@ export const resolveWorkerCount = (input: WorkerCountInput): WorkerCount => {
     return {
       count: cores,
       source: "override",
-      warning: `${MAX_WORKERS_ENV}=${requested} exceeds ${cores} available cores, using ${cores}`
+      warning: `${env}=${requested} exceeds ${cores} available cores, using ${cores}`
     }
   }
 
   return { count: requested, source: "override" }
 }
+
+/**
+ * Environment variable that overrides how many index batches may run at once
+ */
+export const MAX_INDEXING_ENV = "REPOBASE_MAX_INDEXING"
+
+/**
+ * Rough CPU cost of one stream of embedding calls. Measured at about 4.7 cores
+ * with transformers 2.17 under Bun, which ignores ONNX thread limits (see the
+ * "cap embedding CPU per worker thread" investigation).
+ */
+export const CORES_PER_INDEXING_STREAM = 5
+
+/**
+ * Fraction of the machine's cores indexing may use by default, leaving the rest
+ * for the TUI and everything else
+ */
+export const INDEXING_CPU_BUDGET = 0.5
+
+/**
+ * Resolve how many index batches (embedding streams) may run at once across
+ * all jobs. By default that's as many as fit in INDEXING_CPU_BUDGET of the
+ * cores, and at least one; a valid override wins, clamped to the core count.
+ */
+export const resolveIndexingConcurrency = (input: {
+  readonly cores: number
+  readonly override?: string | undefined
+}): WorkerCount => {
+  const cores = Math.max(1, Math.floor(input.cores))
+  const byBudget = Math.max(1, Math.floor((cores * INDEXING_CPU_BUDGET) / CORES_PER_INDEXING_STREAM))
+  return withOverride(MAX_INDEXING_ENV, input.override, byBudget, cores)
+}
+
+/**
+ * Resolve the indexing concurrency for the current machine, with the override
+ * from MAX_INDEXING_ENV. It's read as a string so a bad value warns and falls
+ * back instead of failing startup.
+ */
+export const hostIndexingConcurrency: Effect.Effect<WorkerCount, Config.ConfigError> = Config.option(
+  Config.String(MAX_INDEXING_ENV)
+).pipe(
+  Effect.map((override) =>
+    resolveIndexingConcurrency({
+      cores: os.availableParallelism?.() ?? os.cpus().length,
+      override: Option.getOrUndefined(override)
+    })
+  )
+)
 
 /**
  * How the worker budget is split between indexing jobs and search queries.
