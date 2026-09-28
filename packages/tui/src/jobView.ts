@@ -128,13 +128,35 @@ export const formatAge = (from: DateTime.Utc, now: DateTime.Utc): string => {
   return relativeTime.format(-Math.floor(Duration.toDays(elapsed)), "day");
 };
 
+/**
+ * The newest job for each repo, of either kind: a later add or sync supersedes
+ * an earlier job for the same repo that failed
+ */
+export const latestJobs = (jobs: ReadonlyArray<Job>): ReadonlyArray<Job> => {
+  const latest = new Map<string, Job>();
+
+  for (const job of jobs) {
+    const current = latest.get(job.repoId);
+    if (!current || DateTime.toEpochMillis(job.createdAt) > DateTime.toEpochMillis(current.createdAt)) {
+      latest.set(job.repoId, job);
+    }
+  }
+
+  return [...latest.values()];
+};
+
+/**
+ * Counts for the status bar, over each repo's latest job, so a failure that a
+ * newer run fixed isn't counted. Interrupted jobs count as failed since both
+ * need a retry.
+ */
 export const jobCounts = (
   jobs: ReadonlyArray<Job>,
 ): { readonly running: number; readonly failed: number } => {
   let running = 0;
   let failed = 0;
 
-  for (const job of jobs) {
+  for (const job of latestJobs(jobs)) {
     switch (job.status) {
       case "running":
         running++;

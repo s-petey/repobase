@@ -3,7 +3,7 @@ import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, Job } from 
 import { extractRepoParts, initialProgress } from "@repobase/engine"
 import { Array as Arr, DateTime, Order } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, JobsModal } from "./components/index.js"
+import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, TasksView } from "./components/index.js"
 import type { FlatRow } from "./components/RepoList.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
@@ -430,6 +430,29 @@ export const App = ({
     )
   }
 
+  // Render the tasks view
+  if (mode === "jobs") {
+    return (
+      <box
+        style={{
+          flexDirection: "column",
+          width: "100%",
+          height: "100%",
+          backgroundColor: colors.bg.base,
+        }}
+      >
+        <Header version="1.0.3" />
+        <TasksView
+          jobs={jobs}
+          now={DateTime.nowUnsafe()}
+          onRetry={onRetryJob}
+          onDiscard={onDiscardJob}
+          onClose={() => setMode("list")}
+        />
+      </box>
+    )
+  }
+
   return (
     <box
       style={{
@@ -488,15 +511,6 @@ export const App = ({
         <ProgressModal progress={addProgress} />
       )}
 
-      {mode === "jobs" && (
-        <JobsModal
-          jobs={jobs}
-          now={DateTime.nowUnsafe()}
-          onRetry={onRetryJob}
-          onDiscard={onDiscardJob}
-          onClose={() => setMode("list")}
-        />
-      )}
 
       {mode === "confirmDelete" && repoToDelete && (
         <ConfirmDialog

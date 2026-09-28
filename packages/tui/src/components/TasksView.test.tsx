@@ -11,7 +11,7 @@ import {
 import { DateTime } from "effect"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { interact, teardown } from "../test/helpers.js"
-import { JobsModal } from "./JobsModal.js"
+import { TasksView } from "./TasksView.js"
 
 const createdAt = DateTime.makeUnsafe(0)
 const now = DateTime.makeUnsafe(5 * 60 * 1000)
@@ -36,16 +36,20 @@ const syncJob = (steps: ReadonlyArray<Step>, status: Job["status"] = "failed"): 
   steps
 })
 
-const renderModal = (jobs: ReadonlyArray<Job>, handlers: { onRetry?: () => Promise<void>; onDiscard?: () => Promise<void> } = {}) =>
+const renderModal = (
+  jobs: ReadonlyArray<Job>,
+  handlers: { onRetry?: () => Promise<void>; onDiscard?: () => Promise<void> } = {},
+  size: { width: number; height: number } = { width: 140, height: 50 }
+) =>
   testRender(
-    <JobsModal
+    <TasksView
       jobs={jobs}
       now={now}
       onRetry={handlers.onRetry ?? (async () => {})}
       onDiscard={handlers.onDiscard ?? (async () => {})}
       onClose={() => {}}
     />,
-    { width: 140, height: 50 }
+    size
   )
 
 let setup: TestRendererSetup | undefined
@@ -55,14 +59,74 @@ afterEach(async () => {
   setup = undefined
 })
 
-describe("JobsModal", () => {
-  it("lists tasks with kind, repo, status and age", async () => {
+describe("TasksView", () => {
+  it("lists tasks as repo, status and age columns, with the selected task's heading on the right", async () => {
     setup = await renderModal([syncJob([step("loadRepo", "done")])])
     await interact(setup, () => {})
     const frame = setup.captureCharFrame()
 
-    expect(frame).toContain("Tasks (1)")
-    expect(frame).toMatch(/sync\s+Effect-TS-effect\s+failed\s+5m ago/)
+    expect(frame).toContain("1 task")
+    expect(frame).toMatch(/> Effect-TS-effect\s+failed\s+5m ago/)
+    expect(frame).toContain("sync Effect-TS-effect · failed")
+  })
+
+  it("keeps a long error inside the details pane and the key help intact", async () => {
+    const detail = Array.from({ length: 40 }, (_, i) => `fatal: line ${i} of a very long git error message`).join("\n")
+    setup = await renderModal(
+      [
+        syncJob([
+          step("fetch", "failed", {
+            error: new ResetFailedError({ repoId: "Effect-TS-effect", ref: "origin/main", message: detail })
+          })
+        ])
+      ],
+      {},
+      { width: 120, height: 24 }
+    )
+    await interact(setup, () => {})
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("[x] Discard  [Up/k] [Down/j] Select  [PgUp/PgDn] Scroll details  [Esc/q] Back")
+    expect(frame).toMatch(/> Effect-TS-effect\s+failed\s+5m ago/)
+    expect(frame).not.toContain("line 39 of a very long")
+  })
+
+  it("scrolls the details pane with PgDn", async () => {
+    const detail = Array.from({ length: 40 }, (_, i) => `fatal: line ${i}`).join("\n")
+    setup = await renderModal(
+      [
+        syncJob([
+          step("fetch", "failed", {
+            error: new ResetFailedError({ repoId: "Effect-TS-effect", ref: "origin/main", message: detail })
+          })
+        ])
+      ],
+      {},
+      { width: 120, height: 24 }
+    )
+    await interact(setup, () => {})
+    expect(setup.captureCharFrame()).not.toContain("fatal: line 20")
+
+    // The escape sequence a terminal sends for PageDown (there's no KeyCodes entry for it)
+    const pageDown = "\u001B[6~"
+    await interact(setup, () => setup!.mockInput.pressKey(pageDown))
+    await interact(setup, () => setup!.mockInput.pressKey(pageDown))
+    expect(setup.captureCharFrame()).toContain("fatal: line 20")
+  })
+
+  it("keeps the selected task in view in a long list", async () => {
+    const jobs = Array.from({ length: 40 }, (_, i) => ({
+      ...syncJob([step("loadRepo", "done")], "completed"),
+      id: `syncRepo-repo-${i}`,
+      repoId: `acme-repo-${String(i).padStart(2, "0")}`
+    }))
+    setup = await renderModal(jobs, {}, { width: 120, height: 24 })
+    await interact(setup, () => {})
+
+    for (let i = 0; i < 25; i++) {
+      await interact(setup, () => setup!.mockInput.pressArrow("down"))
+    }
+    expect(setup.captureCharFrame()).toContain("> acme-repo-25")
   })
 
   it("renders each step status with its icon", async () => {
