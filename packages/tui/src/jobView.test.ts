@@ -1,7 +1,8 @@
 import type { Job } from "@repobase/engine"
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
-import { formatAge, jobCounts, syncActivityText } from "./jobView.js"
+import { RemoteBranchMissingError, type Step } from "@repobase/engine"
+import { formatAge, jobCounts, resumableSync, resumePoint, syncActivityText } from "./jobView.js"
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 
@@ -14,6 +15,64 @@ describe("formatAge", () => {
     [2 * 86_400_000, "2d ago"]
   ])("%i ms later is %s", (elapsed, expected) => {
     expect(formatAge(at(0), at(elapsed))).toBe(expected)
+  })
+})
+
+describe("resumableSync", () => {
+  const step = (key: string, status: Step["status"], extra: Partial<Step> = {}): Step =>
+    ({ key, name: key.split(":")[0]!, runsOn: "worker", status, attempts: 1, ...extra }) as Step
+  const sync = (status: Job["status"], steps: ReadonlyArray<Step>, createdAtMs = 0, repoId = "a") =>
+    ({ id: `sync-${repoId}-${createdAtMs}`, kind: "syncRepo", repoId, status, createdAt: at(createdAtMs), steps }) as Job
+
+  it("resumes an interrupted sync, wherever it stopped", () => {
+    const job = sync("interrupted", [step("fetch", "done"), step("resolveRemoteHead", "interrupted")])
+    expect(resumableSync([job], "a")).toBe(job)
+  })
+
+  it.each(["deleteRemoved", "indexBatch:4", "finalizeIndex", "updateStore"])(
+    "resumes a sync that failed at %s",
+    (key) => {
+      const job = sync("failed", [step("planChanges", "done"), step(key, "failed")])
+      expect(resumableSync([job], "a")).toBe(job)
+    }
+  )
+
+  it.each(["loadRepo", "fetch", "resolveRemoteHead", "resetHard", "planChanges"])(
+    "starts over after a failure at %s, before indexing",
+    (key) => {
+      expect(resumableSync([sync("failed", [step(key, "failed")])], "a")).toBeUndefined()
+    }
+  )
+
+  it("starts over when the failure can't be fixed by retrying", () => {
+    const error = new RemoteBranchMissingError({ repoId: "a", branch: "gone", message: "unknown revision" })
+    expect(resumableSync([sync("failed", [step("updateStore", "failed", { error })])], "a")).toBeUndefined()
+  })
+
+  it("only looks at the repo's latest sync", () => {
+    const interrupted = sync("interrupted", [step("indexBatch:1", "interrupted")], 0)
+    const completed = sync("completed", [step("updateStore", "done")], 1)
+    expect(resumableSync([interrupted, completed], "a")).toBeUndefined()
+    expect(resumableSync([interrupted], "b")).toBeUndefined()
+  })
+})
+
+describe("resumePoint", () => {
+  const step = (key: string, status: Step["status"]): Step =>
+    ({ key, name: key.split(":")[0]!, runsOn: "worker", status, attempts: 1 }) as Step
+
+  it("names the next batch once indexing has started", () => {
+    const steps = [
+      step("indexBatch", "done"),
+      ...Array.from({ length: 87 }, (_, i) => step(`indexBatch:${i}`, i < 52 ? "done" : "pending"))
+    ]
+    expect(resumePoint({ steps } as unknown as Job)).toBe("batch 53/87")
+  })
+
+  it("names the first unfinished step before indexing", () => {
+    expect(resumePoint({ steps: [step("fetch", "done"), step("resetHard", "interrupted")] } as unknown as Job)).toBe(
+      "resetHard"
+    )
   })
 })
 

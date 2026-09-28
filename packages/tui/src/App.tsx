@@ -15,8 +15,8 @@ interface AppProps {
   initialRepos: RepoConfig[]
   onAddRepo: (url: string, onProgress: (progress: AddRepoProgress) => void) => Promise<RepoConfig>
   onRemoveRepo: (id: string) => Promise<void>
-  onSyncRepo: (id: string) => Promise<{ updated: boolean }>
-  onSyncAll: () => Promise<Array<{ id: string; updated: boolean }>>
+  onSyncRepo: (id: string) => Promise<{ updated: boolean; resumedFrom?: string }>
+  onSyncAll: () => Promise<Array<{ id: string; updated: boolean; resumed?: boolean }>>
   onRefreshRepos: () => Promise<RepoConfig[]>
   onSearch: (query: string, mode: SearchMode) => Promise<SearchResult[]>
   onJobsChange: (listener: (jobs: ReadonlyArray<Job>) => void) => () => void
@@ -203,7 +203,8 @@ export const App = ({
       const result = await onSyncRepo(repo.id)
       const updatedRepos = await onRefreshRepos()
       setRepos(updatedRepos)
-      showMessage(result.updated ? `[OK] ${repo.id} updated` : `${repo.id} already up to date`)
+      const resumed = result.resumedFrom ? ` (resumed at ${result.resumedFrom})` : ""
+      showMessage(result.updated ? `[OK] ${repo.id} updated${resumed}` : `${repo.id} already up to date${resumed}`)
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
@@ -220,7 +221,10 @@ export const App = ({
       const updatedRepos = await onRefreshRepos()
       setRepos(updatedRepos)
       const updatedCount = results.filter(r => r.updated).length
-      showMessage(`[OK] Synced ${results.length} repos (${updatedCount} updated)`)
+      const resumedCount = results.filter(r => r.resumed).length
+      showMessage(
+        `[OK] Synced ${results.length} repos (${updatedCount} updated${resumedCount > 0 ? `, ${resumedCount} resumed` : ""})`
+      )
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }

@@ -179,6 +179,39 @@ export const kindLabel: Record<Job["kind"], string> = {
   syncRepo: "sync",
 };
 
+const RESUMABLE_FAILED_STEPS: ReadonlySet<string> = new Set([
+  "deleteRemoved",
+  "indexBatch",
+  "finalizeIndex",
+  "updateStore",
+]);
+
+export const resumableSync = (jobs: ReadonlyArray<Job>, repoId: string): Job | undefined => {
+  let latest: Job | undefined;
+  for (const job of jobs) {
+    if (job.kind !== "syncRepo" || job.repoId !== repoId) continue;
+    if (!latest || DateTime.toEpochMillis(job.createdAt) > DateTime.toEpochMillis(latest.createdAt)) {
+      latest = job;
+    }
+  }
+  if (!latest) return undefined;
+
+  if (latest.status === "interrupted") return latest;
+  if (latest.status !== "failed" || !retryState(latest).canRetry) return undefined;
+
+  const failed = latest.steps.find((s) => s.status === "failed");
+  return failed && RESUMABLE_FAILED_STEPS.has(failed.name) ? latest : undefined;
+};
+
+export const resumePoint = (job: Job): string | undefined => {
+  const batches = job.steps.filter((s) => s.name === "indexBatch" && s.key !== "indexBatch");
+  const done = batches.filter((s) => s.status === "done").length;
+  if (batches.length > 0 && done > 0 && done < batches.length) {
+    return `batch ${done + 1}/${batches.length}`;
+  }
+  return job.steps.find((s) => s.status !== "done" && s.status !== "skipped")?.name;
+};
+
 export type SyncActivity =
   | { readonly kind: "one"; readonly repoId: string }
   | { readonly kind: "all"; readonly since: DateTime.Utc; readonly total: number };

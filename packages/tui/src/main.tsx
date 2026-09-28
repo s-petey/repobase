@@ -35,6 +35,7 @@ import {
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
+import { resumableSync, resumePoint } from "./jobView.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
 
 const FORCE_SYNC_ENV = "REPOBASE_FORCE_SYNC"
@@ -126,11 +127,17 @@ const program = Effect.gen(function* () {
   // Completed by the App when the user quits
   const quit = yield* Deferred.make<void>()
 
-  // Run a sync job to the end
   const runSync = (repoId: string) =>
-    runner
-      .start({ kind: "syncRepo", repoId, payload: { force: forceSync } })
-      .pipe(Effect.flatMap((job) => runner.await(job.id)))
+    Effect.gen(function* () {
+      const unfinished = resumableSync(yield* runner.jobs, repoId)
+      const job = unfinished
+        ? yield* runner.retry(unfinished.id)
+        : yield* runner.start({ kind: "syncRepo", repoId, payload: { force: forceSync } })
+      return {
+        job: yield* runner.await(job.id),
+        resumedFrom: unfinished ? (resumePoint(unfinished) ?? "where it stopped") : undefined
+      }
+    })
 
   // Render the app
   createRoot(renderer).render(
@@ -171,10 +178,10 @@ const program = Effect.gen(function* () {
       onSyncRepo={(id: string) =>
         runPromise(
           runSync(id).pipe(
-            Effect.flatMap((job) =>
+            Effect.flatMap(({ job, resumedFrom }) =>
               jobFailed(job)
                 ? Effect.fail(new Error(jobFailureMessage(job)))
-                : Effect.succeed({ updated: syncUpdated(job) })
+                : Effect.succeed({ updated: syncUpdated(job), resumedFrom })
             )
           )
         )
@@ -185,7 +192,7 @@ const program = Effect.gen(function* () {
             const { repos } = yield* repoStore.load()
             // One job per repo, all at once; their batches share the worker pool.
             // A repo that already has a job running is left to that job.
-            const jobs = yield* Effect.forEach(
+            const runs = yield* Effect.forEach(
               repos,
               (repo) =>
                 runSync(repo.id).pipe(
@@ -194,8 +201,8 @@ const program = Effect.gen(function* () {
                 ),
               { concurrency: "unbounded" }
             )
-            const finished = jobs.filter(Option.isSome).map((j) => j.value)
-            const failed = finished.filter(jobFailed)
+            const finished = runs.filter(Option.isSome).map((r) => r.value)
+            const failed = finished.map((r) => r.job).filter(jobFailed)
             if (failed.length > 0) {
               return yield* Effect.fail(
                 new Error(
@@ -203,7 +210,11 @@ const program = Effect.gen(function* () {
                 )
               )
             }
-            return finished.map((job) => ({ id: job.repoId, updated: syncUpdated(job) }))
+            return finished.map(({ job, resumedFrom }) => ({
+              id: job.repoId,
+              updated: syncUpdated(job),
+              resumed: resumedFrom !== undefined
+            }))
           })
         )
       }
