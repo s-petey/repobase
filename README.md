@@ -36,7 +36,21 @@ repobase
 - `s` - Sync selected repository
 - `S` - Sync all repositories
 - `/` - Search
+- `t` - Tasks: background add and sync jobs
 - `q` - Quit
+
+### Background tasks
+
+Adding and syncing a repository run as tasks on worker threads, so the UI stays responsive while repositories are cloned and indexed. Each task is split into steps that are saved to disk as they finish. If a step fails, or you quit mid-task, you can retry the task from the step where it stopped. For indexing, only the batches of files that failed are retried.
+
+Press `t` to open the Tasks view:
+
+- The list shows every task with its status. Tasks interrupted in a previous session show up here after startup.
+- The selected task shows its steps, and a failed step shows its error with a hint.
+- `r` retries the task. It's unavailable when retrying can't help, for example when the tracked branch no longer exists.
+- `x` discards the task. `Esc` or `q` closes the view.
+
+By default repobase uses up to 4 worker threads, fewer on machines with less CPU or memory. One of them is kept for search. To change the limit, set `REPOBASE_MAX_WORKERS`, for example `REPOBASE_MAX_WORKERS=1 repobase` to use a single worker.
 
 ### MCP Server (Cursor, Claude, etc.)
 
@@ -60,6 +74,16 @@ Add to your MCP configuration (`~/.cursor/mcp.json` or Claude config):
 - `glob_files` - Find files by glob pattern
 - `read_file` - Read file contents
 - `grep` - Search file contents with regex
+
+## Troubleshooting
+
+repobase keeps its state and logs in `~/.repobase`:
+
+- `tui.log` - the terminal UI's log
+- `worker.log` - the worker threads' log, for errors in a task's steps
+- `jobs/` - the saved tasks, with each step's status and error. Use the Tasks view (`t`) to retry or discard them.
+- `config.json` - the repositories you've added
+- `repos/` and `index/` - the cloned repositories and the search index
 
 ## Development
 
@@ -89,6 +113,10 @@ LanceDB's Rust core logs warnings to stderr, and anything on stderr draws over t
 It has to be set when the process starts. LanceDB reads `LANCEDB_LOG` once, when its native addon loads, and under Bun a `process.env` change made at runtime doesn't reach native code. That's why it lives in the launch commands rather than in the Indexer.
 
 To see LanceDB's warnings or debug output while developing, set your own level; the `start` script keeps it: `LANCEDB_LOG=debug bun run dev:tui`. The published `repobase` command always forces `error`, because a shebang can't fall back to an existing value. To use another level there, run the bundle directly: `LANCEDB_LOG=debug bun "$(npm root -g)/repobase/dist/tui/main.js"`.
+
+### Measuring UI responsiveness
+
+Set `REPOBASE_DEBUG_LAG=1` to sample how responsive the main (render) thread is: `REPOBASE_DEBUG_LAG=1 bun run dev:tui`. Every 5 seconds, `~/.repobase/tui.log` gets a line with the maximum and 95th-percentile event-loop lag. It's logged as a warning when any tick was more than 50ms late, which is when rendering and input start to feel sluggish.
 
 ### Dependency versions
 

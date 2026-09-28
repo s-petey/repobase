@@ -34,6 +34,7 @@ import {
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
+import { LAG_ENV, lagSampler } from "./lagSampler.js"
 
 // File logger for debugging - writes to ~/.repobase/tui.log
 const tuiLogPath = logPath("tui")
@@ -85,6 +86,7 @@ const MainLayer = EngineLive.pipe(
 const program = Effect.gen(function* () {
   yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
   if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
+  if (process.env[LAG_ENV] === "1") yield* Effect.forkScoped(lagSampler)
 
   const engine = yield* RepobaseEngine
   const runner = yield* JobRunner
