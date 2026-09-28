@@ -15,6 +15,7 @@ import {
   SubscriptionRef
 } from "effect"
 import { isRetryable, type StepError, UnexpectedStepError } from "./errors.js"
+import { type IndexLock, makeIndexLock } from "./IndexLock.js"
 import { type Job, type JobKind, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
 import { JobStore } from "./JobStore.js"
 
@@ -38,8 +39,9 @@ export interface StepContext<J extends Job> {
   // The saved output of an earlier step. Dies if that step hasn't run, since
   // that means the job definition lists steps in the wrong order.
   readonly output: <O>(step: StepDefinition<J, O, any>) => Effect.Effect<O>
-  // Held while rebuilding the full-text index, so only one job does it at a time
-  readonly ftsLock: Semaphore.Semaphore
+  // Index writes go through `write`; finalizing (compaction and the full-text
+  // rebuild) goes through `exclusive`, so it never races another job's writes
+  readonly indexLock: IndexLock
 }
 
 /**
@@ -188,7 +190,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
   Effect.gen(function* () {
     const store = yield* JobStore
     const services = yield* Effect.context<R>()
-    const ftsLock = yield* Semaphore.make(1)
+    const indexLock = yield* makeIndexLock
     const fibers = yield* FiberMap.make<string>()
 
     // Jobs left running by a previous process can't still be running
@@ -271,7 +273,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         const job = Option.getOrThrow(yield* current(jobId)) as J
         const ctx: StepContext<J> = {
           job,
-          ftsLock,
+          indexLock,
           output: <O>(def: StepDefinition<J, O, any>) =>
             Effect.gen(function* () {
               const latest = Option.getOrThrow(yield* current(jobId))

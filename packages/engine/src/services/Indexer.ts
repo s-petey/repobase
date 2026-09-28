@@ -1,4 +1,4 @@
-import { Array as Arr, Context, Effect, FileSystem, Layer, Option, Schedule, SubscriptionRef } from "effect"
+import { Array as Arr, Context, Effect, FileSystem, Layer, Option, Schedule, Semaphore, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
@@ -420,7 +420,16 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     return db
   })
 
-  const getTable = Effect.gen(function* () {
+  // One opener at a time, so concurrent first calls don't all try to create the table
+  const tableLock = yield* Semaphore.make(1)
+
+  const openTable = (database: any) =>
+    Effect.tryPromise({
+      try: () => database.openTable(FILES_TABLE),
+      catch: (e) => new IndexError({ operation: "init", message: `Failed to open table: ${e}` })
+    })
+
+  const getTable = tableLock.withPermit(Effect.gen(function* () {
     if (table) return table
 
     const database = yield* getDb
@@ -430,10 +439,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     })
 
     if (tableNames.includes(FILES_TABLE)) {
-      table = yield* Effect.tryPromise({
-        try: () => database.openTable(FILES_TABLE),
-        catch: (e) => new IndexError({ operation: "init", message: `Failed to open table: ${e}` })
-      })
+      table = yield* openTable(database)
     } else {
       // Create with schema using a template record
       table = yield* Effect.tryPromise({
@@ -455,10 +461,16 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           return newTable
         },
         catch: (e) => new IndexError({ operation: "init", message: `Failed to create table: ${e}` })
-      })
+      }).pipe(
+        // Another process (a worker thread or the MCP server) created it first
+        Effect.catchIf(
+          (e) => /already exists/i.test(e.message),
+          () => openTable(database)
+        )
+      )
     }
     return table
-  })
+  }))
 
   // Initialize embedding model lazily
   const getEmbedder = Effect.gen(function* () {
@@ -506,7 +518,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     Effect.gen(function* () {
       const force = options?.force ?? false
       const tbl = yield* getTable.pipe(
-        Effect.mapError((e) => new IndexError({ ...e, operation: "planIndex.queryExisting" }))
+        Effect.mapError((e) => new IndexError({ operation: "planIndex.queryExisting", message: e.message, path: e.path }))
       )
 
       // Get existing records for this repo
@@ -666,7 +678,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         )
       }
       yield* deletePaths(repoId, gone).pipe(
-        Effect.mapError((e) => new IndexError({ ...e, operation: "indexBatch.write" }))
+        Effect.mapError((e) => new IndexError({ operation: "indexBatch.write", message: e.message, path: e.path }))
       )
 
       return { indexed: records.length, skipped: gone.length }

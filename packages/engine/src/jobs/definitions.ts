@@ -339,7 +339,7 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
   const deleteRemoved = workerStep<J, { readonly count: number }>({
     name: "deleteRemoved",
     output: Schema.Struct({ count: Schema.Number }),
-    run: (ctx, client) => client.DeleteRemoved({ jobId: ctx.job.id, repoId: ctx.job.repoId })
+    run: (ctx, client) => ctx.indexLock.write(client.DeleteRemoved({ jobId: ctx.job.id, repoId: ctx.job.repoId }))
   })
 
   const indexBatch = workerFanOut<J, number, IndexBatchResult, JobProgress>({
@@ -363,21 +363,16 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
       Effect.gen(function* () {
         const progress = yield* JobProgress
         const result = yield* Ref.make<IndexBatchResult>({ indexed: 0, skipped: 0 })
-        yield* client
-          .IndexBatch({
-            jobId: ctx.job.id,
-            repoId: ctx.job.repoId,
-            localPath: yield* repoPath(ctx),
-            batch,
-            total
-          })
-          .pipe(
+        const localPath = yield* repoPath(ctx)
+        yield* ctx.indexLock.write(
+          client.IndexBatch({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath, batch, total }).pipe(
             Stream.runForEach((event) =>
               event._tag === "File"
                 ? progress.fileStarted(ctx.job.id, event.path)
                 : Ref.set(result, { indexed: event.indexed, skipped: event.skipped })
             )
           )
+        )
         return yield* Ref.get(result)
       })
   })
@@ -385,9 +380,9 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
   const finalizeIndex = workerStep<J, null>({
     name: "finalizeIndex",
     output: Schema.Null,
-    // One full-text rebuild at a time across jobs
+    // Alone: compaction and the full-text rebuild fail if another job writes meanwhile
     run: (ctx, client) =>
-      ctx.ftsLock.withPermit(client.FinalizeIndex({ repoId: ctx.job.repoId })).pipe(Effect.as(null))
+      ctx.indexLock.exclusive(client.FinalizeIndex({ repoId: ctx.job.repoId })).pipe(Effect.as(null))
   })
 
   return [deleteRemoved, indexBatch, finalizeIndex] as const

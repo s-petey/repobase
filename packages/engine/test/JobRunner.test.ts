@@ -79,7 +79,7 @@ const makeScript = () => {
     name: "finalize",
     runsOn: "worker",
     output: Schema.Null,
-    run: (ctx) => ctx.ftsLock.withPermit(act("finalize", null))
+    run: (ctx) => ctx.indexLock.exclusive(act("finalize", null))
   })
 
   const loadRepo = step<SyncRepoJob, { pinned: boolean }, never>({
