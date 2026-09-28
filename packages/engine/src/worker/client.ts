@@ -1,7 +1,7 @@
 import { BunWorker } from "@effect/platform-bun"
 import { Context, Effect, Layer } from "effect"
 import { RpcClient, type RpcClientError, type RpcGroup } from "effect/unstable/rpc"
-import { resolveHostWorkerCount, splitPools } from "./limits.js"
+import { hostWorkerCount, splitPools } from "./limits.js"
 import { StepRpcs } from "./rpcs.js"
 
 /**
@@ -21,7 +21,7 @@ const WORKER_TIME_TO_LIVE = "60 seconds"
  * A pool of worker threads serving StepRpcs.
  *
  * Workers are spawned on demand up to `size` (by default the job share of
- * resolveHostWorkerCount) and each runs one request at a time. Closing the
+ * hostWorkerCount) and each runs one request at a time. Closing the
  * layer's scope shuts every worker down.
  *
  * @param workerUrl - Module that calls runWorker(); it must resolve both from
@@ -78,7 +78,7 @@ export const layerQueryFromJobPool = Layer.effect(QueryClient)(
 )
 
 const hostJobPoolSize = Effect.gen(function* () {
-  const resolved = resolveHostWorkerCount()
+  const resolved = yield* hostWorkerCount
   if (resolved.warning) yield* Effect.logWarning(resolved.warning)
   return splitPools(resolved.count).jobs
 })

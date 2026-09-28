@@ -158,11 +158,17 @@ export const onnxThreadsPerWorker = (cores: number, workers: number): number =>
   Math.max(1, Math.floor(cores / Math.max(1, workers)))
 
 /**
- * Resolve the worker count for the current machine and environment
+ * Resolve the worker count for the current machine, with the override from
+ * MAX_WORKERS_ENV. Read as a string, like hostIndexingConcurrency.
  */
-export const resolveHostWorkerCount = (): WorkerCount =>
-  resolveWorkerCount({
-    cores: os.availableParallelism?.() ?? os.cpus().length,
-    totalMemBytes: os.totalmem(),
-    override: process.env[MAX_WORKERS_ENV]
-  })
+export const hostWorkerCount: Effect.Effect<WorkerCount, Config.ConfigError> = Config.option(
+  Config.String(MAX_WORKERS_ENV)
+).pipe(
+  Effect.map((override) =>
+    resolveWorkerCount({
+      cores: os.availableParallelism?.() ?? os.cpus().length,
+      totalMemBytes: os.totalmem(),
+      override: Option.getOrUndefined(override)
+    })
+  )
+)

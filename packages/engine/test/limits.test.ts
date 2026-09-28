@@ -2,6 +2,7 @@ import { describe, it, expect } from "@effect/vitest"
 import { ConfigProvider, Effect } from "effect"
 import {
   hostIndexingConcurrency,
+  hostWorkerCount,
   MAX_INDEXING_ENV,
   MAX_WORKERS_ENV,
   onnxThreadsPerWorker,
@@ -11,6 +12,9 @@ import {
 } from "../src/worker/limits.js"
 
 const GiB = 1024 * 1024 * 1024
+
+const withEnv = (env: Record<string, string>) =>
+  Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))
 
 describe("worker limits", () => {
   describe("resolveWorkerCount defaults", () => {
@@ -99,10 +103,24 @@ describe("worker limits", () => {
     })
   })
 
-  describe("hostIndexingConcurrency", () => {
-    const withEnv = (env: Record<string, string>) =>
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))
+  describe("hostWorkerCount", () => {
+    it.effect("reads the override from config", () =>
+      Effect.gen(function* () {
+        const result = yield* hostWorkerCount.pipe(withEnv({ [MAX_WORKERS_ENV]: "1" }))
+        expect(result).toEqual({ count: 1, source: "override" })
+      })
+    )
 
+    it.effect("warns and falls back on an invalid override instead of failing", () =>
+      Effect.gen(function* () {
+        const result = yield* hostWorkerCount.pipe(withEnv({ [MAX_WORKERS_ENV]: "lots" }))
+        expect(result.source).toBe("default")
+        expect(result.warning).toContain(MAX_WORKERS_ENV)
+      })
+    )
+  })
+
+  describe("hostIndexingConcurrency", () => {
     it.effect("reads the override from config", () =>
       Effect.gen(function* () {
         const result = yield* hostIndexingConcurrency.pipe(withEnv({ [MAX_INDEXING_ENV]: "1" }))

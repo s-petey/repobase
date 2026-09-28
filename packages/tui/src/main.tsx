@@ -26,7 +26,7 @@ import {
   layerQueryFromJobPool,
   QueryClient,
   logPath,
-  resolveHostWorkerCount,
+  hostWorkerCount,
   hostIndexingConcurrency,
   splitPools,
   type SearchMode,
@@ -52,24 +52,25 @@ const workerUrl = new URL(
 
 // One worker per job step at a time, and one job's batches spread over all of them.
 // Searches get their own warm worker, unless the budget only allows one.
-const workerCount = resolveHostWorkerCount()
-const pools = splitPools(workerCount.count)
+const hostPools = Effect.map(hostWorkerCount, (workerCount) => ({ workerCount, pools: splitPools(workerCount.count) }))
 
 const JobsLive = Layer.unwrap(
-  Effect.map(hostIndexingConcurrency, (indexing) =>
-    JobRunnerLayer(
+  Effect.gen(function* () {
+    const { pools } = yield* hostPools
+    const indexing = yield* hostIndexingConcurrency
+    return JobRunnerLayer(
       makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: indexing.count }),
       { concurrency: pools.jobs }
+    ).pipe(
+      Layer.provideMerge(
+        Layer.mergeAll(
+          pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromJobPool,
+          JobStoreLayer,
+          JobProgressLayer
+        ).pipe(Layer.provideMerge(layerWorkerPool({ workerUrl, size: pools.jobs })))
+      )
     )
-  )
-).pipe(
-  Layer.provideMerge(
-    Layer.mergeAll(
-      pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromJobPool,
-      JobStoreLayer,
-      JobProgressLayer
-    ).pipe(Layer.provideMerge(layerWorkerPool({ workerUrl, size: pools.jobs })))
-  )
+  })
 )
 
 // Remove runs through RepobaseEngine on this thread. RepoStore is shared
@@ -93,12 +94,14 @@ const MainLayer = EngineLive.pipe(
 // every finalizer below runs on the way out.
 const program = Effect.gen(function* () {
   yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
+  const { workerCount, pools } = yield* hostPools
   const indexing = yield* hostIndexingConcurrency
   const forceSync = yield* Config.Boolean(FORCE_SYNC_ENV).pipe(Config.withDefault(false))
+  const debugLag = yield* Config.Boolean(LAG_ENV).pipe(Config.withDefault(false))
   if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
   if (indexing.warning) yield* Effect.logWarning(indexing.warning)
   yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search; indexing ${indexing.count} batch(es) at a time`)
-  if (process.env[LAG_ENV] === "1") yield* Effect.forkScoped(lagSampler)
+  if (debugLag) yield* Effect.forkScoped(lagSampler)
   if (forceSync) yield* Effect.logWarning(`${FORCE_SYNC_ENV}=1: every sync re-indexes all files`)
 
   const engine = yield* RepobaseEngine
