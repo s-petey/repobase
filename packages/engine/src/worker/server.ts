@@ -164,7 +164,19 @@ export const HandlersLayer = StepRpcs.toLayer(
             skipped: plan.skipped,
             fullScan: Option.isNone(changes)
           }
-        })
+        }),
+
+      Search: ({ query, mode, repo, limit }) => {
+        const options = { repo, limit }
+        switch (mode) {
+          case "keyword":
+            return indexer.searchKeyword(query, options)
+          case "semantic":
+            return indexer.searchSemantic(query, options)
+          case "hybrid":
+            return indexer.searchHybrid(query, options)
+        }
+      }
     })
   })
 )

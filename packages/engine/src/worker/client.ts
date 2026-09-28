@@ -50,6 +50,33 @@ export const layerWorkerPool = (options: {
     })
   )
 
+/**
+ * RPC client for searches, on its own worker so searches don't queue behind
+ * indexing jobs
+ */
+export class QueryClient extends Context.Service<QueryClient, WorkerClient["Service"]>()(
+  "@repobase/engine/QueryClient"
+) {}
+
+/**
+ * The search worker: one thread, started with the layer and kept for its whole
+ * lifetime, so the first search doesn't wait for a worker (or its model) to start
+ */
+export const layerQueryPool = (options: { readonly workerUrl: URL }) =>
+  Layer.effect(QueryClient)(RpcClient.make(StepRpcs)).pipe(
+    Layer.provide(RpcClient.layerProtocolWorker({ size: 1, concurrency: 1 })),
+    Layer.provide(BunWorker.layer(() => new Worker(options.workerUrl)))
+  )
+
+/**
+ * For a single-worker budget: searches go through the job pool's WorkerClient
+ */
+export const layerQueryFromJobPool = Layer.effect(QueryClient)(
+  Effect.gen(function* () {
+    return yield* WorkerClient
+  })
+)
+
 const hostJobPoolSize = Effect.gen(function* () {
   const resolved = resolveHostWorkerCount()
   if (resolved.warning) yield* Effect.logWarning(resolved.warning)

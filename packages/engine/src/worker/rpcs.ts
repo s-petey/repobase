@@ -1,5 +1,7 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/unstable/rpc"
+import { SearchError } from "../errors.js"
+import { SearchMode, SearchResult } from "../schemas.js"
 import {
   CloneFailedError,
   DeleteRemovedFailedError,
@@ -138,6 +140,20 @@ export class PlanChanges extends Rpc.make("PlanChanges", {
 }) {}
 
 /**
+ * Search the index, optionally within one repo
+ */
+export class Search extends Rpc.make("Search", {
+  payload: {
+    query: Schema.String,
+    mode: SearchMode,
+    repo: Schema.optional(Schema.String),
+    limit: Schema.optional(Schema.Number)
+  },
+  success: Schema.Array(SearchResult),
+  error: SearchError
+}) {}
+
+/**
  * Every operation a worker thread can run for the main thread
  */
 export class StepRpcs extends RpcGroup.make(
@@ -150,5 +166,6 @@ export class StepRpcs extends RpcGroup.make(
   Fetch,
   RemoteHead,
   ResetHard,
-  PlanChanges
+  PlanChanges,
+  Search
 ) {}

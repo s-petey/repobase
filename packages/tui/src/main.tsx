@@ -22,6 +22,9 @@ import {
   deriveRepoId,
   fileLoggerLayer,
   layerWorkerPool,
+  layerQueryPool,
+  layerQueryFromJobPool,
+  QueryClient,
   logPath,
   resolveHostWorkerCount,
   splitPools,
@@ -42,21 +45,26 @@ const workerUrl = new URL(
   import.meta.url
 )
 
-// One worker per job step at a time, and one job's batches spread over all of them
+// One worker per job step at a time, and one job's batches spread over all of them.
+// Searches get their own warm worker, unless the budget only allows one.
 const workerCount = resolveHostWorkerCount()
-const jobWorkers = splitPools(workerCount.count).jobs
+const pools = splitPools(workerCount.count)
 
 // Add and sync run as jobs: steps checkpointed on disk, heavy work on workers
 const JobsLive = JobRunnerLayer(makeJobDefinitions(defaultDefinitionsConfig()), {
-  concurrency: jobWorkers
+  concurrency: pools.jobs
 }).pipe(
   Layer.provideMerge(
-    Layer.mergeAll(layerWorkerPool({ workerUrl, size: jobWorkers }), JobStoreLayer, JobProgressLayer)
+    Layer.mergeAll(
+      pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromJobPool,
+      JobStoreLayer,
+      JobProgressLayer
+    ).pipe(Layer.provideMerge(layerWorkerPool({ workerUrl, size: pools.jobs })))
   )
 )
 
-// Search and remove still run through RepobaseEngine on this thread. RepoStore
-// is shared by the engine and the job definitions.
+// Remove runs through RepobaseEngine on this thread. RepoStore is shared
+// by the engine and the job definitions.
 const EngineLive = Layer.mergeAll(
   RepobaseEngineLayer.pipe(Layer.provide(GitClientLayer), Layer.provide(IndexerLayer)),
   JobsLive
@@ -82,6 +90,7 @@ const program = Effect.gen(function* () {
   const runner = yield* JobRunner
   const progress = yield* JobProgress
   const repoStore = yield* RepoStore
+  const query = yield* QueryClient
 
   // Runs effects from React callbacks as fibers owned by this program's scope,
   // so anything still in flight is interrupted on shutdown
@@ -185,7 +194,9 @@ const program = Effect.gen(function* () {
         )
       }
       onRefreshRepos={() => runPromise(engine.listRepos())}
-      onSearch={(query: string, mode: SearchMode) => runPromise(engine.search(query, mode))}
+      onSearch={(text: string, mode: SearchMode) =>
+        runPromise(query.Search({ query: text, mode }).pipe(Effect.map((results) => [...results])))
+      }
       onJobsChange={(listener) => {
         const fiber = runFork(Stream.runForEach(runner.changes, (jobs) => Effect.sync(() => listener(jobs))))
         return () => {
