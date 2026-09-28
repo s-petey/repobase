@@ -43,6 +43,8 @@ repobase
 
 Adding and syncing a repository run as tasks on worker threads, so the UI stays responsive while repositories are cloned and indexed. Each task is split into steps that are saved to disk as they finish. If a step fails, or you quit mid-task, you can retry the task from the step where it stopped. For indexing, only the batches of files that failed are retried.
 
+Syncs run in the background, with their progress in the status bar. `Esc` hides an add's progress while it keeps going. When a repository's last sync was interrupted, or failed once indexing had started, `s` and `S` resume that task instead of starting over.
+
 Press `t` to open the Tasks view:
 
 - The list shows every task with its status. Tasks interrupted in a previous session show up here after startup.
@@ -50,9 +52,10 @@ Press `t` to open the Tasks view:
 - `r` retries the task. It's unavailable when retrying can't help, for example when the tracked branch no longer exists.
 - `x` discards the task. `Esc` or `q` closes the view.
 
-By default repobase uses up to 4 worker threads, fewer on machines with less CPU or memory. One of them is kept for search. To change the limit, set `REPOBASE_MAX_WORKERS`, for example `REPOBASE_MAX_WORKERS=1 repobase` to use a single worker.
+Tasks use two kinds of worker threads:
 
-Indexing (computing the embeddings for search) is the CPU-heavy part: one batch of files uses about 5 cores. So however many tasks run, only a few batches index at once: as many as fit in about half of your cores, and at least one. Fetching and the other steps still run in parallel. To change it, set `REPOBASE_MAX_INDEXING`, for example `REPOBASE_MAX_INDEXING=2 repobase` to finish a large Sync All sooner at the cost of more CPU.
+- **Indexing workers** compute the embeddings for search, the CPU-heavy part: one batch of files uses about 5 cores. Each holds its own copy of the embedding model, so there are only a few: as many as fit in about half of your cores, and at least one. They start with repobase and stay for the whole session. To change how many, set `REPOBASE_MAX_INDEXING`, for example `REPOBASE_MAX_INDEXING=2 repobase` to finish a large Sync All sooner at the cost of more CPU and memory.
+- **Workers** run everything else: cloning, fetching and planning. One of them is kept for search. By default there are up to 4, fewer on machines with less CPU or memory, and an idle one stops after a minute. To change the limit, set `REPOBASE_MAX_WORKERS`. With `REPOBASE_MAX_WORKERS=1`, search shares the indexing workers, so `REPOBASE_MAX_WORKERS=1 REPOBASE_MAX_INDEXING=1 repobase` is the smallest setup: two threads.
 
 ### MCP Server (Cursor, Claude, etc.)
 
