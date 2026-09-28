@@ -413,8 +413,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       catch: (e) => new IndexError({ operation: "init", message: `Failed to import lancedb: ${e}` })
     })
 
+    // Every worker thread has its own long-lived connection to the same index.
+    // Without a consistency check each one keeps reading the table as it was
+    // when it opened it: searches miss newly indexed files, and compaction
+    // plans from stale fragments and hits a commit conflict on every retry.
     db = yield* Effect.tryPromise({
-      try: () => lancedb.connect(config.indexDir),
+      try: () => lancedb.connect(config.indexDir, { readConsistencyInterval: 0 }),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to connect to LanceDB: ${e}` })
     })
     return db

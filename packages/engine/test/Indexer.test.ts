@@ -6,7 +6,7 @@ import * as nodeFs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { Indexer, IndexError, initialIndexingProgress } from "../src/index.js"
-import { layerWith as IndexerLayerWith } from "../src/services/Indexer.js"
+import { layerWith as IndexerLayerWith, makeWith } from "../src/services/Indexer.js"
 
 // These tests run the real Indexer against a real LanceDB table and real
 // files, each in its own temp directory. Only the embedding model is faked.
@@ -56,6 +56,23 @@ const indexedPaths = (repo: string) =>
   })
 
 const REPO = "test-repo"
+
+describe("Indexer across connections", () => {
+  // Each worker thread has its own connection to the same index, and keeps it
+  it.effect("sees rows another connection wrote after it opened the table, and finalizes after them", () =>
+    Effect.gen(function* () {
+      const indexDir = tempDir("index")
+      const indexing = yield* makeWith({ indexDir, embed: fakeEmbed })
+      const jobs = yield* makeWith({ indexDir, embed: fakeEmbed })
+      yield* jobs.indexRepo("earlier-repo", makeRepo())
+
+      yield* indexing.indexRepo(REPO, makeRepo())
+
+      expect(yield* jobs.globFiles("**", { repo: REPO, limit: 100 })).toHaveLength(3)
+      yield* jobs.finalizeIndex()
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+  )
+})
 
 describe("Indexer", () => {
   describe("indexRepo", () => {
