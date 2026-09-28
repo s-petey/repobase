@@ -211,6 +211,7 @@ const program = Effect.gen(function* () {
         Deferred.doneUnsafe(quit, Effect.void)
       }}
       cloudConfigured={cloudConfigured}
+      workerLimit={pools.jobs}
     />
   )
 

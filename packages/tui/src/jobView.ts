@@ -178,3 +178,30 @@ export const kindLabel: Record<Job["kind"], string> = {
   addRepo: "add",
   syncRepo: "sync",
 };
+
+export type SyncActivity =
+  | { readonly kind: "one"; readonly repoId: string }
+  | { readonly kind: "all"; readonly since: DateTime.Utc; readonly total: number };
+
+export const syncActivityText = (
+  activity: SyncActivity,
+  jobs: ReadonlyArray<Job>,
+  workerLimit?: number,
+): string => {
+  const workers =
+    workerLimit === undefined ? "" : ` · up to ${workerLimit} worker${workerLimit === 1 ? "" : "s"}`;
+
+  if (activity.kind === "one") {
+    return `Syncing ${activity.repoId}${workers}`;
+  }
+
+  const since = DateTime.toEpochMillis(activity.since);
+  const finished = jobs.filter(
+    (job) =>
+      job.kind === "syncRepo" &&
+      job.status !== "running" &&
+      DateTime.toEpochMillis(job.createdAt) >= since,
+  ).length;
+
+  return `Syncing ${Math.min(finished, activity.total)}/${activity.total} repos${workers}`;
+};

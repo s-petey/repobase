@@ -1,8 +1,9 @@
+import type { ComponentProps } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { testRender } from "@opentui/react/test-utils"
 import type { TestRendererSetup } from "@opentui/core/testing"
-import { Option } from "effect"
-import type { RepoConfig } from "@repobase/engine"
+import { DateTime, Option } from "effect"
+import type { Job, RepoConfig } from "@repobase/engine"
 import { App } from "./App.js"
 import { interact, teardown } from "./test/helpers.js"
 
@@ -19,7 +20,11 @@ const repo = (owner: string, name: string): RepoConfig => ({
   lastPushedCommit: Option.none()
 })
 
-const renderApp = (repos: RepoConfig[], onQuit: () => void = () => {}) =>
+const renderApp = (
+  repos: RepoConfig[],
+  onQuit: () => void = () => {},
+  overrides: Partial<ComponentProps<typeof App>> = {}
+) =>
   testRender(
     <App
       initialRepos={repos}
@@ -33,6 +38,7 @@ const renderApp = (repos: RepoConfig[], onQuit: () => void = () => {}) =>
       onRetryJob={async () => {}}
       onDiscardJob={async () => {}}
       onQuit={onQuit}
+      {...overrides}
     />,
     { width: 160, height: 30 }
   )
@@ -170,6 +176,75 @@ describe("App owner grouping", () => {
     frame = setup.captureCharFrame()
     expect(frame).not.toContain("Search Repositories")
     expect(frame).toContain("Repositories (3)")
+  })
+
+  it("shows Sync All's progress and the worker limit while it runs", async () => {
+    setup = await renderApp(repos, () => {}, {
+      onSyncAll: () => new Promise(() => {}),
+      workerLimit: 2
+    })
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressKey("s", { shift: true }))
+    let frame = setup.captureCharFrame()
+    expect(frame).toContain("Syncing 0/3 repos · up to 2 workers")
+    expect(frame).not.toContain("Processing...")
+    expect(frame).toContain("[t] Tasks")
+
+    // Still interactive while it runs: a second Sync All is refused, and other keys work
+    await interact(setup, () => setup!.mockInput.pressKey("s", { shift: true }))
+    expect(setup.captureCharFrame()).toContain("Sync All is already running")
+
+    await interact(setup, () => setup!.mockInput.pressKey("t"))
+    expect(setup.captureCharFrame()).toContain("No tasks yet.")
+  })
+
+  it("hides the add progress with Esc while the add carries on in the background", async () => {
+    setup = await renderApp(repos, () => {}, {
+      // Stays pending, so the add is still running when Esc is pressed
+      onAddRepo: () => new Promise(() => {})
+    })
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressKey("a"))
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("https://github.com/acme/widgets"))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(setup.captureCharFrame()).toContain("Adding Repository")
+
+    await interact(setup, async () => {
+      setup!.mockInput.pressEscape()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+    const frame = setup.captureCharFrame()
+    expect(frame).not.toContain("Adding Repository")
+    expect(frame).toContain("Adding in the background")
+  })
+
+  it("won't delete a repo while it has a task running", async () => {
+    const running = {
+      id: "syncRepo-Effect-TS-effect-1",
+      kind: "syncRepo",
+      repoId: "Effect-TS-effect",
+      payload: {},
+      status: "running",
+      createdAt: DateTime.makeUnsafe(0),
+      updatedAt: DateTime.makeUnsafe(0),
+      steps: []
+    } as unknown as Job
+    setup = await renderApp(repos, () => {}, {
+      onJobsChange: (listener) => {
+        listener([running])
+        return () => {}
+      }
+    })
+    await interact(setup, () => {})
+
+    // The first repo row under the Effect-TS header is Effect-TS-effect
+    await interact(setup, () => setup!.mockInput.pressKey("j"))
+    await interact(setup, () => setup!.mockInput.pressKey("d"))
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Effect-TS-effect has a task running")
+    expect(frame).not.toContain("Are you sure")
   })
 
   it("shows no headers or toggle hint when every owner has a single repo", async () => {

@@ -1,7 +1,7 @@
 import type { Job } from "@repobase/engine"
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
-import { formatAge, jobCounts } from "./jobView.js"
+import { formatAge, jobCounts, syncActivityText } from "./jobView.js"
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 
@@ -14,6 +14,34 @@ describe("formatAge", () => {
     [2 * 86_400_000, "2d ago"]
   ])("%i ms later is %s", (elapsed, expected) => {
     expect(formatAge(at(0), at(elapsed))).toBe(expected)
+  })
+})
+
+describe("syncActivityText", () => {
+  const job = (status: Job["status"], createdAtMs: number, kind: Job["kind"] = "syncRepo") =>
+    ({ status, kind, repoId: "a", createdAt: at(createdAtMs) }) as Job
+
+  it("names the repo for a single sync", () => {
+    expect(syncActivityText({ kind: "one", repoId: "acme-widgets" }, [], 3)).toBe(
+      "Syncing acme-widgets · up to 3 workers"
+    )
+  })
+
+  it("counts Sync All's finished syncs, ignoring jobs from before it started and adds", () => {
+    const jobs = [
+      job("completed", 500), // before this Sync All
+      job("completed", 1_000),
+      job("failed", 1_200),
+      job("running", 1_300),
+      job("completed", 1_400, "addRepo")
+    ]
+    expect(syncActivityText({ kind: "all", since: at(1_000), total: 7 }, jobs, 1)).toBe(
+      "Syncing 2/7 repos · up to 1 worker"
+    )
+  })
+
+  it("leaves out the worker limit when it isn't known", () => {
+    expect(syncActivityText({ kind: "all", since: at(0), total: 2 }, [])).toBe("Syncing 0/2 repos")
   })
 })
 

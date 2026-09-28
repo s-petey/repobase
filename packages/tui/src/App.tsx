@@ -7,7 +7,7 @@ import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, 
 import type { FlatRow } from "./components/RepoList.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
-import { jobCounts } from "./jobView.js"
+import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
 
 type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
 
@@ -24,6 +24,7 @@ interface AppProps {
   onDiscardJob: (jobId: string) => Promise<void>
   onQuit: () => void
   cloudConfigured?: boolean
+  workerLimit?: number
 }
 
 const repoParts = (repo: RepoConfig): { owner: string; name: string } => {
@@ -78,6 +79,7 @@ export const App = ({
   onDiscardJob,
   onQuit,
   cloudConfigured = false,
+  workerLimit,
 }: AppProps) => {
   const [repos, setRepos] = useState<RepoConfig[]>(initialRepos)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -102,6 +104,7 @@ export const App = ({
 
   const [jobs, setJobs] = useState<ReadonlyArray<Job>>([])
   const completedJobIds = useRef<ReadonlySet<string> | undefined>(undefined)
+  const [syncActivity, setSyncActivity] = useState<SyncActivity | undefined>()
 
   useEffect(() => onJobsChange(setJobs), [onJobsChange])
 
@@ -129,6 +132,8 @@ export const App = ({
     setTimeout(() => setMessage(undefined), duration)
   }, [])
 
+  const leave = useCallback((from: AppMode) => setMode((current) => (current === from ? "list" : current)), [])
+
   const handleAddRepo = useCallback(async (url: string) => {
     if (!url.trim()) {
       setMode("list")
@@ -148,7 +153,7 @@ export const App = ({
       // Keep showing progress modal with complete state for a moment
       setTimeout(() => {
         showMessage(`[OK] Added repository`)
-        setMode("list")
+        leave("adding")
       }, 500)
     } catch (error) {
       setAddProgress({
@@ -159,12 +164,12 @@ export const App = ({
       // Show error state briefly then return to list
       setTimeout(() => {
         showMessage(`Error: ${error instanceof Error ? error.message : "Failed to add"}`)
-        setMode("list")
+        leave("adding")
       }, 2000)
     }
 
     setInputValue("")
-  }, [onAddRepo, onRefreshRepos, showMessage])
+  }, [onAddRepo, onRefreshRepos, showMessage, leave])
 
   const handleConfirmDelete = useCallback(async () => {
     if (!repoToDelete) return
@@ -191,8 +196,8 @@ export const App = ({
   }, [])
 
   const handleSyncRepo = useCallback(async (repo: RepoConfig) => {
-    setMode("syncing")
-    setMessage(`Syncing ${repo.id}...`)
+    const activity: SyncActivity = { kind: "one", repoId: repo.id }
+    setSyncActivity(activity)
 
     try {
       const result = await onSyncRepo(repo.id)
@@ -203,12 +208,12 @@ export const App = ({
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
 
-    setMode("list")
+    setSyncActivity((current) => (current === activity ? undefined : current))
   }, [onSyncRepo, onRefreshRepos, showMessage])
 
   const handleSyncAll = useCallback(async () => {
-    setMode("syncing")
-    setMessage("Syncing all repositories...")
+    const activity: SyncActivity = { kind: "all", since: DateTime.nowUnsafe(), total: repos.length }
+    setSyncActivity(activity)
 
     try {
       const results = await onSyncAll()
@@ -220,8 +225,8 @@ export const App = ({
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to sync"}`)
     }
 
-    setMode("list")
-  }, [onSyncAll, onRefreshRepos, showMessage])
+    setSyncActivity((current) => (current === activity ? undefined : current))
+  }, [onSyncAll, onRefreshRepos, showMessage, repos.length])
 
   const handleSearch = useCallback(async (query: string, searchModeParam: SearchMode) => {
     if (!query.trim()) {
@@ -342,6 +347,9 @@ export const App = ({
         handleCloseResults()
       } else if (mode === "confirmDelete") {
         handleCancelDelete()
+      } else if (mode === "adding") {
+        setMode("list")
+        showMessage("Adding in the background; see [t] Tasks")
       } else if (mode === "list") {
         onQuit()
       }
@@ -382,14 +390,21 @@ export const App = ({
         setMode("add")
         break
       case "d":
-        if (row?.kind === "repo") {
-          setRepoToDelete(row.repo)
-          setMode("confirmDelete")
+        if (row?.kind !== "repo") break
+        if (jobs.some((j) => j.repoId === row.repo.id && j.status === "running")) {
+          showMessage(`${row.repo.id} has a task running; wait for it or discard it in [t] Tasks`)
+          break
         }
+        setRepoToDelete(row.repo)
+        setMode("confirmDelete")
         break
       case "s":
         if (key.shift) {
-          handleSyncAll()
+          if (syncActivity?.kind === "all") {
+            showMessage("Sync All is already running; see [t] Tasks")
+          } else {
+            handleSyncAll()
+          }
         } else if (row?.kind === "repo") {
           handleSyncRepo(row.repo)
         }
@@ -469,6 +484,7 @@ export const App = ({
         message={message}
         grouped={flatRows.some(r => r.kind === "header")}
         jobCounts={jobCounts(jobs)}
+        activity={syncActivity ? syncActivityText(syncActivity, jobs, workerLimit) : undefined}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {
