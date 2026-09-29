@@ -5,15 +5,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { DateTime, Effect, Layer, ManagedRuntime, Option } from "effect"
 import { BunServices } from "@effect/platform-bun"
-import { 
-  RepobaseEngine, 
+import {
+  RepobaseEngine,
   RepobaseEngineLayer,
   GitClientLayer,
   RepoStoreLayer,
   IndexerLayer,
   Indexer,
-  type SearchMode 
+  type SearchMode
 } from "@repobase/engine"
+import { serverInstructions } from "./instructions.js"
 
 // Layer composition - same pattern as TUI
 const EngineLive = RepobaseEngineLayer.pipe(
@@ -32,17 +33,26 @@ const MainLayer = Layer.mergeAll(
 // Create a managed runtime with the engine layer
 const runtime = ManagedRuntime.make(MainLayer)
 
+// The instructions name the repos indexed right now; each client session
+// starts its own server, so they're current for that session
+const repos = await runtime.runPromise(
+  RepobaseEngine.use((engine) => engine.listRepos()).pipe(Effect.orElseSucceed(() => []))
+)
+
 // Create MCP server
-const server = new McpServer({
-  name: "repobase-mcp",
-  version: "0.1.0"
-})
+const server = new McpServer(
+  {
+    name: "repobase-mcp",
+    version: "0.1.0"
+  },
+  { instructions: serverInstructions(repos) }
+)
 
 // Register list_repos tool
 server.registerTool(
   "list_repos",
   {
-    description: "List all indexed repositories in repobase",
+    description: "List the repositories indexed locally in repobase, with when each was last synced. Check it when you're unsure whether a library or repo is available here.",
   },
   async () => {
     const program = Effect.gen(function* () {
@@ -75,7 +85,7 @@ server.registerTool(
 server.registerTool(
   "search",
   {
-    description: "Search across all indexed repositories using keyword, semantic, or hybrid search",
+    description: "Search across all locally indexed repositories (keyword, semantic or hybrid). Use it first for questions about any of those repos: it's faster and more exact than web search.",
     inputSchema: {
       query: z.string().describe("The search query"),
       mode: z.enum(["keyword", "semantic", "hybrid"]).default("hybrid").describe("Search mode: keyword (fast text search), semantic (meaning-based), or hybrid (combines both)"),
@@ -117,7 +127,7 @@ server.registerTool(
 server.registerTool(
   "list_files",
   {
-    description: "List files and directories in a repository or directory",
+    description: "List files and directories of a locally indexed repository, or of a directory in it",
     inputSchema: {
       repo: z.string().optional().describe("Repository ID to list files from (omit to list all repos)"),
       path: z.string().optional().describe("Directory path within the repository (e.g., 'src' or 'src/components')")
@@ -155,7 +165,7 @@ server.registerTool(
 server.registerTool(
   "glob_files",
   {
-    description: "Find files matching a glob pattern across repositories",
+    description: "Find files matching a glob pattern in the locally indexed repositories",
     inputSchema: {
       pattern: z.string().describe("Glob pattern (e.g., '*.ts', '**/test/**', 'src/**/*.tsx')"),
       repo: z.string().optional().describe("Optional: limit search to a specific repository ID"),
@@ -197,7 +207,7 @@ server.registerTool(
 server.registerTool(
   "read_file",
   {
-    description: "Read file contents from a repository",
+    description: "Read a file from a locally indexed repository",
     inputSchema: {
       repo: z.string().describe("Repository ID"),
       path: z.string().describe("File path within the repository (e.g., 'src/main.ts')"),
@@ -242,7 +252,7 @@ server.registerTool(
 server.registerTool(
   "grep",
   {
-    description: "Search for a regex pattern in file contents across repositories",
+    description: "Find a regex pattern, such as a symbol, type or error message, in the files of the locally indexed repositories. Use it for exact matches; use search to find files by meaning.",
     inputSchema: {
       pattern: z.string().describe("Regular expression pattern to search for"),
       repo: z.string().optional().describe("Optional: limit search to a specific repository ID"),
