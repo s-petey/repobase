@@ -56,7 +56,8 @@
     "url": "https://github.com/fernandoabolafio/repobase.git"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.4.2",
+    "node": ">=22"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.115",
