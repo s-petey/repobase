@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { Effect, FileSystem, Layer } from "effect"
+import { Effect, FileSystem, Layer, Path } from "effect"
 import { fileLoggerLayer } from "../src/file-logger.js"
 
 /**
@@ -27,7 +27,7 @@ const makeMemoryFileSystem = () => {
 
 // Same composition as main.tsx: the logger must be part of the layer's output
 const appLayer = (fileLogger: ReturnType<typeof fileLoggerLayer>, fs: Layer.Layer<FileSystem.FileSystem>) =>
-  Layer.empty.pipe(Layer.provideMerge(fileLogger), Layer.provide(fs))
+  Layer.empty.pipe(Layer.provideMerge(fileLogger), Layer.provide(Layer.merge(fs, Path.layer)))
 
 describe("fileLoggerLayer", () => {
   it("writes logs to the log file and not the console", async () => {

@@ -1,10 +1,9 @@
-import { Clock, Context, DateTime, Effect, FileSystem, Layer, Option, Schema } from "effect"
+import { Clock, Context, DateTime, Effect, FileSystem, Layer, Option, Path, Schema } from "effect"
 import { CloudError, CloudNotConfiguredError, StoreError } from "../errors.js"
 import { CloudConfig, RepoConfig, SyncManifest } from "../schemas.js"
 import { RepoStore } from "./RepoStore.js"
 import * as os from "os"
 import * as crypto from "crypto"
-import * as path from "path"
 
 /**
  * Result of a push operation
@@ -76,16 +75,6 @@ export class CloudSync extends Context.Service<CloudSync, CloudSyncService>()(
 ) {}
 
 /**
- * Get the cloud config file path
- */
-const getCloudConfigPath = () => `${os.homedir()}/.repobase/cloud.json`
-
-/**
- * Get the index directory path
- */
-const getIndexDir = () => `${os.homedir()}/.repobase/index`
-
-/**
  * Helper to convert errors to CloudError
  */
 const toCloudError =
@@ -108,9 +97,10 @@ function hashBuffer(buffer: Uint8Array): string {
  */
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
   const store = yield* RepoStore
-  const cloudConfigPath = getCloudConfigPath()
-  const indexDir = getIndexDir()
+  const cloudConfigPath = path.join(os.homedir(), ".repobase", "cloud.json")
+  const indexDir = path.join(os.homedir(), ".repobase", "index")
 
   /**
    * Load cloud config from disk

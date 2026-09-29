@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, Fiber, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect"
+import { Context, DateTime, Effect, Fiber, FileSystem, Layer, Option, Path, Stream, SubscriptionRef } from "effect"
 import {
   GitError,
   IndexError,
@@ -22,7 +22,6 @@ import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
 import { Indexer, type SearchOptions, initialIndexingProgress } from "./Indexer.js"
 import * as os from "os"
-import * as path from "path"
 
 /**
  * Initial progress state
@@ -98,6 +97,7 @@ export const make = Effect.gen(function* () {
   const store = yield* RepoStore
   const indexer = yield* Indexer
   const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
 
   const reposDir = path.join(os.homedir(), ".repobase", "repos")
 
@@ -383,6 +383,6 @@ export const make = Effect.gen(function* () {
 })
 
 /**
- * RepobaseEngine layer - requires GitClient, RepoStore, Indexer, and FileSystem
+ * RepobaseEngine layer - requires GitClient, RepoStore, Indexer, FileSystem and Path
  */
 export const layer = Layer.effect(RepobaseEngine, make)

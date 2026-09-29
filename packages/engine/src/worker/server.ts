@@ -1,7 +1,6 @@
 import { BunServices, BunWorkerRunner } from "@effect/platform-bun"
-import { Array as Arr, Effect, FileSystem, Layer, Option, Queue, Stream } from "effect"
+import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Queue, Stream } from "effect"
 import { RpcServer } from "effect/unstable/rpc"
-import * as path from "path"
 import { fileLoggerLayer, logPath } from "../file-logger.js"
 import {
   CloneFailedError,
@@ -33,6 +32,7 @@ export const HandlersLayer = StepRpcs.toLayer(
     const indexer = yield* Indexer
     const jobs = yield* JobStore
     const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
 
     const readPlan = (jobId: string) => jobs.readPlan(jobId).pipe(Effect.map(Option.getOrUndefined))
 

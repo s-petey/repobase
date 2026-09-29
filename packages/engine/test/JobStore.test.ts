@@ -1,6 +1,6 @@
 import { describe, it, expect } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
-import { DateTime, Effect, FileSystem, Layer, Option } from "effect"
+import { DateTime, Effect, FileSystem, Layer, Option, Path } from "effect"
 import { TestClock } from "effect/testing"
 import * as nodeFs from "node:fs"
 import * as os from "node:os"
@@ -231,7 +231,7 @@ describe("JobStore (file) on disk", () => {
         })
       ).pipe(Layer.provide(BunServices.layer))
       const result = yield* JobStore.use((store) => store.save({ ...job, status: "completed" })).pipe(
-        Effect.provide(layerWith({ dir }).pipe(Layer.provide(failingRename))),
+        Effect.provide(layerWith({ dir }).pipe(Layer.provide(Layer.merge(failingRename, Path.layer)))),
         Effect.exit
       )
       expect(result._tag).toBe("Failure")

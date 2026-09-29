@@ -1,6 +1,6 @@
-import { Context, DateTime, Effect, FileSystem, Layer, Option, Order, Random, Ref, Schema } from "effect"
+import { Context, DateTime, Effect, FileSystem, Layer, Option, Order, Path, Random, Ref, Schema } from "effect"
 import * as os from "os"
-import * as path from "path"
+import * as nodePath from "path"
 import { StoreError } from "../errors.js"
 import { IndexPlan } from "../schemas.js"
 import { Job } from "./Job.js"
@@ -31,7 +31,7 @@ export class JobStore extends Context.Service<JobStore, JobStoreService>()(
 /**
  * Default jobs directory: ~/.repobase/jobs
  */
-export const defaultJobsDir = () => path.join(os.homedir(), ".repobase", "jobs")
+export const defaultJobsDir = () => nodePath.join(os.homedir(), ".repobase", "jobs")
 
 const toStoreError =
   (operation: string) =>
@@ -67,6 +67,7 @@ const interruptJob = (job: Job, now: DateTime.Utc): Job => ({
 export const makeWith = (config: { readonly dir: string }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
     const jobFile = (id: string) => path.join(config.dir, `${id}.json`)
     const planDir = (id: string) => path.join(config.dir, id)
     const planFile = (id: string) => path.join(planDir(id), "plan.json")
