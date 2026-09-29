@@ -94,5 +94,8 @@ export const makeJobId = (kind: JobKind, repoId: string): Effect.Effect<string> 
   Effect.gen(function* () {
     const now = yield* DateTime.now
     const suffix = yield* Random.nextIntBetween(0, 36 ** 4)
-    return `${kind}-${repoId}-${DateTime.toEpochMillis(now).toString(36)}${suffix.toString(36).padStart(4, "0")}`
+    // The id names the job's files, so the "/" in "owner/name" can't stay in it.
+    // The job keeps its real repoId; nothing parses the id back.
+    const repoPart = repoId.replaceAll("/", "__")
+    return `${kind}-${repoPart}-${DateTime.toEpochMillis(now).toString(36)}${suffix.toString(36).padStart(4, "0")}`
   })

@@ -7,18 +7,22 @@ import {
   RepoConfig,
   RepoStoreData
 } from "../src/schemas.js"
-import { deriveRepoId, extractRepoParts, trackingMode, pinnedMode } from "../src/utils.js"
+import { deriveRepoId, extractRepoParts, repoNames, trackingMode, pinnedMode } from "../src/utils.js"
 
 const STORED_DATE_MS = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-09-21T12:00:00Z"))
 
 describe("schemas", () => {
   describe("deriveRepoId", () => {
-    it("derives ID from GitHub URL", () => {
-      expect(deriveRepoId("https://github.com/Effect-TS/effect")).toBe("Effect-TS-effect")
+    it("derives GitHub's owner/name from the URL", () => {
+      expect(deriveRepoId("https://github.com/Effect-TS/effect")).toBe("Effect-TS/effect")
     })
 
     it("handles .git suffix", () => {
-      expect(deriveRepoId("https://github.com/Effect-TS/effect.git")).toBe("Effect-TS-effect")
+      expect(deriveRepoId("https://github.com/Effect-TS/effect.git")).toBe("Effect-TS/effect")
+    })
+
+    it("keeps repos apart whose names differ only in where the hyphens fall", () => {
+      expect(deriveRepoId("https://github.com/a-b/c")).not.toBe(deriveRepoId("https://github.com/a/b-c"))
     })
 
     it("throws for invalid URLs", () => {
@@ -43,6 +47,20 @@ describe("schemas", () => {
 
     it("throws for invalid URLs", () => {
       expect(() => extractRepoParts("not-a-url")).toThrow("Invalid GitHub URL")
+    })
+  })
+
+  describe("repoNames", () => {
+    it("gives the owner and name from the URL", () => {
+      const url = "https://github.com/Effect-TS/language-service.git"
+      expect(repoNames({ id: deriveRepoId(url), url })).toEqual({ owner: "Effect-TS", name: "language-service" })
+    })
+
+    it("falls back to the id when the URL isn't a GitHub URL", () => {
+      expect(repoNames({ id: "local-thing", url: "file:///srv/thing" })).toEqual({
+        owner: "local-thing",
+        name: "local-thing"
+      })
     })
   })
 

@@ -22,6 +22,7 @@ import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
 import { Indexer, type SearchOptions, initialIndexingProgress } from "./Indexer.js"
 import * as os from "os"
+import * as path from "path"
 
 /**
  * Initial progress state
@@ -90,11 +91,6 @@ export class RepobaseEngine extends Context.Service<RepobaseEngine, RepobaseEngi
 ) {}
 
 /**
- * Get the repos directory path
- */
-const getReposDir = () => `${os.homedir()}/.repobase/repos`
-
-/**
  * Create the RepobaseEngine service implementation
  */
 export const make = Effect.gen(function* () {
@@ -103,7 +99,15 @@ export const make = Effect.gen(function* () {
   const indexer = yield* Indexer
   const fs = yield* FileSystem.FileSystem
 
-  const reposDir = getReposDir()
+  const reposDir = path.join(os.homedir(), ".repobase", "repos")
+
+  // An owner's directory under repos/ goes once its last repo is removed
+  const removeIfEmptyOwnerDir = (dir: string) =>
+    Effect.gen(function* () {
+      if (path.dirname(dir) !== reposDir) return
+      const entries = yield* fs.readDirectory(dir)
+      if (entries.length === 0) yield* fs.remove(dir, { recursive: true })
+    }).pipe(Effect.catch(() => Effect.void))
 
   const addRepo: RepobaseEngineService["addRepo"] = (url, options) =>
     Effect.gen(function* () {
@@ -116,7 +120,7 @@ export const make = Effect.gen(function* () {
           : Effect.void
 
       const id = deriveRepoId(url)
-      const localPath = `${reposDir}/${id}`
+      const localPath = path.join(reposDir, id)
 
       // Check if already exists
       const existing = yield* store.getRepo(id)
@@ -125,8 +129,8 @@ export const make = Effect.gen(function* () {
         return yield* Effect.fail(new RepoAlreadyExistsError({ id }))
       }
 
-      // Ensure repos directory exists
-      yield* fs.makeDirectory(reposDir, { recursive: true }).pipe(
+      // Ensure the owner's directory exists: the clone goes in repos/<owner>/<name>
+      yield* fs.makeDirectory(path.dirname(localPath), { recursive: true }).pipe(
         Effect.mapError(
           (e) => new StoreError({ operation: "makeDirectory", message: e.message })
         )
@@ -245,6 +249,7 @@ export const make = Effect.gen(function* () {
       yield* fs.remove(repo.localPath, { recursive: true }).pipe(
         Effect.catch(() => Effect.void) // Ignore if already deleted
       )
+      yield* removeIfEmptyOwnerDir(path.dirname(repo.localPath))
 
       // Remove from store
       yield* store.removeRepo(id)

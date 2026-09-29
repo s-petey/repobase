@@ -1,6 +1,6 @@
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, Job } from "@repobase/engine"
-import { extractRepoParts, initialProgress } from "@repobase/engine"
+import { initialProgress, repoNames } from "@repobase/engine"
 import { Array as Arr, DateTime, Order } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, TasksView } from "./components/index.js"
@@ -27,14 +27,6 @@ interface AppProps {
   workerLimit?: number
 }
 
-const repoParts = (repo: RepoConfig): { owner: string; name: string } => {
-  try {
-    return extractRepoParts(repo.url)
-  } catch {
-    return { owner: repo.id, name: repo.id }
-  }
-}
-
 interface ParsedRepo {
   readonly repo: RepoConfig
   readonly owner: string
@@ -46,7 +38,7 @@ const byOwnerThenName = Order.Struct({ owner: lowercaseCompare, name: lowercaseC
 
 // Group repos by owner; owners with a single repo stay as flat rows
 function buildFlatRows(repos: RepoConfig[], collapsed: Set<string>): FlatRow[] {
-  const parsed = Arr.map(repos, (repo): ParsedRepo => ({ repo, ...repoParts(repo) }))
+  const parsed = Arr.map(repos, (repo): ParsedRepo => ({ repo, ...repoNames(repo) }))
   if (!Arr.isReadonlyArrayNonEmpty(parsed)) return []
 
   // Sorted by owner, so groupWith collects each owner's repos into one adjacent group

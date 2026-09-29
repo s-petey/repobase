@@ -8,9 +8,9 @@ import { App } from "./App.js"
 import { interact, teardown } from "./test/helpers.js"
 
 const repo = (owner: string, name: string): RepoConfig => ({
-  id: `${owner}-${name}`,
+  id: `${owner}/${name}`,
   url: `https://github.com/${owner}/${name}`,
-  localPath: `/tmp/repos/${owner}-${name}`,
+  localPath: `/tmp/repos/${owner}/${name}`,
   mode: { _tag: "tracking", branch: "main" },
   lastSyncedCommit: Option.some("abc123"),
   lastSyncedAt: Option.some(DateTime.makeUnsafe(0)),
@@ -61,7 +61,7 @@ describe("App owner grouping", () => {
     expect(frame).toContain("Repositories (3)")
     expect(frame).toContain("▼ Effect-TS (2 repos)")
     expect(frame).not.toContain("sindresorhus (")
-    expect(frame).toContain("sindresorhus-ky")
+    expect(frame).toContain("sindresorhus/ky")
     expect(frame).toContain("[Enter] Toggle group")
 
     // Rows under a header show just the repo name, sorted, after their header
@@ -69,7 +69,7 @@ describe("App owner grouping", () => {
     const at = (text: string) => lines.findIndex((l) => l.includes(text))
     expect(at("Effect-TS (2 repos)")).toBeLessThan(at(" effect "))
     expect(at(" effect ")).toBeLessThan(at(" website "))
-    expect(frame).not.toContain("Effect-TS-effect")
+    expect(frame).not.toContain("Effect-TS/effect")
   })
 
   it("collapses and expands a group with Enter, keeping the total count", async () => {
@@ -97,7 +97,7 @@ describe("App owner grouping", () => {
 
     await interact(setup, () => setup!.mockInput.pressKey("j"))
     await interact(setup, () => setup!.mockInput.pressKey("d"))
-    expect(setup.captureCharFrame()).toContain('delete "Effect-TS-effect"')
+    expect(setup.captureCharFrame()).toContain('delete "Effect-TS/effect"')
   })
 
   it("orders owners case-insensitively, then repos by name", async () => {
@@ -114,14 +114,14 @@ describe("App owner grouping", () => {
     const lines = setup.captureCharFrame().split("\n")
     const at = (text: string) => lines.findIndex((l) => l.includes(text))
 
-    // Sorted by owner, not id: by id "a-b-y" < "a-x" would put owner "a-b" before "a"
-    expect(at("▼ a (2 repos)")).toBeLessThan(at("a-b-y"))
+    // Sorted by owner, then name: owner "a" comes before owner "a-b"
+    expect(at("▼ a (2 repos)")).toBeLessThan(at("a-b/y"))
     // Case-insensitive: "a-b" < "Alpha" < "beta" (code-point order would put "Alpha" first)
-    expect(at("a-b-y")).toBeLessThan(at("Alpha (2 repos)"))
+    expect(at("a-b/y")).toBeLessThan(at("Alpha (2 repos)"))
     expect(at("Alpha (2 repos)")).toBeLessThan(at(" api "))
     expect(at(" api ")).toBeLessThan(at(" web "))
-    expect(at(" web ")).toBeLessThan(at("beta-solo"))
-    expect(at("beta-solo")).toBeLessThan(at("zeta-one"))
+    expect(at(" web ")).toBeLessThan(at("beta/solo"))
+    expect(at("beta/solo")).toBeLessThan(at("zeta/one"))
   })
 
   it("opens the Tasks view with t or T and closes it with Esc", async () => {
@@ -222,9 +222,9 @@ describe("App owner grouping", () => {
 
   it("won't delete a repo while it has a task running", async () => {
     const running = {
-      id: "syncRepo-Effect-TS-effect-1",
+      id: "syncRepo-Effect-TS__effect-1",
       kind: "syncRepo",
-      repoId: "Effect-TS-effect",
+      repoId: "Effect-TS/effect",
       payload: {},
       status: "running",
       createdAt: DateTime.makeUnsafe(0),
@@ -239,11 +239,11 @@ describe("App owner grouping", () => {
     })
     await interact(setup, () => {})
 
-    // The first repo row under the Effect-TS header is Effect-TS-effect
+    // The first repo row under the Effect-TS header is Effect-TS/effect
     await interact(setup, () => setup!.mockInput.pressKey("j"))
     await interact(setup, () => setup!.mockInput.pressKey("d"))
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("Effect-TS-effect has a task running")
+    expect(frame).toContain("Effect-TS/effect has a task running")
     expect(frame).not.toContain("Are you sure")
   })
 
@@ -254,7 +254,13 @@ describe("App owner grouping", () => {
 
     expect(frame).not.toContain("▼")
     expect(frame).not.toContain("[Enter] Toggle group")
-    expect(frame).toContain("Effect-TS-effect")
-    expect(frame).toContain("sindresorhus-ky")
+    expect(frame).toContain("Effect-TS/effect")
+    expect(frame).toContain("sindresorhus/ky")
+  })
+
+  it("shows the repo id for a lone repo whose URL isn't a GitHub URL", async () => {
+    setup = await renderApp([{ ...repo("local", "thing"), id: "local-thing", url: "file:///srv/thing" }])
+    await interact(setup, () => {})
+    expect(setup.captureCharFrame()).toContain("local-thing")
   })
 })

@@ -2,7 +2,7 @@ import type { TrackingMode, PinnedMode } from "./schemas.js"
 
 export function deriveRepoId(url: string): string {
   const { owner, name } = extractRepoParts(url)
-  return `${owner}-${name}`
+  return `${owner}/${name}`
 }
 
 export function extractRepoParts(url: string): { owner: string; name: string } {
@@ -11,6 +11,18 @@ export function extractRepoParts(url: string): { owner: string; name: string } {
     throw new Error(`Invalid GitHub URL: ${url}`)
   }
   return { owner: match[1], name: match[2] }
+}
+
+/**
+ * A repo's owner and name, e.g. to group repos by owner. Both fall back to the
+ * id when the URL isn't a GitHub URL.
+ */
+export function repoNames(repo: { readonly id: string; readonly url: string }): { owner: string; name: string } {
+  try {
+    return extractRepoParts(repo.url)
+  } catch {
+    return { owner: repo.id, name: repo.id }
+  }
 }
 
 // Utility: create a default tracking mode

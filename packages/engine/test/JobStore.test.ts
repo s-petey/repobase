@@ -279,6 +279,28 @@ describe("makeJobId", () => {
     })
   )
 
+  it.effect("keeps the \"/\" of an owner/name repo id out, since the id names the job's files", () =>
+    Effect.gen(function* () {
+      const id = yield* makeJobId("syncRepo", "acme/widgets")
+      expect(id).toMatch(/^syncRepo-acme__widgets-[0-9a-z]+$/)
+    })
+  )
+
+  it.effect("names a job for an owner/name repo so the file store lists and reads it back", () => {
+    const dir = tempDir()
+    return Effect.gen(function* () {
+      const store = yield* JobStore
+      const id = yield* makeJobId("syncRepo", "acme/widgets")
+      yield* store.save(syncJob({ id, repoId: "acme/widgets" }))
+      yield* store.writePlan(id, plan)
+
+      expect((yield* store.list()).map((j) => j.repoId)).toEqual(["acme/widgets"])
+      expect(Option.isSome(yield* store.readPlan(id))).toBe(true)
+      // One file and one plan folder, directly in the jobs directory
+      expect(nodeFs.readdirSync(dir).sort()).toEqual([id, `${id}.json`])
+    }).pipe(Effect.provide(layerWith({ dir }).pipe(Layer.provide(BunServices.layer))))
+  })
+
   it.effect("sorts by creation time", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(DateTime.toEpochMillis(at("2026-09-25T10:00:00Z")))

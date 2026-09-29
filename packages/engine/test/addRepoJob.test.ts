@@ -60,6 +60,28 @@ describe("addRepo job", () => {
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 
+  it.effect("adds, syncs and searches a repo whose id is GitHub's owner/name", () => {
+    const source = makeSourceRepo()
+    const env = testEnv()
+    return Effect.gen(function* () {
+      const added = yield* addRepo(source.dir, "acme/widgets")
+      expect(added.status).toBe("completed")
+
+      const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme/widgets")))
+      expect(repo.localPath).toBe(path.join(env.reposDir, "acme", "widgets"))
+      expect(nodeFs.existsSync(path.join(repo.localPath, "file-00.ts"))).toBe(true)
+
+      source.write("file-00.ts", "export const changed = true\n")
+      source.commit()
+      const synced = yield* syncRepo("acme/widgets")
+      expect(synced.status).toBe("completed")
+      expect(stepOf(synced, "planChanges").output).toMatchObject({ toIndex: 1 })
+
+      const results = yield* Indexer.use((indexer) => indexer.searchKeyword("changed", { repo: "acme/widgets" }))
+      expect(results.map((r) => r.path)).toContain("file-00.ts")
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
   it.effect("tracks the repo's default branch, even when it isn't main", () => {
     const source = makeSourceRepo(3, "master")
     const env = testEnv()

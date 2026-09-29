@@ -39,7 +39,7 @@ export {
 } from "./schemas.js"
 
 // Utils
-export { deriveRepoId, extractRepoParts, trackingMode, pinnedMode } from "./utils.js"
+export { deriveRepoId, extractRepoParts, repoNames, trackingMode, pinnedMode } from "./utils.js"
 
 // Errors
 export {
