@@ -1,4 +1,4 @@
-import { Context, Effect, FileSystem, Layer, Option, Schema } from "effect"
+import { Clock, Context, DateTime, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { CloudError, CloudNotConfiguredError, StoreError } from "../errors.js"
 import { CloudConfig, RepoConfig, SyncManifest } from "../schemas.js"
 import { RepoStore } from "./RepoStore.js"
@@ -32,7 +32,7 @@ export interface SyncStatus {
   inSync: boolean
   localCommit: Option.Option<string>
   cloudCommit: Option.Option<string>
-  lastPushedAt: Option.Option<Date>
+  lastPushedAt: Option.Option<DateTime.Utc>
 }
 
 /**
@@ -218,7 +218,7 @@ export const make = Effect.gen(function* () {
 
   const push: CloudSyncService["push"] = (repoId) =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       const config = yield* loadConfig
 
       // Build local manifest for this repo's files
@@ -240,7 +240,7 @@ export const make = Effect.gen(function* () {
       if (Option.isSome(repoOpt)) {
         const repo = repoOpt.value
         yield* store.updateRepo(repoId, {
-          lastPushedAt: Option.some(new Date()),
+          lastPushedAt: Option.some(yield* DateTime.now),
           lastPushedCommit: repo.lastSyncedCommit
         })
       }
@@ -249,7 +249,7 @@ export const make = Effect.gen(function* () {
         repoId,
         filesUploaded: repoFiles.length,
         filesSkipped: 0,
-        durationMs: Date.now() - startTime
+        durationMs: (yield* Clock.currentTimeMillis) - startTime
       }
     })
 
@@ -280,7 +280,7 @@ export const make = Effect.gen(function* () {
 
   const pull: CloudSyncService["pull"] = () =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       const config = yield* loadConfig
 
       // TODO: Implement actual HTTP download from cloud API
@@ -289,7 +289,7 @@ export const make = Effect.gen(function* () {
 
       return {
         filesDownloaded: 0,
-        durationMs: Date.now() - startTime
+        durationMs: (yield* Clock.currentTimeMillis) - startTime
       }
     })
 

@@ -1,4 +1,4 @@
-import { Context, Effect, Fiber, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect"
+import { Context, DateTime, Effect, Fiber, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect"
 import {
   GitError,
   IndexError,
@@ -152,14 +152,15 @@ export const make = Effect.gen(function* () {
 
       // Build config: by default, track the branch the clone checked out (the remote's default)
       const mode = options?.mode ?? trackingMode(yield* git.getCurrentBranch(localPath))
+      const now = yield* DateTime.now
       const repo: RepoConfig = {
         id,
         url,
         localPath,
         mode,
         lastSyncedCommit: Option.some(currentCommit),
-        lastSyncedAt: Option.some(new Date()),
-        addedAt: new Date(),
+        lastSyncedAt: Option.some(now),
+        addedAt: now,
         // Cloud sync fields - disabled by default
         cloudEnabled: false,
         lastPushedAt: Option.none(),
@@ -327,7 +328,7 @@ export const make = Effect.gen(function* () {
       // Update store
       yield* store.updateRepo(id, {
         lastSyncedCommit: Option.some(remoteHead),
-        lastSyncedAt: Option.some(new Date())
+        lastSyncedAt: Option.some(yield* DateTime.now)
       })
 
       yield* Effect.log(

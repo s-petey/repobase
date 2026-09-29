@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Option, Schema } from "effect"
+import { DateTime, Effect, Option, Schema } from "effect"
 import {
   TrackingMode,
   PinnedMode,
@@ -8,6 +8,8 @@ import {
   RepoStoreData
 } from "../src/schemas.js"
 import { deriveRepoId, extractRepoParts, trackingMode, pinnedMode } from "../src/utils.js"
+
+const STORED_DATE_MS = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-09-21T12:00:00Z"))
 
 describe("schemas", () => {
   describe("deriveRepoId", () => {
@@ -112,15 +114,14 @@ describe("schemas", () => {
   describe("RepoConfig schema", () => {
     it.effect("decodes and encodes full config", () =>
       Effect.gen(function* () {
-        const now = Date.now()
         const input = {
           id: "Effect-TS-effect",
           url: "https://github.com/Effect-TS/effect",
           localPath: "/home/user/.repobase/repos/Effect-TS-effect",
           mode: { _tag: "tracking", branch: "main" },
           lastSyncedCommit: "abc123",
-          lastSyncedAt: now,
-          addedAt: now,
+          lastSyncedAt: STORED_DATE_MS,
+          addedAt: STORED_DATE_MS,
           lastPushedAt: null,
           lastPushedCommit: null
         }
@@ -129,16 +130,17 @@ describe("schemas", () => {
         expect(decoded.id).toBe("Effect-TS-effect")
         expect(Option.isSome(decoded.lastSyncedCommit)).toBe(true)
         expect(Option.getOrNull(decoded.lastSyncedCommit)).toBe("abc123")
+        expect(DateTime.toEpochMillis(decoded.addedAt)).toBe(STORED_DATE_MS)
 
         const encoded = yield* Schema.encodeEffect(RepoConfig)(decoded)
         expect(encoded.id).toBe("Effect-TS-effect")
         expect(encoded.lastSyncedCommit).toBe("abc123")
+        expect(encoded).toMatchObject({ addedAt: STORED_DATE_MS, lastSyncedAt: STORED_DATE_MS, lastPushedAt: null })
       })
     )
 
     it.effect("handles null optional fields", () =>
       Effect.gen(function* () {
-        const now = Date.now()
         const input = {
           id: "test-repo",
           url: "https://github.com/test/repo",
@@ -146,7 +148,7 @@ describe("schemas", () => {
           mode: { _tag: "pinned", ref: "v1.0.0" },
           lastSyncedCommit: null,
           lastSyncedAt: null,
-          addedAt: now,
+          addedAt: STORED_DATE_MS,
           lastPushedAt: null,
           lastPushedCommit: null
         }
@@ -170,7 +172,6 @@ describe("schemas", () => {
 
     it.effect("decodes store with repos", () =>
       Effect.gen(function* () {
-        const now = Date.now()
         const input = {
           version: 1,
           repos: [
@@ -181,7 +182,7 @@ describe("schemas", () => {
               mode: { _tag: "tracking", branch: "main" },
               lastSyncedCommit: null,
               lastSyncedAt: null,
-              addedAt: now,
+              addedAt: STORED_DATE_MS,
               lastPushedAt: null,
               lastPushedCommit: null
             }

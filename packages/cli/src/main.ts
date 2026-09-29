@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Console, Effect, Layer, Option } from "effect"
+import { Console, DateTime, Effect, Layer, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import {
   RepobaseEngine,
@@ -21,8 +21,9 @@ import {
 // ============================================================================
 // Formatters
 // ============================================================================
-const formatDate = (date: Date): string =>
-  date.toLocaleString("en-US", {
+const formatDate = (date: DateTime.Utc): string =>
+  DateTime.formatLocal(date, {
+    locale: "en-US",
     year: "numeric",
     month: "short",
     day: "numeric",

@@ -22,11 +22,11 @@ export const RepoConfig = Schema.Struct({
   localPath: Schema.String, // ~/.repobase/repos/<id>
   mode: RepoMode,
   lastSyncedCommit: Schema.OptionFromNullOr(Schema.String),
-  lastSyncedAt: Schema.OptionFromNullOr(Schema.DateFromMillis),
-  addedAt: Schema.DateFromMillis,
+  lastSyncedAt: Schema.OptionFromNullOr(Schema.DateTimeUtcFromMillis),
+  addedAt: Schema.DateTimeUtcFromMillis,
   // Cloud sync fields - wip
   cloudEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultType(Effect.succeed(false))),
-  lastPushedAt: Schema.OptionFromNullOr(Schema.DateFromMillis),
+  lastPushedAt: Schema.OptionFromNullOr(Schema.DateTimeUtcFromMillis),
   lastPushedCommit: Schema.OptionFromNullOr(Schema.String)
 })
 
@@ -51,7 +51,7 @@ export const SyncManifestFile = Schema.Struct({
 
 export const SyncManifest = Schema.Struct({
   version: Schema.Literal(1),
-  lastUpdated: Schema.DateFromMillis,
+  lastUpdated: Schema.DateTimeUtcFromMillis,
   files: Schema.Record(Schema.String, SyncManifestFile)
 })
 

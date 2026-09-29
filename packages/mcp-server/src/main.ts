@@ -3,7 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { DateTime, Effect, Layer, ManagedRuntime, Option } from "effect"
 import { BunServices } from "@effect/platform-bun"
 import { 
   RepobaseEngine, 
@@ -53,10 +53,8 @@ server.registerTool(
         id: repo.id,
         url: repo.url,
         localPath: repo.localPath,
-        lastSyncedAt: repo.lastSyncedAt._tag === "Some" 
-          ? repo.lastSyncedAt.value.toISOString() 
-          : null,
-        addedAt: repo.addedAt.toISOString()
+        lastSyncedAt: Option.match(repo.lastSyncedAt, { onNone: () => null, onSome: DateTime.formatIso }),
+        addedAt: DateTime.formatIso(repo.addedAt)
       }))
     })
 
@@ -136,12 +134,12 @@ server.registerTool(
         filename: file.filename,
         isDirectory: file.isDirectory,
         size: file.size ?? null,
-        mtime: file.mtime?.toISOString() ?? null
+        mtime: file.mtime ? DateTime.formatIso(file.mtime) : null
       }))
     })
 
     const result = await runtime.runPromise(program)
-    
+
     return {
       content: [
         {
@@ -178,7 +176,7 @@ server.registerTool(
         filename: file.filename,
         isDirectory: file.isDirectory,
         size: file.size ?? null,
-        mtime: file.mtime?.toISOString() ?? null
+        mtime: file.mtime ? DateTime.formatIso(file.mtime) : null
       }))
     })
 

@@ -13,8 +13,8 @@ const repo = (owner: string, name: string): RepoConfig => ({
   localPath: `/tmp/repos/${owner}-${name}`,
   mode: { _tag: "tracking", branch: "main" },
   lastSyncedCommit: Option.some("abc123"),
-  lastSyncedAt: Option.some(new Date(0)),
-  addedAt: new Date(0),
+  lastSyncedAt: Option.some(DateTime.makeUnsafe(0)),
+  addedAt: DateTime.makeUnsafe(0),
   cloudEnabled: false,
   lastPushedAt: Option.none(),
   lastPushedCommit: Option.none()

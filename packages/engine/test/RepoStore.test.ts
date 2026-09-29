@@ -1,8 +1,8 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, FileSystem, Layer, Option } from "effect"
+import { DateTime, Effect, FileSystem, Layer, Option } from "effect"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { layer as RepoStoreLayer } from "../src/services/RepoStore.js"
-import { RepoConfig, RepoStoreData } from "../src/schemas.js"
+import type { RepoConfig, RepoStoreData } from "../src/schemas.js"
 import { trackingMode } from "../src/utils.js"
 import * as os from "os"
 
@@ -46,9 +46,17 @@ const createTestLayer = (initialData: Record<string, string> = {}) => {
   return RepoStoreLayer.pipe(Layer.provide(MockFileSystem))
 }
 
+// Also exposes the mock filesystem, to inspect what was written
+const createTestLayerWithFs = (initialData: Record<string, string> = {}) => {
+  const MockFileSystem = Layer.succeed(FileSystem.FileSystem, createMockFileSystem(initialData))
+  return RepoStoreLayer.pipe(Layer.provideMerge(MockFileSystem))
+}
+
 /**
  * Create a sample repo config for testing
  */
+const ADDED_AT_MS = 1_790_000_000_000
+
 const createTestRepo = (id: string, overrides: Partial<RepoConfig> = {}): RepoConfig => ({
   id,
   url: `https://github.com/test/${id}`,
@@ -56,7 +64,7 @@ const createTestRepo = (id: string, overrides: Partial<RepoConfig> = {}): RepoCo
   mode: trackingMode("main"),
   lastSyncedCommit: Option.none(),
   lastSyncedAt: Option.none(),
-  addedAt: new Date(),
+  addedAt: DateTime.makeUnsafe(ADDED_AT_MS),
   cloudEnabled: false,
   lastPushedAt: Option.none(),
   lastPushedCommit: Option.none(),
@@ -98,7 +106,7 @@ describe("RepoStore", () => {
                   mode: { _tag: "tracking", branch: "main" },
                   lastSyncedCommit: null,
                   lastSyncedAt: null,
-                  addedAt: Date.now(),
+                  addedAt: ADDED_AT_MS,
                   lastPushedAt: null,
                   lastPushedCommit: null
                 }
@@ -125,6 +133,24 @@ describe("RepoStore", () => {
         const loaded = yield* store.load()
         expect(loaded.version).toBe(1)
       }).pipe(Effect.provide(createTestLayer()))
+    )
+  })
+
+  describe("dates", () => {
+    it.effect("stores them as epoch millis, as before, and reads them back as DateTimes", () =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        const syncedAt = DateTime.makeUnsafe(ADDED_AT_MS + 60_000)
+        yield* store.addRepo(createTestRepo("dated", { lastSyncedAt: Option.some(syncedAt) }))
+
+        const fs = yield* FileSystem.FileSystem
+        const onDisk = JSON.parse(yield* fs.readFileString(configPath)).repos[0]
+        expect(onDisk).toMatchObject({ addedAt: ADDED_AT_MS, lastSyncedAt: ADDED_AT_MS + 60_000, lastPushedAt: null })
+
+        const repo = Option.getOrThrow(yield* store.getRepo("dated"))
+        expect(DateTime.toEpochMillis(repo.addedAt)).toBe(ADDED_AT_MS)
+        expect(Option.map(repo.lastSyncedAt, DateTime.toEpochMillis)).toEqual(Option.some(ADDED_AT_MS + 60_000))
+      }).pipe(Effect.provide(createTestLayerWithFs()))
     )
   })
 

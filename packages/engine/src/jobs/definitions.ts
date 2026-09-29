@@ -171,8 +171,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
           })
         }
 
-        // RepoConfig still uses JS Date (see the DateTime follow-up todo)
-        const now = DateTime.toDate(yield* DateTime.now)
+        const now = yield* DateTime.now
         const repo: RepoConfig = {
           id: repoId,
           url: payload.url,
@@ -305,8 +304,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       Effect.gen(function* () {
         const store = yield* RepoStore
         const { commit } = yield* ctx.output(resolveRemoteHead)
-        // RepoConfig still uses JS Date (see the DateTime follow-up todo)
-        const now = DateTime.toDate(yield* DateTime.now)
+        const now = yield* DateTime.now
         yield* store
           .updateRepo(ctx.job.repoId, { lastSyncedCommit: Option.some(commit), lastSyncedAt: Option.some(now) })
           .pipe(Effect.mapError((e) => new UpdateStoreFailedError({ repoId: ctx.job.repoId, message: e.message })))

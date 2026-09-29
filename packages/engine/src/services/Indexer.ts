@@ -1,4 +1,4 @@
-import { Array as Arr, Context, Effect, FileSystem, Layer, Option, Schedule, Semaphore, SubscriptionRef } from "effect"
+import { Array as Arr, Clock, Context, DateTime, Effect, FileSystem, Layer, Option, Schedule, Semaphore, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
@@ -128,7 +128,7 @@ export interface FileInfo {
   readonly filename: string
   readonly isDirectory: boolean
   readonly size?: number
-  readonly mtime?: Date
+  readonly mtime?: DateTime.Utc
 }
 
 /**
@@ -662,10 +662,8 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
           Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
         )
-        const mtimeMs = Option.match(stat.mtime as Option.Option<Date>, {
-          onNone: () => Date.now(),
-          onSome: (d) => d.getTime()
-        })
+        // The platform's stat gives a JS Date
+        const mtimeMs = Option.isSome(stat.mtime) ? stat.mtime.value.getTime() : yield* Clock.currentTimeMillis
 
         records.push({
           id: recordId(repoId, file.path),
@@ -728,7 +726,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     updateProgress: (update: Partial<IndexingProgress>) => Effect.Effect<void>
   ) =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       yield* updateProgress({ phase: "indexing", filesProcessed: 0, totalFiles: plan.toIndex.length })
 
       yield* deletePaths(repoId, plan.toDelete)
@@ -762,14 +760,14 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         filesIndexed: indexed,
         filesDeleted: plan.toDelete.length,
         filesSkipped: skipped,
-        durationMs: Date.now() - startTime
+        durationMs: (yield* Clock.currentTimeMillis) - startTime
       }
     })
 
   // Full repository indexing
   const indexRepo: IndexerService["indexRepo"] = (repoId, repoPath, options) =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       const progressRef = options?.progressRef
       const updateProgress = (update: Partial<IndexingProgress>) =>
         progressRef
@@ -779,16 +777,16 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       yield* updateProgress({ phase: "scanning", filesProcessed: 0, totalFiles: 0 })
       const plan = yield* planFullIndex(repoId, repoPath, { force: options?.force ?? false })
       const summary = yield* applyPlan(repoId, repoPath, plan, updateProgress)
-      return { ...summary, durationMs: Date.now() - startTime }
+      return { ...summary, durationMs: (yield* Clock.currentTimeMillis) - startTime }
     })
 
   // Incremental indexing based on git diff
   const indexChanges: IndexerService["indexChanges"] = (repoId, repoPath, changes) =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       const plan = yield* planChanges(repoId, repoPath, changes)
       const summary = yield* applyPlan(repoId, repoPath, plan, () => Effect.void)
-      return { ...summary, durationMs: Date.now() - startTime }
+      return { ...summary, durationMs: (yield* Clock.currentTimeMillis) - startTime }
     })
 
   // Remove all index data for a repo
@@ -994,7 +992,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             filename: relativePath,
             isDirectory: false,
             size: file.size_bytes,
-            mtime: new Date(file.mtime_ms)
+            mtime: DateTime.makeUnsafe(file.mtime_ms)
           })
         } else {
           // Subdirectory - only add if not already present
@@ -1074,7 +1072,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           filename: r.filename,
           isDirectory: false,
           size: r.size_bytes,
-          mtime: new Date(r.mtime_ms)
+          mtime: DateTime.makeUnsafe(r.mtime_ms)
         })
       )
     })
