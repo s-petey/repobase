@@ -4,7 +4,7 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Config, Deferred, Effect, Fiber, FiberSet, Layer, Option, Stream } from "effect"
+import { Cause, Config, Deferred, Effect, Exit, Fiber, FiberSet, Layer, Option, Stream } from "effect"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
@@ -38,6 +38,7 @@ import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
 import { resumableSync, resumePoint } from "./jobView.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
+import { shutdown } from "./shutdown.js"
 
 const FORCE_SYNC_ENV = "REPOBASE_FORCE_SYNC"
 
@@ -124,18 +125,23 @@ const program = Effect.gen(function* () {
   const runFork = yield* FiberSet.makeRuntime()
 
   // Added before the renderer, so this runs once the renderer has released the
-  // terminal and before the worker pools close. runMain only interrupts again on
-  // a repeated SIGINT, so a worker that hangs would leave the process running;
-  // a Ctrl+C from here on exits right away.
-  const workerTotal = pools.jobs + pools.query + indexing.count
-  yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
+  // terminal. It exits the process itself, so MainLayer never closes the worker
+  // pools (see shutdown.ts). A failure is left to runMain to report.
+  yield* Effect.addFinalizer((exit) => {
+    if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) return Effect.void
+    return Effect.gen(function* () {
       process.once("SIGINT", () => process.exit(130))
-      process.stderr.write(
-        `Shutting down up to ${workerTotal} worker threads; a busy one can take up to 5s. Press Ctrl+C to force quit.\n`
-      )
+      const running = (yield* runner.jobs).filter((job) => job.status === "running").length
+      yield* shutdown({
+        running,
+        interruptJobs: runner.interruptAll,
+        notice: (message) => process.stderr.write(`${message}\n`),
+        exit: (code) => process.exit(code),
+        // Quitting from the app succeeds; a signal from outside interrupts the program
+        code: Exit.isSuccess(exit) ? 0 : 130
+      })
     })
-  )
+  })
 
   // Disable exitOnCtrlC so shutdown goes through the program's finalizers
   const renderer = yield* Effect.acquireRelease(
