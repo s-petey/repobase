@@ -1,3 +1,4 @@
+import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, Job } from "@repobase/engine"
 import { initialProgress, repoNames } from "@repobase/engine"
@@ -10,6 +11,19 @@ import { featureFlags } from "./config.js"
 import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
 
 type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
+
+type ExitStage = "idle" | "confirming" | "quitting"
+
+// How long a first Ctrl+C waits for the second one
+const EXIT_CONFIRM_MS = 3000
+
+const exitNotice = (stage: ExitStage, running: number): string | undefined => {
+  if (stage === "quitting") return "Exiting... press Ctrl+C again to force quit"
+  if (stage === "idle") return undefined
+  if (running === 0) return "Press Ctrl+C again to exit"
+  const tasks = running === 1 ? "1 running task" : `${running} running tasks`
+  return `Press Ctrl+C again to exit · ${tasks} will stop; resume or retry from [t] Tasks`
+}
 
 interface AppProps {
   initialRepos: RepoConfig[]
@@ -97,6 +111,10 @@ export const App = ({
   const [jobs, setJobs] = useState<ReadonlyArray<Job>>([])
   const completedJobIds = useRef<ReadonlySet<string> | undefined>(undefined)
   const [syncActivity, setSyncActivity] = useState<SyncActivity | undefined>()
+
+  const [exitStage, setExitStage] = useState<ExitStage>("idle")
+  const exitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(exitTimer.current), [])
 
   useEffect(() => onJobsChange(setJobs), [onJobsChange])
 
@@ -334,6 +352,23 @@ export const App = ({
   }, [])
 
   useKeyboard((key) => {
+    // Ctrl+C works in every mode, so the app can always be exited. This handler is
+    // registered before any modal's, so stopping propagation keeps the key from
+    // modals and focused inputs.
+    if (key.ctrl && key.name === "c") {
+      key.stopPropagation()
+      clearTimeout(exitTimer.current)
+      if (exitStage === "idle") {
+        setExitStage("confirming")
+        exitTimer.current = setTimeout(() => setExitStage("idle"), EXIT_CONFIRM_MS)
+      } else {
+        // Once quitting, every further press calls onQuit again to force the exit
+        setExitStage("quitting")
+        onQuit()
+      }
+      return
+    }
+
     // Handle escape/quit in any mode
     if (key.name === "escape" || (key.name === "q" && mode === "list")) {
       if (mode === "add" || mode === "search") {
@@ -417,6 +452,12 @@ export const App = ({
     }
   })
 
+  const exitMessage = exitNotice(exitStage, jobCounts(jobs).running)
+  // The results and tasks views have no status bar, so they show the exit notice on its own line
+  const exitLine = exitMessage && (
+    <text content={exitMessage} style={{ fg: colors.status.warning.default, attributes: TextAttributes.BOLD, paddingLeft: 1, height: 1 }} />
+  )
+
   // Render search results view
   if (mode === "results") {
     return (
@@ -437,6 +478,7 @@ export const App = ({
           onSelectIndex={setSearchResultIndex}
           onClose={handleCloseResults}
         />
+        {exitLine}
       </box>
     )
   }
@@ -460,6 +502,7 @@ export const App = ({
           onDiscard={onDiscardJob}
           onClose={() => setMode("list")}
         />
+        {exitLine}
       </box>
     )
   }
@@ -477,7 +520,7 @@ export const App = ({
       <RepoList flatRows={flatRows} totalRepos={repos.length} selectedIndex={selectedIndex} />
       <StatusBar
         mode={mode}
-        message={message}
+        message={exitMessage ?? message}
         grouped={flatRows.some(r => r.kind === "header")}
         jobCounts={jobCounts(jobs)}
         activity={syncActivity ? syncActivityText(syncActivity, jobs, workerLimit) : undefined}

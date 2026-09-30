@@ -40,7 +40,8 @@ const renderApp = (
       onQuit={onQuit}
       {...overrides}
     />,
-    { width: 160, height: 30 }
+    // As in main.tsx, so Ctrl+C reaches the App instead of destroying the renderer
+    { width: 160, height: 30, exitOnCtrlC: false }
   )
 
 let setup: TestRendererSetup | undefined
@@ -245,6 +246,67 @@ describe("App owner grouping", () => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain("Effect-TS/effect has a task running")
     expect(frame).not.toContain("Are you sure")
+  })
+
+  it("warns on the first Ctrl+C and quits on the second", async () => {
+    const onQuit = vi.fn()
+    setup = await renderApp(repos, onQuit)
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    expect(setup.captureCharFrame()).toContain("Press Ctrl+C again to exit")
+    // Ctrl+C is not the [c] Copy MCP Config key
+    expect(setup.captureCharFrame()).not.toContain("copied to clipboard")
+    expect(onQuit).not.toHaveBeenCalled()
+
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    expect(onQuit).toHaveBeenCalledTimes(1)
+    expect(setup.captureCharFrame()).toContain("press Ctrl+C again to force quit")
+
+    // Every press after that asks again, so the entry point can force the exit
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    expect(onQuit).toHaveBeenCalledTimes(2)
+  })
+
+  it("says how many running tasks Ctrl+C will stop", async () => {
+    const running = (id: string) =>
+      ({ id, kind: "syncRepo", repoId: id, payload: {}, status: "running", steps: [] }) as unknown as Job
+    setup = await renderApp(repos, () => {}, {
+      onJobsChange: (listener) => {
+        listener([running("a/one"), running("b/two")])
+        return () => {}
+      }
+    })
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    expect(setup.captureCharFrame()).toContain("2 running tasks will stop; resume or retry from [t] Tasks")
+  })
+
+  it("handles Ctrl+C while the search input has focus", async () => {
+    const onQuit = vi.fn()
+    setup = await renderApp(repos, onQuit)
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressKey("/"))
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Search Repositories")
+    expect(frame).toContain("Press Ctrl+C again to exit")
+
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    expect(onQuit).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows the Ctrl+C warning in the Tasks view, which has no status bar", async () => {
+    setup = await renderApp(repos)
+    await interact(setup, () => {})
+
+    await interact(setup, () => setup!.mockInput.pressKey("t"))
+    await interact(setup, () => setup!.mockInput.pressCtrlC())
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("No tasks yet.")
+    expect(frame).toContain("Press Ctrl+C again to exit")
   })
 
   it("shows no headers or toggle hint when every owner has a single repo", async () => {
