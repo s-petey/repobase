@@ -148,6 +148,8 @@ export interface JobRunnerService {
   readonly discard: (jobId: string) => Effect.Effect<void, JobRunnerError>
   // Wait until a job is no longer running
   readonly await: (jobId: string) => Effect.Effect<Job, JobNotFoundError>
+  // Stop every running job and wait until each is saved as interrupted
+  readonly interruptAll: Effect.Effect<void>
 }
 
 export class JobRunner extends Context.Service<JobRunner, JobRunnerService>()(
@@ -346,6 +348,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (job) => releaseRepo(job.repoId) }))
       )
 
+    // Uninterruptible, so a job that has started finishing isn't then saved as interrupted
     const finish = (jobId: string, status: JobStatus) =>
       releaseJobRepo(jobId).pipe(
         Effect.andThen(
@@ -357,7 +360,8 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
                 ? job.steps.map((s) => (s.status === "pending" ? { ...s, status: "skipped" as const } : s))
                 : job.steps
           }))
-        )
+        ),
+        Effect.uninterruptible
       )
 
     // Run a fan-out. Its own step lists the items (every attempt: it is cheap
@@ -453,16 +457,21 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
                 yield* finish(jobId, "failed")
               })
         ),
+        // A job that finished just before the interrupt keeps its final status
         Effect.onInterrupt(() =>
           releaseJobRepo(jobId).pipe(
             Effect.andThen(
-              updateJob(jobId, (job, now) => ({
-                ...job,
-                status: "interrupted",
-                steps: job.steps.map((s) =>
-                  s.status === "running" ? { ...s, status: "interrupted" as const, finishedAt: now } : s
-                )
-              }))
+              updateJob(jobId, (job, now) =>
+                job.status !== "running"
+                  ? job
+                  : {
+                      ...job,
+                      status: "interrupted",
+                      steps: job.steps.map((s) =>
+                        s.status === "running" ? { ...s, status: "interrupted" as const, finishedAt: now } : s
+                      )
+                    }
+              )
             ),
             Effect.ignore
           )
@@ -568,7 +577,9 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
       start,
       retry,
       discard,
-      await: awaitJob
+      await: awaitJob,
+      // Waits for each job's onInterrupt, which saves it as interrupted
+      interruptAll: FiberMap.clear(fibers)
     })
   })
 
