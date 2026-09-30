@@ -123,6 +123,20 @@ const program = Effect.gen(function* () {
   const runPromise = yield* FiberSet.makeRuntimePromise()
   const runFork = yield* FiberSet.makeRuntime()
 
+  // Added before the renderer, so this runs once the renderer has released the
+  // terminal and before the worker pools close. runMain only interrupts again on
+  // a repeated SIGINT, so a worker that hangs would leave the process running;
+  // a Ctrl+C from here on exits right away.
+  const workerTotal = pools.jobs + pools.query + indexing.count
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      process.once("SIGINT", () => process.exit(130))
+      process.stderr.write(
+        `Shutting down up to ${workerTotal} worker threads; a busy one can take up to 5s. Press Ctrl+C to force quit.\n`
+      )
+    })
+  )
+
   // Disable exitOnCtrlC so shutdown goes through the program's finalizers
   const renderer = yield* Effect.acquireRelease(
     Effect.promise(() => createCliRenderer({ exitOnCtrlC: false })),
@@ -137,6 +151,17 @@ const program = Effect.gen(function* () {
 
   // Completed by the App when the user quits
   const quit = yield* Deferred.make<void>()
+
+  // A second quit while the renderer is still up exits right away
+  let quitting = false
+  const onQuit = () => {
+    if (quitting) {
+      renderer.destroy()
+      process.exit(130)
+    }
+    quitting = true
+    Deferred.doneUnsafe(quit, Effect.void)
+  }
 
   const runSync = (repoId: string) =>
     Effect.gen(function* () {
@@ -241,9 +266,7 @@ const program = Effect.gen(function* () {
       }}
       onRetryJob={(jobId) => runPromise(runner.retry(jobId).pipe(Effect.asVoid))}
       onDiscardJob={(jobId) => runPromise(runner.discard(jobId))}
-      onQuit={() => {
-        Deferred.doneUnsafe(quit, Effect.void)
-      }}
+      onQuit={onQuit}
       cloudConfigured={cloudConfigured}
       workerLimit={pools.jobs}
     />
