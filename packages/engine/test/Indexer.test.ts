@@ -363,6 +363,23 @@ describe("Indexer", () => {
           expect(markdown.every((p) => p.endsWith(".md"))).toBe(true)
         }).pipe(Effect.provide(indexerLayer()))
       )
+
+      it.effect(`${mode} returns only results from the given repos`, () =>
+        Effect.gen(function* () {
+          const indexer = yield* Indexer
+          for (const repo of ["acme/one", "acme/two", "other's/three"]) {
+            yield* indexer.indexRepo(repo, makeRepo())
+          }
+
+          const repos = (list: ReadonlyArray<string>) =>
+            indexer[mode]("export", { repos: list }).pipe(Effect.map((rs) => [...new Set(rs.map((r) => r.repo))].sort()))
+
+          expect(yield* repos(["acme/one", "acme/two"])).toEqual(["acme/one", "acme/two"])
+          expect(yield* repos(["other's/three"])).toEqual(["other's/three"])
+          // Empty means no filter
+          expect(yield* repos([])).toEqual(["acme/one", "acme/two", "other's/three"])
+        }).pipe(Effect.provide(indexerLayer()))
+      )
     }
   })
 

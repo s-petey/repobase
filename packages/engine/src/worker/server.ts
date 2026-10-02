@@ -166,8 +166,8 @@ export const HandlersLayer = StepRpcs.toLayer(
           }
         }),
 
-      Search: ({ query, mode, repo, path, glob, limit }) => {
-        const options = { repo, path, glob, limit }
+      Search: ({ query, mode, repo, repos, path, glob, limit }) => {
+        const options = { repo, repos, path, glob, limit }
         switch (mode) {
           case "keyword":
             return indexer.searchKeyword(query, options)

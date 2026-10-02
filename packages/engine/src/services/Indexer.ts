@@ -83,6 +83,8 @@ const DEFAULT_IGNORE_PATTERNS = [
 export interface SearchOptions {
   /** Filter to specific repo */
   repo?: string
+  /** Filter to any of these repos (ignored when empty) */
+  repos?: ReadonlyArray<string>
   /** Max results (default: 20) */
   limit?: number
   /** Only this file, or files under this directory */
@@ -851,6 +853,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         search = search.where(`repo = ${sqlString(options.repo)}`)
       }
 
+      if (options?.repos && options.repos.length > 0) {
+        search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
+      }
+
       if (options?.path) {
         search = search.where(pathFilter(options.path))
       }
@@ -894,6 +900,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       if (options?.repo) {
         search = search.where(`repo = ${sqlString(options.repo)}`)
+      }
+
+      if (options?.repos && options.repos.length > 0) {
+        search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
       }
 
       if (options?.path) {
@@ -952,6 +962,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       if (options?.repo) {
         search = search.where(`repo = ${sqlString(options.repo)}`)
+      }
+
+      if (options?.repos && options.repos.length > 0) {
+        search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
       }
 
       if (options?.path) {

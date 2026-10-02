@@ -42,6 +42,19 @@ describe("Search RPC", () => {
       expect(results.map((r) => r.path)).toEqual(["file-07.ts"])
     }).pipe(Effect.provide(testEnv().layer)), 30_000)
 
+  it.effect("passes the repos filter to the Indexer", () =>
+    Effect.gen(function* () {
+      const source = makeSourceRepo(10)
+      yield* addRepo(source.dir)
+
+      const client = yield* WorkerClient
+      const inRepo = yield* client.Search({ query: "value3", mode: "semantic", repos: ["acme-widgets"] })
+      const elsewhere = yield* client.Search({ query: "value3", mode: "semantic", repos: ["someone/else"] })
+
+      expect(inRepo.length).toBeGreaterThan(0)
+      expect(elsewhere).toEqual([])
+    }).pipe(Effect.provide(testEnv().layer)), 30_000)
+
   it.effect("passes the glob filter to the Indexer", () =>
     Effect.gen(function* () {
       const source = makeSourceRepo(10)
