@@ -105,7 +105,7 @@ export interface IndexOptions {
  * Options for indexing one batch of files
  */
 export interface IndexBatchOptions {
-  // Called before each file in the batch is processed
+  /** Called before each file in the batch is processed */
   readonly onFile?: (path: string) => Effect.Effect<void>
 }
 
@@ -113,9 +113,11 @@ export interface IndexBatchOptions {
  * Where the index lives and, for tests, how text is embedded
  */
 export interface IndexerConfig {
-  // Defaults to ~/.repobase/index
+  /** Defaults to ~/.repobase/index */
   readonly indexDir?: string
-  // Replaces the transformers embedding model (e.g. a deterministic fake in tests)
+  /** Where repo clones are read from; defaults to ~/.repobase/repos */
+  readonly reposDir?: string
+  /** Replaces the transformers embedding model (e.g. a deterministic fake in tests) */
   readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
 }
 
@@ -199,6 +201,9 @@ export interface GrepOptions {
   readonly filesWithMatches?: boolean // Only show filenames
   readonly count?: boolean // Only show match counts
   readonly fileType?: string // Filter by extension (e.g., "ts")
+  readonly path?: string // Only this file, or files under this directory
+  readonly glob?: string // Only files whose path or filename matches
+  readonly exclude?: string // Skip files whose path or filename matches
   readonly limit?: number // Limit output lines
 }
 
@@ -368,6 +373,27 @@ function validatePath(filePath: string): Effect.Effect<void, IndexError> {
 const sqlString = (value: string) => `'${value.replaceAll("'", "''")}'`
 
 /**
+ * LanceDB filter for a file, or every file under a directory (so `src/a`
+ * doesn't also match `src/ab`)
+ */
+const pathFilter = (path: string) => {
+  const trimmed = path.replace(/^\.\//, "").replace(/\/+$/, "")
+  return `(path = ${sqlString(trimmed)} OR starts_with(path, ${sqlString(`${trimmed}/`)}))`
+}
+
+/**
+ * The directory a path glob can only match under, if any (`src` for
+ * `src/**\/*.ts`). Globs without a `/` also match bare filenames, so they have none.
+ */
+const globBase = (glob: string): string | undefined => {
+  const scan = micromatch.scan(glob)
+  return glob.includes("/") && !scan.negated && scan.base !== "" ? scan.base : undefined
+}
+
+const matchesGlob = (file: { path: string; filename: string }, glob: string) =>
+  micromatch.isMatch(file.path, glob) || micromatch.isMatch(file.filename, glob)
+
+/**
  * Row id of a file in the index
  */
 const recordId = (repoId: string, path: string) => `${repoId}:${path}`
@@ -394,7 +420,7 @@ const retryOnCommitConflict = <A>(effect: Effect.Effect<A, IndexError>) =>
  */
 export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
-  const config = { ...options, indexDir: options.indexDir ?? INDEX_DIR }
+  const config = { ...options, indexDir: options.indexDir ?? INDEX_DIR, reposDir: options.reposDir ?? getReposDir() }
 
   // Initialize LanceDB connection lazily
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1107,7 +1133,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       }
 
       // Read from disk
-      const absolutePath = `${getReposDir()}/${repo}/${filePath}`
+      const absolutePath = `${config.reposDir}/${repo}/${filePath}`
       const content = yield* fs.readFileString(absolutePath).pipe(
         Effect.mapError(
           () =>
@@ -1170,14 +1196,24 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       let query = tbl.query()
 
       if (options?.repo) {
-        query = query.where(`repo = '${options.repo}'`)
+        query = query.where(`repo = ${sqlString(options.repo)}`)
       }
 
       if (options?.fileType) {
-        query = query.where(`filename LIKE '%.${options.fileType}'`)
+        query = query.where(`filename LIKE ${sqlString(`%.${options.fileType}`)}`)
       }
 
-      const files = yield* Effect.tryPromise({
+      if (options?.path) {
+        query = query.where(pathFilter(options.path))
+      }
+
+      // Only read files under the glob's fixed directory
+      const base = options?.glob ? globBase(options.glob) : undefined
+      if (base) {
+        query = query.where(pathFilter(base))
+      }
+
+      const indexed = yield* Effect.tryPromise({
         try: () =>
           query.select(["repo", "path", "filename"]).toArray() as Promise<
             Array<{ repo: string; path: string; filename: string }>
@@ -1185,6 +1221,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         catch: (e) =>
           new IndexError({ operation: "grepPattern", message: `${e}` })
       })
+
+      const files = indexed.filter(
+        (file) =>
+          (!options?.glob || matchesGlob(file, options.glob)) &&
+          (!options?.exclude || !matchesGlob(file, options.exclude))
+      )
 
       const results: GrepResult[] = []
       let outputCount = 0
@@ -1196,7 +1238,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       for (const file of files) {
         if (outputCount >= limit) break
 
-        const absolutePath = `${getReposDir()}/${file.repo}/${file.path}`
+        const absolutePath = `${config.reposDir}/${file.repo}/${file.path}`
         const contentResult = yield* fs.readFileString(absolutePath).pipe(
           Effect.option,
           Effect.catch(() => Effect.succeed(Option.none()))

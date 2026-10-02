@@ -325,6 +325,76 @@ describe("Indexer", () => {
     )
   })
 
+  describe("grepPattern", () => {
+    // grep reads files from <reposDir>/<repo>, so the repos live there
+    const grepSetup = Effect.gen(function* () {
+      const reposDir = tempDir("repos")
+      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir, embed: fakeEmbed })
+      for (const repo of [REPO, "other-repo"]) {
+        const repoPath = path.join(reposDir, repo)
+        writeFile(repoPath, "src/editor/menu.ts", "export const needle = 1")
+        writeFile(repoPath, "src/editor/menu.test.ts", "needle()")
+        writeFile(repoPath, "src/editor-extra/menu.ts", "export const needle = 2")
+        writeFile(repoPath, "src/main.ts", "needle.go()")
+        writeFile(repoPath, "README.md", "a needle in a haystack")
+        yield* indexer.indexRepo(repo, repoPath)
+      }
+      return indexer
+    })
+
+    const grepPaths = (options: Parameters<Indexer["Service"]["grepPattern"]>[1]) =>
+      Effect.gen(function* () {
+        const indexer = yield* grepSetup
+        const results = yield* indexer.grepPattern("needle", options)
+        return results.map((r) => `${r.repo}/${r.path}`).sort()
+      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+
+    it.effect("limits results to one file", () =>
+      Effect.gen(function* () {
+        expect(yield* grepPaths({ repo: REPO, path: "src/editor/menu.ts" })).toEqual([`${REPO}/src/editor/menu.ts`])
+      })
+    )
+
+    it.effect("limits results to a directory, not siblings sharing its prefix", () =>
+      Effect.gen(function* () {
+        expect(yield* grepPaths({ repo: REPO, path: "src/editor/" })).toEqual([
+          `${REPO}/src/editor/menu.test.ts`,
+          `${REPO}/src/editor/menu.ts`
+        ])
+      })
+    )
+
+    it.effect("limits results to files matching a glob", () =>
+      Effect.gen(function* () {
+        expect(yield* grepPaths({ repo: REPO, glob: "src/editor/**" })).toEqual([
+          `${REPO}/src/editor/menu.test.ts`,
+          `${REPO}/src/editor/menu.ts`
+        ])
+        expect(yield* grepPaths({ repo: REPO, glob: "*.md" })).toEqual([`${REPO}/README.md`])
+      })
+    )
+
+    it.effect("skips files matching the exclude glob", () =>
+      Effect.gen(function* () {
+        expect(yield* grepPaths({ repo: REPO, path: "src", exclude: "**/*.test.ts" })).toEqual([
+          `${REPO}/src/editor-extra/menu.ts`,
+          `${REPO}/src/editor/menu.ts`,
+          `${REPO}/src/main.ts`
+        ])
+      })
+    )
+
+    it.effect("combines the repo, file type and path filters", () =>
+      Effect.gen(function* () {
+        expect(yield* grepPaths({ repo: REPO, fileType: "ts", path: "src/editor" })).toEqual([
+          `${REPO}/src/editor/menu.test.ts`,
+          `${REPO}/src/editor/menu.ts`
+        ])
+        expect(yield* grepPaths({ path: "src/main.ts" })).toEqual([`other-repo/src/main.ts`, `${REPO}/src/main.ts`])
+      })
+    )
+  })
+
   describe("removeIndex", () => {
     it.effect("removes only the given repo", () =>
       Effect.gen(function* () {
