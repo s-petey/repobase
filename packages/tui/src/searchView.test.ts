@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest"
-import { formatScore, shortenPath } from "./searchView.js"
+import { describeFilter, filterToGlob, formatScore, shortenPath } from "./searchView.js"
+
+describe("filterToGlob", () => {
+  it("uses a glob as is", () => {
+    expect(filterToGlob({ kind: "glob", text: "crates/*/src/**/*.rs" })).toBe("crates/*/src/**/*.rs")
+  })
+
+  it("wraps a path fragment so any path containing it matches", () => {
+    expect(filterToGlob({ kind: "path", text: "editor" })).toBe("**/*editor*{,/**}")
+    expect(filterToGlob({ kind: "path", text: "/src/editor/" })).toBe("**/*src/editor*{,/**}")
+  })
+})
+
+describe("describeFilter", () => {
+  it("says which kind of filter it is", () => {
+    expect(describeFilter({ kind: "path", text: "editor" })).toBe("in paths containing editor")
+    expect(describeFilter({ kind: "glob", text: "*.md" })).toBe("matching *.md")
+  })
+})
 
 describe("shortenPath", () => {
   it("keeps the full path when it fits", () => {

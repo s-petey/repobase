@@ -9,6 +9,7 @@ import type { FlatRow } from "./components/RepoList.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
 import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
+import type { SearchFilter } from "./searchView.js"
 
 type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
 
@@ -32,7 +33,7 @@ interface AppProps {
   onSyncRepo: (id: string) => Promise<{ updated: boolean; resumedFrom?: string }>
   onSyncAll: () => Promise<Array<{ id: string; updated: boolean; resumed?: boolean }>>
   onRefreshRepos: () => Promise<RepoConfig[]>
-  onSearch: (query: string, mode: SearchMode) => Promise<SearchResult[]>
+  onSearch: (query: string, mode: SearchMode, filter: SearchFilter | undefined) => Promise<SearchResult[]>
   onJobsChange: (listener: (jobs: ReadonlyArray<Job>) => void) => () => void
   onRetryJob: (jobId: string) => Promise<void>
   onDiscardJob: (jobId: string) => Promise<void>
@@ -99,6 +100,7 @@ export const App = ({
   // Search state
   const [searchQuery, setSearchQuery] = useState("")
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid")
+  const [searchFilter, setSearchFilter] = useState<SearchFilter | undefined>()
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchResultIndex, setSearchResultIndex] = useState(0)
 
@@ -242,7 +244,7 @@ export const App = ({
     setSyncActivity((current) => (current === activity ? undefined : current))
   }, [onSyncAll, onRefreshRepos, showMessage, repos.length])
 
-  const handleSearch = useCallback(async (query: string, searchModeParam: SearchMode) => {
+  const handleSearch = useCallback(async (query: string, searchModeParam: SearchMode, filter: SearchFilter | undefined) => {
     if (!query.trim()) {
       setMode("list")
       return
@@ -252,9 +254,10 @@ export const App = ({
     setMessage(`Searching: "${query}"...`)
     setSearchQuery(query)
     setSearchMode(searchModeParam)
+    setSearchFilter(filter)
 
     try {
-      const results = await onSearch(query, searchModeParam)
+      const results = await onSearch(query, searchModeParam, filter)
       setSearchResults(results)
       setSearchResultIndex(0)
       setMessage(undefined)
@@ -263,10 +266,11 @@ export const App = ({
       showMessage(`Error: ${error instanceof Error ? error.message : "Search failed"}`)
       setMode("list")
       setInputValue("")
+      setSearchFilter(undefined)
     }
   }, [onSearch, showMessage])
 
-  // Back to the search box with the last query and mode, to refine the search
+  // Back to the search box with the last query, mode and filter, to refine the search
   const handleCloseResults = useCallback(() => {
     setInputValue(searchQuery)
     setMode("search")
@@ -374,6 +378,7 @@ export const App = ({
       if (mode === "add" || mode === "search") {
         setMode("list")
         setInputValue("")
+        setSearchFilter(undefined)
       } else if (mode === "results") {
         handleCloseResults()
       } else if (mode === "confirmDelete") {
@@ -473,6 +478,7 @@ export const App = ({
         <SearchResults
           query={searchQuery}
           mode={searchMode}
+          filter={searchFilter}
           results={searchResults}
           selectedIndex={searchResultIndex}
           onSelectIndex={setSearchResultIndex}
@@ -555,10 +561,12 @@ export const App = ({
           onCancel={() => {
             setMode("list")
             setInputValue("")
+            setSearchFilter(undefined)
           }}
           onInput={setInputValue}
           value={inputValue}
           initialMode={searchMode}
+          initialFilter={searchFilter}
         />
       )}
 

@@ -179,6 +179,30 @@ describe("App owner grouping", () => {
     expect(frame).toContain("Repositories (3)")
   })
 
+  it("searches with a glob filter and keeps it when reopening the search box", async () => {
+    const onSearch = vi.fn(async (_query: string, _mode: string, _filter: unknown) => [])
+    setup = await renderApp(repos, () => {}, { onSearch })
+    await interact(setup, () => {})
+    const glob = { kind: "glob", text: "src/**/*.ts" }
+
+    await interact(setup, () => setup!.mockInput.pressKey("/"))
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("group repos"))
+    await interact(setup, () => setup!.mockInput.pressTab())
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("src/**/*.ts"))
+    await interact(setup, () => setup!.mockInput.pressTab())
+    await interact(setup, () => setup!.mockInput.pressKey("l"))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(onSearch.mock.calls).toEqual([["group repos", "hybrid", glob]])
+    expect(setup.captureCharFrame()).toContain('Search Results: "group repos" matching src/**/*.ts (Hybrid)')
+
+    await interact(setup, () => setup!.mockInput.pressKey("q"))
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("src/**/*.ts")
+    expect(frame).toContain("[*] Glob")
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(onSearch.mock.calls[1]).toEqual(["group repos", "hybrid", glob])
+  })
+
   it("shows Sync All's progress and the worker limit while it runs", async () => {
     setup = await renderApp(repos, () => {}, {
       onSyncAll: () => new Promise(() => {}),

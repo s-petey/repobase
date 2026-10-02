@@ -38,6 +38,7 @@ import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
 import { resumableSync, resumePoint } from "./jobView.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
+import { filterToGlob, type SearchFilter } from "./searchView.js"
 import { shutdown } from "./shutdown.js"
 
 const FORCE_SYNC_ENV = "REPOBASE_FORCE_SYNC"
@@ -261,8 +262,12 @@ const program = Effect.gen(function* () {
         )
       }
       onRefreshRepos={() => runPromise(engine.listRepos())}
-      onSearch={(text: string, mode: SearchMode) =>
-        runPromise(query.Search({ query: text, mode }).pipe(Effect.map((results) => [...results])))
+      onSearch={(text: string, mode: SearchMode, filter: SearchFilter | undefined) =>
+        runPromise(
+          query
+            .Search({ query: text, mode, glob: filter ? filterToGlob(filter) : undefined })
+            .pipe(Effect.map((results) => [...results]))
+        )
       }
       onJobsChange={(listener) => {
         const fiber = runFork(Stream.runForEach(runner.changes, (jobs) => Effect.sync(() => listener(jobs))))

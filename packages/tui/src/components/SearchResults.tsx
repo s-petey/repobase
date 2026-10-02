@@ -2,12 +2,13 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import type { SearchResult, SearchMode } from "@repobase/engine"
 import { useEffect, useRef } from "react"
-import { formatScore, shortenPath } from "../searchView.js"
+import { describeFilter, formatScore, shortenPath, type SearchFilter } from "../searchView.js"
 import { colors } from "../theme/index.js"
 
 interface SearchResultsProps {
   query: string
   mode: SearchMode
+  filter?: SearchFilter
   results: SearchResult[]
   selectedIndex: number
   onSelectIndex: (index: number) => void
@@ -41,6 +42,7 @@ const SCROLLBAR_WIDTH = 1
 export const SearchResults = ({
   query,
   mode,
+  filter,
   results,
   selectedIndex,
   onSelectIndex,
@@ -91,7 +93,7 @@ export const SearchResults = ({
         }}
       >
         <text
-          content={`Search Results: "${query}" (${getModeLabel(mode)})`}
+          content={`Search Results: "${query}"${filter ? ` ${describeFilter(filter)}` : ""} (${getModeLabel(mode)})`}
           style={{
             fg: colors.status.info.default,
             attributes: TextAttributes.BOLD,
