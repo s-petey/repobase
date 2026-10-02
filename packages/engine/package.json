@@ -6,8 +6,8 @@
   "types": "src/index.ts",
   "dependencies": {
     "@effect/platform-bun": "catalog:",
+    "@huggingface/transformers": "catalog:",
     "@lancedb/lancedb": "catalog:",
-    "@xenova/transformers": "catalog:",
     "effect": "catalog:",
     "fast-glob": "catalog:",
     "micromatch": "catalog:"

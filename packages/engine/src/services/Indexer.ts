@@ -521,12 +521,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     if (embedder) return embedder
 
     const transformers = yield* Effect.tryPromise({
-      try: () => import("@xenova/transformers"),
+      try: () => import("@huggingface/transformers"),
       catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to import transformers: ${e}` })
     })
 
     embedder = yield* Effect.tryPromise({
-      try: () => transformers.pipeline("feature-extraction", MODEL_ID),
+      try: () => transformers.pipeline("feature-extraction", MODEL_ID, { dtype: "fp32" }),
       catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to load embedding model: ${e}` })
     })
 

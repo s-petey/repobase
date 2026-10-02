@@ -35,7 +35,7 @@ async function buildTUI() {
     external: [
       // Keep native modules external - they'll be installed as deps
       "@lancedb/lancedb",
-      "@xenova/transformers",
+      "@huggingface/transformers",
       // Keep React and opentui external
       "react",
       "@opentui/core",
@@ -64,7 +64,7 @@ async function buildMCP() {
     external: [
       // Keep native modules external
       "@lancedb/lancedb",
-      "@xenova/transformers",
+      "@huggingface/transformers",
       // Keep MCP SDK external
       "@modelcontextprotocol/sdk",
       // Keep effect ecosystem external
