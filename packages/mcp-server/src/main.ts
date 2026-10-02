@@ -91,16 +91,18 @@ server.registerTool(
       mode: z.enum(["keyword", "semantic", "hybrid"]).default("hybrid").describe("Search mode: keyword (fast text search), semantic (meaning-based), or hybrid (combines both)"),
       limit: z.number().optional().default(20).describe("Maximum number of results to return"),
       repo: z.string().optional().describe("Optional: limit search to a specific repository ID"),
-      path: z.string().optional().describe("Optional: limit search to this file, or the files under this directory (e.g., 'crates/editor')")
+      path: z.string().optional().describe("Optional: limit search to this file, or the files under this directory (e.g., 'crates/editor')"),
+      glob: z.string().optional().describe("Optional: limit search to files whose path or filename matches this glob (e.g., 'crates/*/src/**/*.rs' or '*.md')")
     }
   },
-  async ({ query, mode, limit, repo, path }) => {
+  async ({ query, mode, limit, repo, path, glob }) => {
     const program = Effect.gen(function* () {
       const engine = yield* RepobaseEngine
       const results = yield* engine.search(query, mode as SearchMode, {
         limit: limit ?? 20,
         repo,
-        path
+        path,
+        glob
       })
       
       return results.map((result) => ({

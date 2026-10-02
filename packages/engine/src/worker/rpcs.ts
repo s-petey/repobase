@@ -149,6 +149,7 @@ export class Search extends Rpc.make("Search", {
     mode: SearchMode,
     repo: Schema.optional(Schema.String),
     path: Schema.optional(Schema.String),
+    glob: Schema.optional(Schema.String),
     limit: Schema.optional(Schema.Number)
   },
   success: Schema.Array(SearchResult),

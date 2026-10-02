@@ -12,6 +12,7 @@ import type {
 import * as os from "os"
 import * as crypto from "crypto"
 import micromatch from "micromatch"
+import { globToRegex } from "../glob.js"
 
 // Configuration
 const INDEX_DIR = `${os.homedir()}/.repobase/index`
@@ -86,6 +87,8 @@ export interface SearchOptions {
   limit?: number
   /** Only this file, or files under this directory */
   path?: string
+  /** Only files whose path matches this glob (or whose filename does, for a glob without `/`) */
+  glob?: string
 }
 
 /**
@@ -393,6 +396,11 @@ const globBase = (glob: string): string | undefined => {
   const scan = micromatch.scan(glob)
   return glob.includes("/") && !scan.negated && scan.base !== "" ? scan.base : undefined
 }
+
+/**
+ * LanceDB filter for paths matching a glob
+ */
+const globFilter = (glob: string) => `regexp_match(path, ${sqlString(globToRegex(glob))})`
 
 const matchesGlob = (file: { path: string; filename: string }, glob: string) =>
   micromatch.isMatch(file.path, glob) || micromatch.isMatch(file.filename, glob)
@@ -847,6 +855,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         search = search.where(pathFilter(options.path))
       }
 
+      if (options?.glob) {
+        search = search.where(globFilter(options.glob))
+      }
+
       // Select scores explicitly: LanceDB warns (on stderr, over the TUI) when they're implied
       const results = yield* Effect.tryPromise({
         try: () =>
@@ -886,6 +898,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       if (options?.path) {
         search = search.where(pathFilter(options.path))
+      }
+
+      if (options?.glob) {
+        search = search.where(globFilter(options.glob))
       }
 
       const results = yield* Effect.tryPromise({
@@ -940,6 +956,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       if (options?.path) {
         search = search.where(pathFilter(options.path))
+      }
+
+      if (options?.glob) {
+        search = search.where(globFilter(options.glob))
       }
 
       const results = yield* Effect.tryPromise({

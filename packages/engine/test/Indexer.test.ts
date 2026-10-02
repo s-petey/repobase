@@ -343,6 +343,26 @@ describe("Indexer", () => {
           expect(inFile.map((r) => r.path)).toEqual(["src/utils.ts"])
         }).pipe(Effect.provide(indexerLayer()))
       )
+
+      it.effect(`${mode} returns only results matching a glob`, () =>
+        Effect.gen(function* () {
+          const indexer = yield* Indexer
+          const repoPath = makeRepo()
+          writeFile(repoPath, "src-extra/other.ts", "export const other = 'world'")
+          writeFile(repoPath, "docs/it's export.md", "export notes")
+          yield* indexer.indexRepo(REPO, repoPath)
+
+          const paths = (glob: string) =>
+            indexer[mode]("export", { repo: REPO, glob }).pipe(Effect.map((rs) => rs.map((r) => r.path).sort()))
+
+          expect(yield* paths("src*/**/*.ts")).toEqual(["src-extra/other.ts", "src/index.ts", "src/utils.ts"])
+          expect(yield* paths("**/u*.ts")).toEqual(["src/utils.ts"])
+          // Semantic results don't need to contain the query, so README.md can come back too
+          const markdown = yield* paths("*.md")
+          expect(markdown).toContain("docs/it's export.md")
+          expect(markdown.every((p) => p.endsWith(".md"))).toBe(true)
+        }).pipe(Effect.provide(indexerLayer()))
+      )
     }
   })
 

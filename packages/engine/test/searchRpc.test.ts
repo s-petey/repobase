@@ -41,4 +41,15 @@ describe("Search RPC", () => {
 
       expect(results.map((r) => r.path)).toEqual(["file-07.ts"])
     }).pipe(Effect.provide(testEnv().layer)), 30_000)
+
+  it.effect("passes the glob filter to the Indexer", () =>
+    Effect.gen(function* () {
+      const source = makeSourceRepo(10)
+      yield* addRepo(source.dir)
+
+      const client = yield* WorkerClient
+      const results = yield* client.Search({ query: "value3", mode: "semantic", glob: "file-0[12].ts" })
+
+      expect(results.map((r) => r.path).sort()).toEqual(["file-01.ts", "file-02.ts"])
+    }).pipe(Effect.provide(testEnv().layer)), 30_000)
 })
