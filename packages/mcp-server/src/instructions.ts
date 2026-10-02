@@ -6,7 +6,8 @@ look here first, before web searching or fetching docs: it's faster, and it's th
 source rather than a summary of it.
 
 - \`search\` finds the relevant files (hybrid keyword and semantic search). Start here.
-- \`grep\` finds exact symbols or strings, and \`read_file\` reads a file you found.
+- \`grep\` finds exact symbols or strings, and \`read_file\` reads a file you found. Narrow \`grep\`
+  with \`path\` (a file or directory) or \`glob\` in large repositories.
 - \`glob_files\` and \`list_files\` find files by name or path.
 
 Pass \`repo\` (for example \`honojs/hono\`) to stay within one repository. Fall back to the web only

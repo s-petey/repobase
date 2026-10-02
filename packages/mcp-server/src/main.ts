@@ -252,7 +252,7 @@ server.registerTool(
 server.registerTool(
   "grep",
   {
-    description: "Find a regex pattern, such as a symbol, type or error message, in the files of the locally indexed repositories. Use it for exact matches; use search to find files by meaning.",
+    description: "Find a regex pattern, such as a symbol, type or error message, in the files of the locally indexed repositories. Use it for exact matches; use search to find files by meaning. In a large repository, narrow it with path (one file or directory) or glob instead of reading a file in chunks.",
     inputSchema: {
       pattern: z.string().describe("Regular expression pattern to search for"),
       repo: z.string().optional().describe("Optional: limit search to a specific repository ID"),
@@ -263,20 +263,26 @@ server.registerTool(
       filesWithMatches: z.boolean().optional().default(false).describe("Only return filenames that contain matches"),
       count: z.boolean().optional().default(false).describe("Only return match counts per file"),
       fileType: z.string().optional().describe("Filter by file extension (e.g., 'ts' for TypeScript files)"),
+      path: z.string().optional().describe("Only search this file, or the files under this directory (e.g., 'crates/editor/src/code_context_menus.rs' or 'crates/editor')"),
+      glob: z.string().optional().describe("Only search files whose path or filename matches this glob (e.g., 'crates/editor/**/*.rs' or '*.md')"),
+      exclude: z.string().optional().describe("Skip files whose path or filename matches this glob (e.g., '**/*.test.ts')"),
       limit: z.number().optional().default(100).describe("Maximum number of output lines")
     }
   },
-  async ({ 
-    pattern, 
-    repo, 
-    ignoreCase, 
-    contextBefore, 
-    contextAfter, 
+  async ({
+    pattern,
+    repo,
+    ignoreCase,
+    contextBefore,
+    contextAfter,
     context,
     filesWithMatches,
     count,
     fileType,
-    limit 
+    path,
+    glob,
+    exclude,
+    limit
   }) => {
     const program = Effect.gen(function* () {
       const indexer = yield* Indexer
@@ -294,6 +300,9 @@ server.registerTool(
         filesWithMatches: filesWithMatches ?? false,
         count: count ?? false,
         fileType,
+        path,
+        glob,
+        exclude,
         limit: limit ?? 100
       })
       

@@ -656,6 +656,24 @@ const grepTypeOption = Flag.String("type").pipe(
   Flag.optional
 )
 
+const grepPathOption = Flag.String("path").pipe(
+  Flag.withAlias("p"),
+  Flag.withDescription("Only search this file, or the files under this directory"),
+  Flag.optional
+)
+
+const grepGlobOption = Flag.String("glob").pipe(
+  Flag.withAlias("g"),
+  Flag.withDescription("Only search files matching a glob (e.g., 'src/**/*.ts')"),
+  Flag.optional
+)
+
+const grepExcludeOption = Flag.String("exclude").pipe(
+  Flag.withAlias("X"),
+  Flag.withDescription("Skip files matching a glob (e.g., '**/*.test.ts')"),
+  Flag.optional
+)
+
 const grepLimitOption = Flag.Int("limit").pipe(
   Flag.withDescription("Limit output lines (default: 100)"),
   Flag.withDefault(100)
@@ -685,6 +703,9 @@ const grepCommand = Command.make(
     filesOnly: grepFilesOnlyOption,
     count: grepCountOption,
     type: grepTypeOption,
+    path: grepPathOption,
+    glob: grepGlobOption,
+    exclude: grepExcludeOption,
     limit: grepLimitOption
   },
   ({
@@ -697,6 +718,9 @@ const grepCommand = Command.make(
     filesOnly,
     count,
     type,
+    path,
+    glob,
+    exclude,
     limit
   }) =>
     Effect.gen(function* () {
@@ -714,6 +738,9 @@ const grepCommand = Command.make(
         filesWithMatches: filesOnly,
         count,
         fileType: Option.getOrUndefined(type),
+        path: Option.getOrUndefined(path),
+        glob: Option.getOrUndefined(glob),
+        exclude: Option.getOrUndefined(exclude),
         limit
       })
 
