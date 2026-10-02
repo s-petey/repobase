@@ -80,8 +80,12 @@ const DEFAULT_IGNORE_PATTERNS = [
  * Options for search operations
  */
 export interface SearchOptions {
-  repo?: string // Filter to specific repo
-  limit?: number // Max results (default: 20)
+  /** Filter to specific repo */
+  repo?: string
+  /** Max results (default: 20) */
+  limit?: number
+  /** Only this file, or files under this directory */
+  path?: string
 }
 
 /**
@@ -839,6 +843,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         search = search.where(`repo = ${sqlString(options.repo)}`)
       }
 
+      if (options?.path) {
+        search = search.where(pathFilter(options.path))
+      }
+
       // Select scores explicitly: LanceDB warns (on stderr, over the TUI) when they're implied
       const results = yield* Effect.tryPromise({
         try: () =>
@@ -874,6 +882,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       if (options?.repo) {
         search = search.where(`repo = ${sqlString(options.repo)}`)
+      }
+
+      if (options?.path) {
+        search = search.where(pathFilter(options.path))
       }
 
       const results = yield* Effect.tryPromise({
@@ -924,6 +936,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       if (options?.repo) {
         search = search.where(`repo = ${sqlString(options.repo)}`)
+      }
+
+      if (options?.path) {
+        search = search.where(pathFilter(options.path))
       }
 
       const results = yield* Effect.tryPromise({

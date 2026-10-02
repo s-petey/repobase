@@ -30,4 +30,15 @@ describe("Search RPC", () => {
         expect(viaRpc).toEqual(direct)
       }).pipe(Effect.provide(testEnv().layer)), 30_000)
   }
+
+  it.effect("passes the path filter to the Indexer", () =>
+    Effect.gen(function* () {
+      const source = makeSourceRepo(10)
+      yield* addRepo(source.dir)
+
+      const client = yield* WorkerClient
+      const results = yield* client.Search({ query: "value3", mode: "semantic", path: "file-07.ts" })
+
+      expect(results.map((r) => r.path)).toEqual(["file-07.ts"])
+    }).pipe(Effect.provide(testEnv().layer)), 30_000)
 })

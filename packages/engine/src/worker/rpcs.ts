@@ -141,13 +141,14 @@ export class PlanChanges extends Rpc.make("PlanChanges", {
 }) {}
 
 /**
- * Search the index, optionally within one repo
+ * Search the index, optionally within one repo, file, or directory
  */
 export class Search extends Rpc.make("Search", {
   payload: {
     query: Schema.String,
     mode: SearchMode,
     repo: Schema.optional(Schema.String),
+    path: Schema.optional(Schema.String),
     limit: Schema.optional(Schema.Number)
   },
   success: Schema.Array(SearchResult),

@@ -325,6 +325,27 @@ describe("Indexer", () => {
     )
   })
 
+  describe("search with a path", () => {
+    const modes = ["searchKeyword", "searchSemantic", "searchHybrid"] as const
+
+    for (const mode of modes) {
+      it.effect(`${mode} returns only results under the path`, () =>
+        Effect.gen(function* () {
+          const indexer = yield* Indexer
+          const repoPath = makeRepo()
+          writeFile(repoPath, "src-extra/other.ts", "export const other = 'world'")
+          yield* indexer.indexRepo(REPO, repoPath)
+
+          const inDir = yield* indexer[mode]("export", { repo: REPO, path: "src" })
+          const inFile = yield* indexer[mode]("export", { repo: REPO, path: "src/utils.ts" })
+
+          expect(inDir.map((r) => r.path).sort()).toEqual(["src/index.ts", "src/utils.ts"])
+          expect(inFile.map((r) => r.path)).toEqual(["src/utils.ts"])
+        }).pipe(Effect.provide(indexerLayer()))
+      )
+    }
+  })
+
   describe("grepPattern", () => {
     // grep reads files from <reposDir>/<repo>, so the repos live there
     const grepSetup = Effect.gen(function* () {
