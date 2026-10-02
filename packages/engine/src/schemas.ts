@@ -108,7 +108,10 @@ export const SearchResult = Schema.Struct({
   path: Schema.String,
   filename: Schema.String,
   score: Schema.Number,
-  snippet: Schema.optional(Schema.String)
+  snippet: Schema.optional(Schema.String),
+  // Lines of the best-matching chunk, 1-based and inclusive
+  startLine: Schema.optional(Schema.Number),
+  endLine: Schema.optional(Schema.Number)
 })
 
 // Stage of adding a repository

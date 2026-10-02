@@ -13,10 +13,19 @@ import * as os from "os"
 import * as crypto from "crypto"
 import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
+import { chunkLines } from "../chunk.js"
 
 // Configuration
 const INDEX_DIR = `${os.homedir()}/.repobase/index`
-const FILES_TABLE = "files"
+// One row per chunk of a file; file-level queries read each file's first chunk
+const CHUNKS_TABLE = "chunks"
+const FIRST_CHUNK = "chunk = 0"
+
+/**
+ * Searches fetch this many times `limit` chunks, so enough distinct files are
+ * left after grouping chunks by file
+ */
+const CHUNKS_PER_RESULT = 5
 
 /**
  * Files embedded and written per indexBatch call. Each batch is one LanceDB
@@ -128,6 +137,11 @@ export interface IndexerConfig {
   readonly reposDir?: string
   /** Replaces the transformers embedding model (e.g. a deterministic fake in tests) */
   readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
+  /**
+   * Counts a line's tokens when chunking. Defaults to the model's tokenizer, or
+   * to a word count when `embed` replaces the model.
+   */
+  readonly countTokens?: (line: string) => number
 }
 
 /**
@@ -408,9 +422,57 @@ const matchesGlob = (file: { path: string; filename: string }, glob: string) =>
   micromatch.isMatch(file.path, glob) || micromatch.isMatch(file.filename, glob)
 
 /**
- * Row id of a file in the index
+ * Apply the search options' repo and path filters to a LanceDB query
  */
-const recordId = (repoId: string, path: string) => `${repoId}:${path}`
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const applySearchFilters = (search: any, options: SearchOptions | undefined) => {
+  if (options?.repo) search = search.where(`repo = ${sqlString(options.repo)}`)
+  if (options?.repos && options.repos.length > 0) {
+    search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
+  }
+  if (options?.path) search = search.where(pathFilter(options.path))
+  if (options?.glob) search = search.where(globFilter(options.glob))
+  return search
+}
+
+/** Columns a search reads from each chunk, besides its score */
+const SEARCH_COLUMNS = ["repo", "path", "filename", "text", "start_line", "end_line"]
+
+/**
+ * One result per file from chunks ordered best first: each file's first (best)
+ * chunk, up to `limit` files
+ */
+const bestChunkPerFile = (
+  rows: unknown,
+  score: (row: Record<string, number>) => number,
+  query: string,
+  limit: number
+): Array<SearchResult> => {
+  const seen = new Set<string>()
+  const results: Array<SearchResult> = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const row of rows as ReadonlyArray<any>) {
+    const key = `${row.repo}\0${row.path}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    results.push({
+      repo: row.repo,
+      path: row.path,
+      filename: row.filename,
+      score: score(row),
+      snippet: extractSnippet(row.text, query),
+      startLine: row.start_line,
+      endLine: row.end_line
+    })
+    if (results.length >= limit) break
+  }
+  return results
+}
+
+/**
+ * Row id of one chunk of a file in the index
+ */
+const recordId = (repoId: string, path: string, chunk: number) => `${repoId}:${path}#${chunk}`
 
 /**
  * LanceDB rejects a write whose base version changed underneath it when
@@ -469,7 +531,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   const openTable = (database: any) =>
     Effect.tryPromise({
-      try: () => database.openTable(FILES_TABLE),
+      try: () => database.openTable(CHUNKS_TABLE),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to open table: ${e}` })
     })
 
@@ -482,19 +544,22 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       catch: (e) => new IndexError({ operation: "init", message: `Failed to list tables: ${e}` })
     })
 
-    if (tableNames.includes(FILES_TABLE)) {
+    if (tableNames.includes(CHUNKS_TABLE)) {
       table = yield* openTable(database)
     } else {
       // Create with schema using a template record
       table = yield* Effect.tryPromise({
         try: async () => {
-          const newTable = await database.createTable(FILES_TABLE, [
+          const newTable = await database.createTable(CHUNKS_TABLE, [
             {
               id: "__template__",
               repo: "",
               path: "",
               filename: "",
-              contents: "",
+              chunk: 0,
+              start_line: 0,
+              end_line: 0,
+              text: "",
               mtime_ms: 0,
               size_bytes: 0,
               hash: "",
@@ -551,6 +616,14 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       return Array.from((output as any).data as Float32Array)
     })
 
+  // Counts one line's tokens for chunking, without the model's special tokens
+  const getTokenCounter: Effect.Effect<(line: string) => number, IndexError> = Effect.gen(function* () {
+    if (config.countTokens) return config.countTokens
+    if (config.embed) return (line: string) => line.split(/\s+/).filter(Boolean).length
+    const model = yield* getEmbedder
+    return (line: string) => model.tokenizer.encode(line, { add_special_tokens: false }).length
+  })
+
   // Read a file for indexing; None if it is gone, unreadable or binary
   const readIndexable = (repoPath: string, filePath: string) =>
     fs.readFile(`${repoPath}/${filePath}`).pipe(
@@ -567,7 +640,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         try: () =>
           tbl
             .query()
-            .where(`repo = ${sqlString(repoId)}`)
+            .where(`repo = ${sqlString(repoId)} AND ${FIRST_CHUNK}`)
             .select(["path", "hash"])
             .toArray() as Promise<Array<{ path: string; hash: string }>>,
         catch: (e) =>
@@ -662,11 +735,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     Effect.gen(function* () {
       if (paths.length === 0) return
       const tbl = yield* getTable
-      for (const chunk of Arr.chunksOf(paths, DELETE_CHUNK_SIZE)) {
-        const ids = chunk.map((p) => sqlString(recordId(repoId, p))).join(", ")
+      for (const group of Arr.chunksOf(paths, DELETE_CHUNK_SIZE)) {
+        const list = group.map(sqlString).join(", ")
         yield* retryOnCommitConflict(
           Effect.tryPromise({
-            try: () => tbl.delete(`id IN (${ids})`),
+            // Every chunk of each file
+            try: () => tbl.delete(`repo = ${sqlString(repoId)} AND path IN (${list})`),
             catch: (e) => new IndexError({ operation: "deletePaths", message: `Failed to delete: ${e}` })
           })
         )
@@ -677,7 +751,16 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     Effect.gen(function* () {
       const tbl = yield* getTable
       const records: Array<Record<string, unknown>> = []
+      // Each written file's chunk count, to drop chunks left from a longer version
+      const chunkCounts: Array<readonly [string, number]> = []
       const gone: Array<string> = []
+      const embedError = (path: string) => (e: IndexError) =>
+        new IndexError({
+          operation: e.operation === "loadEmbedder" ? e.operation : "indexBatch.embed",
+          message: e.message,
+          path
+        })
+      const countTokens = yield* getTokenCounter.pipe(Effect.mapError(embedError(files[0]?.path ?? "")))
 
       for (const file of files) {
         if (options?.onFile) yield* options.onFile(file.path)
@@ -690,32 +773,32 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         }
 
         const contents = new TextDecoder().decode(buffer.value).slice(0, MAX_FILE_SIZE)
-        const vector = yield* embedText(contents).pipe(
-          Effect.mapError((e) =>
-            new IndexError({
-              operation: e.operation === "loadEmbedder" ? e.operation : "indexBatch.embed",
-              message: e.message,
-              path: file.path
-            })
-          )
-        )
         const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
           Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
         )
         // The platform's stat gives a JS Date
         const mtimeMs = Option.isSome(stat.mtime) ? stat.mtime.value.getTime() : yield* Clock.currentTimeMillis
+        const hash = hashBuffer(buffer.value)
 
-        records.push({
-          id: recordId(repoId, file.path),
-          repo: repoId,
-          path: file.path,
-          filename: file.path.split("/").pop() ?? file.path,
-          contents,
-          mtime_ms: Math.trunc(mtimeMs),
-          size_bytes: Number(stat.size),
-          hash: hashBuffer(buffer.value),
-          vector
-        })
+        const chunks = chunkLines(contents, countTokens)
+        for (const chunk of chunks) {
+          const vector = yield* embedText(chunk.text).pipe(Effect.mapError(embedError(file.path)))
+          records.push({
+            id: recordId(repoId, file.path, chunk.chunk),
+            repo: repoId,
+            path: file.path,
+            filename: file.path.split("/").pop() ?? file.path,
+            chunk: chunk.chunk,
+            start_line: chunk.startLine,
+            end_line: chunk.endLine,
+            text: chunk.text,
+            mtime_ms: Math.trunc(mtimeMs),
+            size_bytes: Number(stat.size),
+            hash,
+            vector
+          })
+        }
+        chunkCounts.push([file.path, chunks.length])
       }
 
       // Upsert by id, so re-running a batch never duplicates rows
@@ -727,12 +810,20 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to write batch: ${e}` })
           })
         )
+        // Chunks past a file's new end, from when it was longer
+        const stale = chunkCounts.map(([path, count]) => `(path = ${sqlString(path)} AND chunk >= ${count})`).join(" OR ")
+        yield* retryOnCommitConflict(
+          Effect.tryPromise({
+            try: () => tbl.delete(`repo = ${sqlString(repoId)} AND (${stale})`),
+            catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to drop old chunks: ${e}` })
+          })
+        )
       }
       yield* deletePaths(repoId, gone).pipe(
         Effect.mapError((e) => new IndexError({ operation: "indexBatch.write", message: e.message, path: e.path }))
       )
 
-      return { indexed: records.length, skipped: gone.length }
+      return { indexed: chunkCounts.length, skipped: gone.length }
     })
 
   const finalizeIndex: IndexerService["finalizeIndex"] = () =>
@@ -751,7 +842,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       )
       yield* retryOnCommitConflict(
         Effect.tryPromise({
-          try: () => tbl.createIndex("contents", { config: lancedb.Index.fts(), replace: true }),
+          try: () => tbl.createIndex("text", { config: lancedb.Index.fts(), replace: true }),
           catch: (e) =>
             new IndexError({ operation: "finalizeIndex", message: `Failed to build full-text index: ${e}` })
         })
@@ -846,43 +937,19 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
       const limit = options?.limit ?? 20
-
-      let search = tbl.query().fullTextSearch(query)
-
-      if (options?.repo) {
-        search = search.where(`repo = ${sqlString(options.repo)}`)
-      }
-
-      if (options?.repos && options.repos.length > 0) {
-        search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
-      }
-
-      if (options?.path) {
-        search = search.where(pathFilter(options.path))
-      }
-
-      if (options?.glob) {
-        search = search.where(globFilter(options.glob))
-      }
+      const search = applySearchFilters(tbl.query().fullTextSearch(query), options)
 
       // Select scores explicitly: LanceDB warns (on stderr, over the TUI) when they're implied
       const results = yield* Effect.tryPromise({
         try: () =>
           search
-            .select(["repo", "path", "filename", "contents", "_score"])
-            .limit(limit)
+            .select([...SEARCH_COLUMNS, "_score"])
+            .limit(limit * CHUNKS_PER_RESULT)
             .toArray(),
         catch: (e) => new SearchError({ message: `Keyword search failed: ${e}` })
       })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (results as Array<any>).map((r) => ({
-        repo: r.repo as string,
-        path: r.path as string,
-        filename: r.filename as string,
-        score: (r._score ?? 1) as number,
-        snippet: extractSnippet(r.contents as string, query)
-      }))
+      return bestChunkPerFile(results, (r) => r._score ?? 1, query, limit)
     })
 
   // Semantic search (vector only)
@@ -896,41 +963,18 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
 
-      let search = tbl.search(queryVector).column("vector")
-
-      if (options?.repo) {
-        search = search.where(`repo = ${sqlString(options.repo)}`)
-      }
-
-      if (options?.repos && options.repos.length > 0) {
-        search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
-      }
-
-      if (options?.path) {
-        search = search.where(pathFilter(options.path))
-      }
-
-      if (options?.glob) {
-        search = search.where(globFilter(options.glob))
-      }
+      const search = applySearchFilters(tbl.search(queryVector).column("vector"), options)
 
       const results = yield* Effect.tryPromise({
         try: () =>
           search
-            .select(["repo", "path", "filename", "contents", "_distance"])
-            .limit(limit)
+            .select([...SEARCH_COLUMNS, "_distance"])
+            .limit(limit * CHUNKS_PER_RESULT)
             .toArray(),
         catch: (e) => new SearchError({ message: `Semantic search failed: ${e}` })
       })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (results as Array<any>).map((r) => ({
-        repo: r.repo as string,
-        path: r.path as string,
-        filename: r.filename as string,
-        score: 1 / (1 + ((r._distance ?? 0) as number)),
-        snippet: extractSnippet(r.contents as string, query)
-      }))
+      return bestChunkPerFile(results, (r) => 1 / (1 + (r._distance ?? 0)), query, limit)
     })
 
   // Hybrid search (FTS + vector with RRF reranking)
@@ -954,45 +998,21 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         catch: (e) => new SearchError({ message: `Failed to create reranker: ${e}` })
       })
 
-      let search = tbl
-        .query()
-        .fullTextSearch(query)
-        .nearestTo(queryVector)
-        .rerank(reranker)
-
-      if (options?.repo) {
-        search = search.where(`repo = ${sqlString(options.repo)}`)
-      }
-
-      if (options?.repos && options.repos.length > 0) {
-        search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
-      }
-
-      if (options?.path) {
-        search = search.where(pathFilter(options.path))
-      }
-
-      if (options?.glob) {
-        search = search.where(globFilter(options.glob))
-      }
+      const search = applySearchFilters(
+        tbl.query().fullTextSearch(query).nearestTo(queryVector).rerank(reranker),
+        options
+      )
 
       const results = yield* Effect.tryPromise({
         try: () =>
           search
-            .select(["repo", "path", "filename", "contents"])
-            .limit(limit)
+            .select(SEARCH_COLUMNS)
+            .limit(limit * CHUNKS_PER_RESULT)
             .toArray(),
         catch: (e) => new SearchError({ message: `Hybrid search failed: ${e}` })
       })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (results as Array<any>).map((r) => ({
-        repo: r.repo as string,
-        path: r.path as string,
-        filename: r.filename as string,
-        score: (r._relevanceScore ?? 1) as number,
-        snippet: extractSnippet(r.contents as string, query)
-      }))
+      return bestChunkPerFile(results, (r) => r._relevanceScore ?? 1, query, limit)
     })
 
   // List files and directories in a repository path
@@ -1008,6 +1028,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           try: () =>
             tbl
               .query()
+              .where(FIRST_CHUNK)
               .select(["repo", "path"])
               .limit(10000) // High limit to get all repos
               .toArray() as Promise<Array<{ repo: string; path: string }>>,
@@ -1037,7 +1058,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         try: () =>
           tbl
             .query()
-            .where(`repo = '${repo}' AND path LIKE '${searchPath}%'`)
+            .where(`repo = '${repo}' AND path LIKE '${searchPath}%' AND ${FIRST_CHUNK}`)
             .select(["path", "filename", "size_bytes", "mtime_ms"])
             .toArray() as Promise<
             Array<{
@@ -1108,7 +1129,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       })
 
       // Query all files (or filtered by repo)
-      let query = tbl.query()
+      let query = tbl.query().where(FIRST_CHUNK)
 
       if (options?.repo) {
         query = query.where(`repo = '${options.repo}'`)
@@ -1166,7 +1187,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         try: () =>
           tbl
             .query()
-            .where(`repo = '${repo}' AND path = '${filePath}'`)
+            .where(`repo = '${repo}' AND path = '${filePath}' AND ${FIRST_CHUNK}`)
             .select(["path"])
             .limit(1)
             .toArray() as Promise<Array<{ path: string }>>,
@@ -1243,7 +1264,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       }
 
       // Query indexed files
-      let query = tbl.query()
+      let query = tbl.query().where(FIRST_CHUNK)
 
       if (options?.repo) {
         query = query.where(`repo = ${sqlString(options.repo)}`)

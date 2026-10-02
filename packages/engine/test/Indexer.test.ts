@@ -325,6 +325,77 @@ describe("Indexer", () => {
     )
   })
 
+  describe("chunks", () => {
+    // 300 lines of 3 words; with the word-count tokenizer, about 84 lines a chunk
+    const longFile = (tail: string) =>
+      Array.from({ length: 300 }, (_, i) => (i === 249 ? `line ${i + 1} ${tail}` : `line ${i + 1} filler`)).join("\n")
+
+    it.effect("indexes a long file as several chunks, but lists it once", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        writeFile(repoPath, "src/long.ts", longFile("zebracorn"))
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        const paths = yield* indexedPaths(REPO)
+        expect(paths.get("src/long.ts")).toBe(1)
+
+        // The term is near the end, so only a later chunk can match it
+        const [hit] = yield* indexer.searchKeyword("zebracorn", { repo: REPO })
+        expect(hit).toMatchObject({ path: "src/long.ts" })
+        expect(hit.startLine).toBeGreaterThan(1)
+        expect(hit.startLine).toBeLessThanOrEqual(250)
+        expect(hit.endLine).toBeGreaterThanOrEqual(250)
+        expect(hit.snippet).toContain("zebracorn")
+      }).pipe(Effect.provide(indexerLayer()))
+    )
+
+    it.effect("returns each file once, however many of its chunks match", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        writeFile(repoPath, "src/long.ts", longFile("zebracorn"))
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        for (const mode of ["searchKeyword", "searchSemantic", "searchHybrid"] as const) {
+          const results = yield* indexer[mode]("filler", { repo: REPO })
+          const paths = results.map((r) => r.path)
+          expect(new Set(paths).size).toBe(paths.length)
+        }
+      }).pipe(Effect.provide(indexerLayer()))
+    )
+
+    it.effect("drops the chunks a file no longer has when it shrinks", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        writeFile(repoPath, "src/long.ts", longFile("zebracorn"))
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        writeFile(repoPath, "src/long.ts", "export const short = true")
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        expect(yield* indexer.searchKeyword("zebracorn", { repo: REPO })).toEqual([])
+        expect((yield* indexer.searchKeyword("short", { repo: REPO })).map((r) => r.path)).toEqual(["src/long.ts"])
+      }).pipe(Effect.provide(indexerLayer()))
+    )
+
+    it.effect("deletes every chunk of a removed file", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        writeFile(repoPath, "src/long.ts", longFile("zebracorn"))
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        yield* indexer.deletePaths(REPO, ["src/long.ts"])
+        yield* indexer.finalizeIndex()
+
+        expect(yield* indexer.searchKeyword("zebracorn", { repo: REPO })).toEqual([])
+        expect((yield* indexedPaths(REPO)).has("src/long.ts")).toBe(false)
+      }).pipe(Effect.provide(indexerLayer()))
+    )
+  })
+
   describe("search with a path", () => {
     const modes = ["searchKeyword", "searchSemantic", "searchHybrid"] as const
 
