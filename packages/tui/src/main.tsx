@@ -262,10 +262,10 @@ const program = Effect.gen(function* () {
         )
       }
       onRefreshRepos={() => runPromise(engine.listRepos())}
-      onSearch={(text: string, mode: SearchMode, filter: SearchFilter | undefined) =>
+      onSearch={(text: string, mode: SearchMode, filter: SearchFilter | undefined, repos) =>
         runPromise(
           query
-            .Search({ query: text, mode, glob: filter ? filterToGlob(filter) : undefined })
+            .Search({ query: text, mode, repos, glob: filter ? filterToGlob(filter) : undefined })
             .pipe(Effect.map((results) => [...results]))
         )
       }

@@ -26,7 +26,7 @@ describe("SearchModal", () => {
 
     const mode = lineOf("[*] Hybrid")
     const description = lineOf("Combined keyword + semantic")
-    const help = lineOf("[Enter] Search  [Tab] Switch focus  [h/l] Change option  [Esc] Cancel")
+    const help = lineOf("[Enter] Search  [Tab] Next  [h/l] Option  [Space] Toggle  [Esc] Cancel")
     expect(mode).toBeGreaterThan(-1)
     expect(description).toBeGreaterThan(mode)
     expect(help).toBeGreaterThan(description)
@@ -58,7 +58,7 @@ describe("SearchModal", () => {
     await interact(setup, () => setup!.mockInput.pressEnter())
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
-    expect(onSubmit.mock.calls[0]).toEqual(["group repos", "hybrid", undefined])
+    expect(onSubmit.mock.calls[0]).toEqual(["group repos", "hybrid", undefined, undefined])
   })
 
   it("submits a path filter typed after Tab", async () => {
@@ -74,7 +74,7 @@ describe("SearchModal", () => {
     await interact(setup, () => setup!.mockInput.pasteBracketedText(" src/components "))
     await interact(setup, () => setup!.mockInput.pressEnter())
 
-    expect(onSubmit.mock.calls).toEqual([["group repos", "hybrid", { kind: "path", text: "src/components" }]])
+    expect(onSubmit.mock.calls).toEqual([["group repos", "hybrid", { kind: "path", text: "src/components" }, undefined]])
   })
 
   it("switches the filter to a glob with the toggle", async () => {
@@ -94,7 +94,43 @@ describe("SearchModal", () => {
     expect(setup.captureCharFrame()).toContain("Filter by glob (optional)")
     await interact(setup, () => setup!.mockInput.pressEnter())
 
-    expect(onSubmit.mock.calls).toEqual([["group repos", "hybrid", { kind: "glob", text: "*.md" }]])
+    expect(onSubmit.mock.calls).toEqual([["group repos", "hybrid", { kind: "glob", text: "*.md" }, undefined]])
+  })
+
+  it("searches the highlighted scope unless Search all is checked", async () => {
+    const onSubmit = vi.fn(
+      (_query: string, _mode: string, _filter: SearchFilter | undefined, _repos: ReadonlyArray<string> | undefined) => {}
+    )
+    const scope = { label: "acme (2 repos)", repos: ["acme/one", "acme/two"] }
+    setup = await testRender(
+      <SearchModal onSubmit={onSubmit} onCancel={() => {}} onInput={() => {}} value="" scope={scope} />,
+      { width: 100, height: 30 }
+    )
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("[ ] Search all repositories")
+    expect(setup.captureCharFrame()).toContain("(searching acme (2 repos))")
+
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("group repos"))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(onSubmit.mock.calls.at(-1)?.[3]).toEqual(["acme/one", "acme/two"])
+
+    // Tab past the filter box and toggle to the scope row, then check the box
+    for (let i = 0; i < 3; i++) await interact(setup, () => setup!.mockInput.pressTab())
+    await interact(setup, () => setup!.mockInput.pressKey(" "))
+    expect(setup.captureCharFrame()).toContain("[x] Search all repositories")
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(onSubmit.mock.calls.at(-1)?.[3]).toBeUndefined()
+  })
+
+  it("searches everything when nothing is highlighted", async () => {
+    setup = await testRender(
+      <SearchModal onSubmit={() => {}} onCancel={() => {}} onInput={() => {}} value="" />,
+      { width: 100, height: 30 }
+    )
+    await interact(setup, () => {})
+
+    expect(setup.captureCharFrame()).toContain("[x] Search all repositories")
+    expect(setup.captureCharFrame()).toContain("(nothing highlighted)")
   })
 
   it("starts from the filter it's given", async () => {
@@ -129,17 +165,24 @@ describe("SearchModal", () => {
       expect(span).toBeDefined()
       return focusColor.equals(span!.fg)
     }
-    const focused = () => ({ filterKind: isFocused("[*] Path"), mode: isFocused("[*] Hybrid") })
+    const focused = () => ({
+      filterKind: isFocused("[*] Path"),
+      scope: isFocused("Search all repositories"),
+      mode: isFocused("[*] Hybrid")
+    })
+    const none = { filterKind: false, scope: false, mode: false }
 
     // The query box, then the filter box, has focus
-    expect(focused()).toEqual({ filterKind: false, mode: false })
+    expect(focused()).toEqual(none)
     await interact(setup, () => setup!.mockInput.pressTab())
-    expect(focused()).toEqual({ filterKind: false, mode: false })
+    expect(focused()).toEqual(none)
 
-    // Then the filter toggle, then the mode row
+    // Then the filter toggle, the scope checkbox and the mode row
     await interact(setup, () => setup!.mockInput.pressTab())
-    expect(focused()).toEqual({ filterKind: true, mode: false })
+    expect(focused()).toEqual({ ...none, filterKind: true })
     await interact(setup, () => setup!.mockInput.pressTab())
-    expect(focused()).toEqual({ filterKind: false, mode: true })
+    expect(focused()).toEqual({ ...none, scope: true })
+    await interact(setup, () => setup!.mockInput.pressTab())
+    expect(focused()).toEqual({ ...none, mode: true })
   })
 })

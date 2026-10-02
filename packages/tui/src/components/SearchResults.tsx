@@ -2,13 +2,15 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import type { SearchResult, SearchMode } from "@repobase/engine"
 import { useEffect, useRef } from "react"
-import { describeFilter, formatScore, shortenPath, type SearchFilter } from "../searchView.js"
+import { describeFilter, formatScore, shortenPath, type SearchFilter, type SearchScope } from "../searchView.js"
 import { colors } from "../theme/index.js"
 
 interface SearchResultsProps {
   query: string
   mode: SearchMode
   filter?: SearchFilter
+  // Undefined when the search covered every repository
+  scope?: SearchScope
   results: SearchResult[]
   selectedIndex: number
   onSelectIndex: (index: number) => void
@@ -43,6 +45,7 @@ export const SearchResults = ({
   query,
   mode,
   filter,
+  scope,
   results,
   selectedIndex,
   onSelectIndex,
@@ -93,7 +96,7 @@ export const SearchResults = ({
         }}
       >
         <text
-          content={`Search Results: "${query}"${filter ? ` ${describeFilter(filter)}` : ""} (${getModeLabel(mode)})`}
+          content={`Search Results: "${query}"${scope ? ` in ${scope.label}` : ""}${filter ? ` ${describeFilter(filter)}` : ""} (${getModeLabel(mode)})`}
           style={{
             fg: colors.status.info.default,
             attributes: TextAttributes.BOLD,

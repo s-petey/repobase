@@ -2,16 +2,25 @@ import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
 import { useState } from "react"
 import type { SearchMode } from "@repobase/engine"
-import type { SearchFilter } from "../searchView.js"
+import type { SearchFilter, SearchScope } from "../searchView.js"
 import { colors } from "../theme/index.js"
 
 interface SearchModalProps {
-  onSubmit: (query: string, mode: SearchMode, filter: SearchFilter | undefined) => void
+  // `repos` is undefined when searching every repository
+  onSubmit: (
+    query: string,
+    mode: SearchMode,
+    filter: SearchFilter | undefined,
+    repos: ReadonlyArray<string> | undefined
+  ) => void
   onCancel: () => void
   onInput: (value: string) => void
   value: string
   initialMode?: SearchMode
   initialFilter?: SearchFilter
+  // What's highlighted in the repo list; without one, search covers every repository
+  scope?: SearchScope
+  initialSearchAll?: boolean
 }
 
 const SEARCH_MODES: { mode: SearchMode; label: string; description: string }[] = [
@@ -26,7 +35,7 @@ const FILTER_KINDS: { kind: SearchFilter["kind"]; label: string; placeholder: st
 ]
 
 // Tab moves through these in order
-const FOCUS_ORDER = ["query", "filter", "filterKind", "mode"] as const
+const FOCUS_ORDER = ["query", "filter", "filterKind", "scope", "mode"] as const
 type Focus = (typeof FOCUS_ORDER)[number]
 
 // Paste is handled natively by the focused <input> (opentui >= 0.5)
@@ -37,6 +46,8 @@ export const SearchModal = ({
   value,
   initialMode = "hybrid",
   initialFilter,
+  scope,
+  initialSearchAll = false,
 }: SearchModalProps) => {
   const [selectedModeIndex, setSelectedModeIndex] = useState(() =>
     Math.max(0, SEARCH_MODES.findIndex((m) => m.mode === initialMode))
@@ -51,6 +62,9 @@ export const SearchModal = ({
   const [startFilterText] = useState(initialFilter?.text ?? "")
   const [query, setQuery] = useState(value)
   const [filterText, setFilterText] = useState(initialFilter?.text ?? "")
+  const [searchAll, setSearchAll] = useState(initialSearchAll)
+  // With nothing highlighted there's nothing to narrow to
+  const searchesAll = searchAll || !scope
 
   const handleQueryInput = (text: string) => {
     setQuery(text)
@@ -61,7 +75,7 @@ export const SearchModal = ({
     if (!query.trim()) return
     const text = filterText.trim()
     const filter = text ? { kind: FILTER_KINDS[filterKindIndex].kind, text } : undefined
-    onSubmit(query, SEARCH_MODES[selectedModeIndex].mode, filter)
+    onSubmit(query, SEARCH_MODES[selectedModeIndex].mode, filter, searchesAll ? undefined : scope?.repos)
   }
 
   // h/l and the arrows move along a row of options
@@ -83,10 +97,12 @@ export const SearchModal = ({
     }
 
     // The inputs handle their own keys, including Enter
-    if (focus !== "mode" && focus !== "filterKind") return
+    if (focus === "query" || focus === "filter") return
 
     if (key.name === "return") {
       submit()
+    } else if (focus === "scope") {
+      if (key.name === "space" && scope) setSearchAll(!searchAll)
     } else if (focus === "mode") {
       setSelectedModeIndex(step(key.name, selectedModeIndex, SEARCH_MODES.length))
     } else {
@@ -123,7 +139,7 @@ export const SearchModal = ({
         top: "20%",
         left: "10%",
         width: "80%",
-        height: 18,
+        height: 19,
         backgroundColor: colors.bg.elevated,
         borderStyle: "double",
         borderColor: colors.status.info.default,
@@ -182,6 +198,17 @@ export const SearchModal = ({
 
       {optionRow("filterKind", "Filter: ", FILTER_KINDS.map((k) => k.label), filterKindIndex)}
 
+      <box style={{ flexDirection: "row", gap: 2 }}>
+        <text
+          content={`[${searchesAll ? "x" : " "}] Search all repositories`}
+          style={{ fg: focusColor("scope", colors.text.primary) }}
+        />
+        <text
+          content={searchesAll ? (scope ? "" : "(nothing highlighted)") : `(searching ${scope?.label})`}
+          style={{ fg: colors.text.tertiary }}
+        />
+      </box>
+
       <box style={{ marginTop: 1 }}>
         {optionRow("mode", "Mode: ", SEARCH_MODES.map((m) => m.label), selectedModeIndex)}
       </box>
@@ -195,7 +222,7 @@ export const SearchModal = ({
       />
 
       <text
-        content="[Enter] Search  [Tab] Switch focus  [h/l] Change option  [Esc] Cancel"
+        content="[Enter] Search  [Tab] Next  [h/l] Option  [Space] Toggle  [Esc] Cancel"
         style={{
           fg: colors.text.tertiary,
           marginTop: 1,

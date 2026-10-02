@@ -37,6 +37,14 @@ export const describeFilter = (filter: SearchFilter): string =>
   filter.kind === "glob" ? `matching ${filter.text}` : `in paths containing ${filter.text}`
 
 /**
+ * What's highlighted in the repo list, which search covers unless it's set to search all
+ */
+export interface SearchScope {
+  readonly label: string // e.g. "Effect-TS/effect" or "Effect-TS (2 repos)"
+  readonly repos: ReadonlyArray<string>
+}
+
+/**
  * A score as a percentage padded to a fixed width, so a column of them lines up
  */
 export const formatScore = (score: number): string => `${Math.round(score * 100)}%`.padStart(4)

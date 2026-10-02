@@ -180,10 +180,12 @@ describe("App owner grouping", () => {
   })
 
   it("searches with a glob filter and keeps it when reopening the search box", async () => {
-    const onSearch = vi.fn(async (_query: string, _mode: string, _filter: unknown) => [])
+    const onSearch = vi.fn(async (_query: string, _mode: string, _filter: unknown, _repos: unknown) => [])
     setup = await renderApp(repos, () => {}, { onSearch })
     await interact(setup, () => {})
     const glob = { kind: "glob", text: "src/**/*.ts" }
+    // The Effect-TS group header is highlighted
+    const group = ["Effect-TS/website", "Effect-TS/effect"]
 
     await interact(setup, () => setup!.mockInput.pressKey("/"))
     await interact(setup, () => setup!.mockInput.pasteBracketedText("group repos"))
@@ -192,15 +194,44 @@ describe("App owner grouping", () => {
     await interact(setup, () => setup!.mockInput.pressTab())
     await interact(setup, () => setup!.mockInput.pressKey("l"))
     await interact(setup, () => setup!.mockInput.pressEnter())
-    expect(onSearch.mock.calls).toEqual([["group repos", "hybrid", glob]])
-    expect(setup.captureCharFrame()).toContain('Search Results: "group repos" matching src/**/*.ts (Hybrid)')
+    expect(onSearch.mock.calls).toEqual([["group repos", "hybrid", glob, group]])
+    expect(setup.captureCharFrame()).toContain(
+      'Search Results: "group repos" in Effect-TS (2 repos) matching src/**/*.ts (Hybrid)'
+    )
 
     await interact(setup, () => setup!.mockInput.pressKey("q"))
     const frame = setup.captureCharFrame()
     expect(frame).toContain("src/**/*.ts")
     expect(frame).toContain("[*] Glob")
     await interact(setup, () => setup!.mockInput.pressEnter())
-    expect(onSearch.mock.calls[1]).toEqual(["group repos", "hybrid", glob])
+    expect(onSearch.mock.calls[1]).toEqual(["group repos", "hybrid", glob, group])
+  })
+
+  it("searches the highlighted repo, or every repo once Search all is checked", async () => {
+    const onSearch = vi.fn(async (_query: string, _mode: string, _filter: unknown, _repos: unknown) => [])
+    setup = await renderApp(repos, () => {}, { onSearch })
+    await interact(setup, () => {})
+
+    // The first repo row under the Effect-TS header is Effect-TS/effect
+    await interact(setup, () => setup!.mockInput.pressKey("j"))
+    await interact(setup, () => setup!.mockInput.pressKey("/"))
+    expect(setup.captureCharFrame()).toContain("(searching Effect-TS/effect)")
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("duration"))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(onSearch.mock.calls.at(-1)?.[3]).toEqual(["Effect-TS/effect"])
+    expect(setup.captureCharFrame()).toContain('Search Results: "duration" in Effect-TS/effect (Hybrid)')
+
+    // Back to the search box, check Search all and search again
+    await interact(setup, () => setup!.mockInput.pressKey("q"))
+    for (let i = 0; i < 3; i++) await interact(setup, () => setup!.mockInput.pressTab())
+    await interact(setup, () => setup!.mockInput.pressKey(" "))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+    expect(onSearch.mock.calls.at(-1)?.[3]).toBeUndefined()
+    expect(setup.captureCharFrame()).toContain('Search Results: "duration" (Hybrid)')
+
+    // The checkbox stays checked when reopening
+    await interact(setup, () => setup!.mockInput.pressKey("q"))
+    expect(setup.captureCharFrame()).toContain("[x] Search all repositories")
   })
 
   it("shows Sync All's progress and the worker limit while it runs", async () => {

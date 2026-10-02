@@ -9,7 +9,7 @@ import type { FlatRow } from "./components/RepoList.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
 import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
-import type { SearchFilter } from "./searchView.js"
+import type { SearchFilter, SearchScope } from "./searchView.js"
 
 type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
 
@@ -33,7 +33,12 @@ interface AppProps {
   onSyncRepo: (id: string) => Promise<{ updated: boolean; resumedFrom?: string }>
   onSyncAll: () => Promise<Array<{ id: string; updated: boolean; resumed?: boolean }>>
   onRefreshRepos: () => Promise<RepoConfig[]>
-  onSearch: (query: string, mode: SearchMode, filter: SearchFilter | undefined) => Promise<SearchResult[]>
+  onSearch: (
+    query: string,
+    mode: SearchMode,
+    filter: SearchFilter | undefined,
+    repos: ReadonlyArray<string> | undefined
+  ) => Promise<SearchResult[]>
   onJobsChange: (listener: (jobs: ReadonlyArray<Job>) => void) => () => void
   onRetryJob: (jobId: string) => Promise<void>
   onDiscardJob: (jobId: string) => Promise<void>
@@ -101,6 +106,7 @@ export const App = ({
   const [searchQuery, setSearchQuery] = useState("")
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid")
   const [searchFilter, setSearchFilter] = useState<SearchFilter | undefined>()
+  const [searchAll, setSearchAll] = useState(false)
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchResultIndex, setSearchResultIndex] = useState(0)
 
@@ -130,6 +136,15 @@ export const App = ({
   }, [jobs, onRefreshRepos])
 
   const flatRows = useMemo(() => buildFlatRows(repos, collapsedGroups), [repos, collapsedGroups])
+
+  // Search covers the highlighted repo, or every repo in a highlighted group
+  const highlightedScope = useMemo((): SearchScope | undefined => {
+    const row = flatRows[selectedIndex]
+    if (!row) return undefined
+    if (row.kind === "repo") return { label: row.repo.id, repos: [row.repo.id] }
+    const ids = repos.filter((r) => repoNames(r).owner === row.owner).map((r) => r.id)
+    return { label: `${row.owner} (${ids.length} repos)`, repos: ids }
+  }, [flatRows, selectedIndex, repos])
 
   // Clamp selectedIndex when flatRows shrinks (deletion, collapsing)
   useEffect(() => {
@@ -244,7 +259,12 @@ export const App = ({
     setSyncActivity((current) => (current === activity ? undefined : current))
   }, [onSyncAll, onRefreshRepos, showMessage, repos.length])
 
-  const handleSearch = useCallback(async (query: string, searchModeParam: SearchMode, filter: SearchFilter | undefined) => {
+  const handleSearch = useCallback(async (
+    query: string,
+    searchModeParam: SearchMode,
+    filter: SearchFilter | undefined,
+    scopeRepos: ReadonlyArray<string> | undefined
+  ) => {
     if (!query.trim()) {
       setMode("list")
       return
@@ -255,9 +275,10 @@ export const App = ({
     setSearchQuery(query)
     setSearchMode(searchModeParam)
     setSearchFilter(filter)
+    setSearchAll(scopeRepos === undefined)
 
     try {
-      const results = await onSearch(query, searchModeParam, filter)
+      const results = await onSearch(query, searchModeParam, filter, scopeRepos)
       setSearchResults(results)
       setSearchResultIndex(0)
       setMessage(undefined)
@@ -267,10 +288,11 @@ export const App = ({
       setMode("list")
       setInputValue("")
       setSearchFilter(undefined)
+      setSearchAll(false)
     }
   }, [onSearch, showMessage])
 
-  // Back to the search box with the last query, mode and filter, to refine the search
+  // Back to the search box with the last query, mode, filter and scope, to refine the search
   const handleCloseResults = useCallback(() => {
     setInputValue(searchQuery)
     setMode("search")
@@ -379,6 +401,7 @@ export const App = ({
         setMode("list")
         setInputValue("")
         setSearchFilter(undefined)
+        setSearchAll(false)
       } else if (mode === "results") {
         handleCloseResults()
       } else if (mode === "confirmDelete") {
@@ -479,6 +502,7 @@ export const App = ({
           query={searchQuery}
           mode={searchMode}
           filter={searchFilter}
+          scope={searchAll ? undefined : highlightedScope}
           results={searchResults}
           selectedIndex={searchResultIndex}
           onSelectIndex={setSearchResultIndex}
@@ -562,11 +586,14 @@ export const App = ({
             setMode("list")
             setInputValue("")
             setSearchFilter(undefined)
+            setSearchAll(false)
           }}
           onInput={setInputValue}
           value={inputValue}
           initialMode={searchMode}
           initialFilter={searchFilter}
+          scope={highlightedScope}
+          initialSearchAll={searchAll}
         />
       )}
 
