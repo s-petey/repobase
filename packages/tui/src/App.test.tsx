@@ -17,7 +17,8 @@ const repo = (owner: string, name: string): RepoConfig => ({
   addedAt: DateTime.makeUnsafe(0),
   cloudEnabled: false,
   lastPushedAt: Option.none(),
-  lastPushedCommit: Option.none()
+  lastPushedCommit: Option.none(),
+  indexFormat: 2
 })
 
 const renderApp = (

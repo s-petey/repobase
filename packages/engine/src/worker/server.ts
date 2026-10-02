@@ -56,10 +56,10 @@ export const HandlersLayer = StepRpcs.toLayer(
           Effect.mapError((e) => new ResolveHeadFailedError({ repoId, message: e.message }))
         ),
 
-      PlanFullIndex: ({ jobId, repoId, localPath }) =>
+      PlanFullIndex: ({ jobId, repoId, localPath, force }) =>
         Effect.gen(function* () {
           const plan = yield* indexer
-            .planFullIndex(repoId, localPath)
+            .planFullIndex(repoId, localPath, { force: force ?? false })
             .pipe(Effect.mapError(planIndexFailed({ repoId })))
           yield* jobs
             .writePlan(jobId, plan)
@@ -176,7 +176,17 @@ export const HandlersLayer = StepRpcs.toLayer(
           case "hybrid":
             return indexer.searchHybrid(query, options)
         }
-      }
+      },
+
+      DropLegacyIndex: ({ repoId }) =>
+        indexer.dropLegacyIndex().pipe(
+          Effect.map((dropped) => ({ dropped })),
+          Effect.catch((e) =>
+            Effect.logWarning(`${repoId}: dropping the old index table failed, will retry: ${e.message}`).pipe(
+              Effect.as({ dropped: false })
+            )
+          )
+        )
     })
   })
 )

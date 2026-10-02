@@ -177,6 +177,7 @@ export const jobCounts = (
 export const kindLabel: Record<Job["kind"], string> = {
   addRepo: "add",
   syncRepo: "sync",
+  reindexRepo: "re-index",
 };
 
 const RESUMABLE_FAILED_STEPS: ReadonlySet<string> = new Set([

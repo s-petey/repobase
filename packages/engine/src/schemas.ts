@@ -27,7 +27,8 @@ export const RepoConfig = Schema.Struct({
   // Cloud sync fields - wip
   cloudEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultType(Effect.succeed(false))),
   lastPushedAt: Schema.OptionFromNullOr(Schema.DateTimeUtcFromMillis),
-  lastPushedCommit: Schema.OptionFromNullOr(Schema.String)
+  lastPushedCommit: Schema.OptionFromNullOr(Schema.String),
+  indexFormat: Schema.Number.pipe(Schema.withDecodingDefaultType(Effect.succeed(1)))
 })
 
 // Full store configuration

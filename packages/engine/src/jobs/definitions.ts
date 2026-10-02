@@ -6,6 +6,7 @@ import type { RepoConfig } from "../schemas.js"
 import { IndexBatchResult } from "../schemas.js"
 import { INDEX_BATCH_SIZE } from "../services/Indexer.js"
 import { trackingMode } from "../utils.js"
+import { CURRENT_INDEX_FORMAT, needsReindex } from "../indexFormat.js"
 import { RepoStore } from "../services/RepoStore.js"
 import { IndexingClient, WorkerClient } from "../worker/client.js"
 import { PlanSummary } from "../worker/rpcs.js"
@@ -18,7 +19,7 @@ import {
   UpdateStoreFailedError,
   workerCrashed
 } from "./errors.js"
-import type { AddRepoJob, Job, SyncRepoJob } from "./Job.js"
+import type { AddRepoJob, Job, ReindexRepoJob, SyncRepoJob } from "./Job.js"
 import { JobProgress } from "./JobProgress.js"
 import {
   fanOut,
@@ -182,7 +183,8 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
           addedAt: now,
           cloudEnabled: false,
           lastPushedAt: Option.none(),
-          lastPushedCommit: Option.none()
+          lastPushedCommit: Option.none(),
+          indexFormat: CURRENT_INDEX_FORMAT
         }
         yield* store.addRepo(repo).pipe(Effect.mapError(saveFailed))
         return null
@@ -218,7 +220,8 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
         return {
           localPath: repoPath,
           branch: mode._tag === "tracking" ? mode.branch : null,
-          previousCommit: Option.getOrNull(lastSyncedCommit)
+          previousCommit: Option.getOrNull(lastSyncedCommit),
+          outdated: needsReindex(repo.value)
         }
       }),
     // Pinned repos don't sync
@@ -252,7 +255,9 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
           localPath: target.localPath,
           branch: target.branch
         })
-        return { commit, upToDate: !ctx.job.payload.force && commit === target.previousCommit }
+        // An index in an old format needs the full re-index even with nothing new on the remote
+        const upToDate = !ctx.job.payload.force && !target.outdated && commit === target.previousCommit
+        return { commit, upToDate }
       }),
     // Nothing new on the remote: done, no re-index
     finishJob: (head) => (head.upToDate ? Option.some("completed" as const) : Option.none())
@@ -281,12 +286,13 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       Effect.gen(function* () {
         const target = yield* ctx.output(loadRepo)
         const head = yield* ctx.output(resolveRemoteHead)
-        const force = ctx.job.payload.force ?? false
+        // A forced sync, or one of a repo in an old index format, re-indexes every
+        // file rather than just the diff
+        const force = (ctx.job.payload.force ?? false) || target.outdated
         return yield* client.PlanChanges({
           jobId: ctx.job.id,
           repoId: ctx.job.repoId,
           localPath: target.localPath,
-          // A forced sync scans every file rather than just the diff
           from: force ? null : target.previousCommit,
           to: head.commit,
           force
@@ -306,10 +312,63 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
         const { commit } = yield* ctx.output(resolveRemoteHead)
         const now = yield* DateTime.now
         yield* store
-          .updateRepo(ctx.job.repoId, { lastSyncedCommit: Option.some(commit), lastSyncedAt: Option.some(now) })
+          .updateRepo(ctx.job.repoId, {
+            lastSyncedCommit: Option.some(commit),
+            lastSyncedAt: Option.some(now),
+            // Already current, or just fully re-indexed because it wasn't
+            indexFormat: CURRENT_INDEX_FORMAT
+          })
           .pipe(Effect.mapError((e) => new UpdateStoreFailedError({ repoId: ctx.job.repoId, message: e.message })))
         return null
       })
+  })
+
+  // --- reindexRepo ---------------------------------------------------------
+
+  const loadReindexTarget = step<ReindexRepoJob, { readonly localPath: string }, RepoStore>({
+    name: "loadRepo",
+    runsOn: "main",
+    output: Schema.Struct({ localPath: Schema.String }),
+    run: (ctx) =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        const { repoId } = ctx.job
+        const repo = yield* store
+          .getRepo(repoId)
+          .pipe(Effect.mapError((e) => new ConfigReadFailedError({ repoId, message: e.message })))
+        if (Option.isNone(repo)) {
+          return yield* new RepoMissingError({ repoId, message: `${repoId} is not in your repositories` })
+        }
+        return { localPath: repo.value.localPath }
+      })
+  })
+
+  const reindexPath = (ctx: StepContext<ReindexRepoJob>) =>
+    ctx.output(loadReindexTarget).pipe(Effect.map((t) => t.localPath))
+
+  const planReindex = workerStep<ReindexRepoJob, PlanSummary>({
+    name: "planFullIndex",
+    output: PlanSummary,
+    run: (ctx, client) =>
+      reindexPath(ctx).pipe(
+        // Every file: what's indexed was written in an older format
+        Effect.flatMap((repoPath) =>
+          client.PlanFullIndex({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath: repoPath, force: true })
+        )
+      )
+  })
+
+  const reindexIndexing = indexingSteps(planReindex, reindexPath, indexingSlots)
+
+  const stampIndexFormat = step<ReindexRepoJob, null, RepoStore>({
+    name: "stampIndexFormat",
+    runsOn: "main",
+    output: Schema.Null,
+    run: (ctx) =>
+      RepoStore.use((store) => store.updateRepo(ctx.job.repoId, { indexFormat: CURRENT_INDEX_FORMAT })).pipe(
+        Effect.mapError((e) => new UpdateStoreFailedError({ repoId: ctx.job.repoId, message: e.message })),
+        Effect.as(null)
+      )
   })
 
   return {
@@ -317,16 +376,51 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       steps: [checkAbsent, clone, resolveHead, saveConfig, planFullIndex, ...addIndexing]
     },
     syncRepo: {
-      steps: [loadRepo, fetch, resolveRemoteHead, resetHard, planChanges, ...syncIndexing, updateStore]
+      steps: [loadRepo, fetch, resolveRemoteHead, resetHard, planChanges, ...syncIndexing, updateStore, ...legacyCleanupSteps<SyncRepoJob>()]
+    },
+    reindexRepo: {
+      steps: [loadReindexTarget, planReindex, ...reindexIndexing, stampIndexFormat, ...legacyCleanupSteps<ReindexRepoJob>()]
     }
   }
+}
+
+/**
+ * After a repo is stamped with the current index format: drop the legacy index
+ * table (see LEGACY_FILES_TABLE in Indexer.ts) once no repo needs it any more
+ */
+const legacyCleanupSteps = <J extends Job>() => {
+  const checkLegacyIndex = step<J, { readonly unused: boolean }, RepoStore>({
+    name: "checkLegacyIndex",
+    runsOn: "main",
+    output: Schema.Struct({ unused: Schema.Boolean }),
+    run: (ctx) =>
+      RepoStore.use((store) => store.load()).pipe(
+        Effect.map((data) => ({ unused: !data.repos.some(needsReindex) })),
+        Effect.mapError((e) => new ConfigReadFailedError({ repoId: ctx.job.repoId, message: e.message }))
+      )
+  })
+
+  const dropLegacyIndex = workerStep<J, null>({
+    name: "dropLegacyIndex",
+    output: Schema.Null,
+    run: (ctx, client) =>
+      Effect.gen(function* () {
+        const { unused } = yield* ctx.output(checkLegacyIndex)
+        // Alone, like finalizeIndex: other jobs may be writing to the index
+        if (unused) yield* ctx.indexLock.exclusive(client.DropLegacyIndex({ repoId: ctx.job.repoId }))
+        return null
+      })
+  })
+
+  return [checkLegacyIndex, dropLegacyIndex] as const
 }
 
 // What loadRepo reads from config.json for a sync; branch is null when pinned
 const SyncTarget = Schema.Struct({
   localPath: Schema.String,
   branch: Schema.NullOr(Schema.String),
-  previousCommit: Schema.NullOr(Schema.String)
+  previousCommit: Schema.NullOr(Schema.String),
+  outdated: Schema.Boolean.pipe(Schema.withDecodingDefaultType(Effect.succeed(false)))
 })
 type SyncTarget = typeof SyncTarget.Type
 

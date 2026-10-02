@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
+import * as lancedb from "@lancedb/lancedb"
 import { Effect, Layer, SubscriptionRef } from "effect"
 import * as crypto from "node:crypto"
 import * as nodeFs from "node:fs"
@@ -452,6 +453,72 @@ describe("Indexer", () => {
         }).pipe(Effect.provide(indexerLayer()))
       )
     }
+  })
+
+  // FALLBACK: see LEGACY_FILES_TABLE in Indexer.ts
+  describe("legacy table fallback", () => {
+    // An index from format 1: only the old `files` table, one row per file
+    const legacySetup = Effect.gen(function* () {
+      const reposDir = tempDir("repos")
+      const indexDir = tempDir("index")
+      writeFile(path.join(reposDir, "old-repo"), "src/a.ts", "export const needle = 1")
+      writeFile(path.join(reposDir, "old-repo"), "README.md", "no match here")
+      yield* Effect.promise(async () => {
+        const db = await lancedb.connect(indexDir)
+        const row = (p: string) => ({
+          id: `old-repo:${p}`,
+          repo: "old-repo",
+          path: p,
+          filename: p.split("/").pop()!,
+          contents: "",
+          mtime_ms: 0,
+          size_bytes: 1,
+          hash: "",
+          vector: Array(EMBEDDING_DIMENSION).fill(0)
+        })
+        await db.createTable("files", [row("src/a.ts"), row("README.md")])
+      })
+      return yield* makeWith({ indexDir, reposDir, embed: fakeEmbed })
+    })
+    const legacyRepos = ["old-repo"]
+
+    it.effect("lists, globs, reads and greps the legacy table's files for repos passed as legacy", () =>
+      Effect.gen(function* () {
+        const indexer = yield* legacySetup
+
+        expect((yield* indexer.globFiles("**", { repo: "old-repo", legacyRepos })).map((f) => f.path).sort()).toEqual([
+          "README.md",
+          "src/a.ts"
+        ])
+        expect((yield* indexer.listFiles({ repo: "old-repo", path: "src", legacyRepos })).map((f) => f.path)).toEqual([
+          "src/a.ts"
+        ])
+        expect((yield* indexer.listFiles({ legacyRepos })).map((f) => f.repo)).toEqual(["old-repo"])
+        expect((yield* indexer.readFile("old-repo", "src/a.ts", { legacyRepos })).content).toContain("needle")
+        expect((yield* indexer.grepPattern("needle", { legacyRepos })).map((r) => r.path)).toEqual(["src/a.ts"])
+      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+    )
+
+    it.effect("ignores the legacy table for repos not passed as legacy", () =>
+      Effect.gen(function* () {
+        const indexer = yield* legacySetup
+
+        expect(yield* indexer.globFiles("**", { repo: "old-repo" })).toEqual([])
+        expect(yield* indexer.grepPattern("needle", {})).toEqual([])
+        const error = yield* Effect.flip(indexer.readFile("old-repo", "src/a.ts"))
+        expect(error._tag).toBe("FileNotFoundError")
+      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+    )
+
+    it.effect("dropLegacyIndex removes the table once, then reports it gone", () =>
+      Effect.gen(function* () {
+        const indexer = yield* legacySetup
+
+        expect(yield* indexer.dropLegacyIndex()).toBe(true)
+        expect(yield* indexer.dropLegacyIndex()).toBe(false)
+        expect(yield* indexer.globFiles("**", { repo: "old-repo", legacyRepos })).toEqual([])
+      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+    )
   })
 
   describe("grepPattern", () => {

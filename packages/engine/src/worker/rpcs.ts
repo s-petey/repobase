@@ -47,10 +47,16 @@ export type PlanSummary = typeof PlanSummary.Type
 
 /**
  * Scan the repo against the index and write the job's plan.json. Only counts
- * come back, so the file list never crosses to the main thread.
+ * come back, so the file list never crosses to the main thread. `force` plans
+ * every file, even ones whose hash is already indexed.
  */
 export class PlanFullIndex extends Rpc.make("PlanFullIndex", {
-  payload: { jobId: Schema.String, repoId: Schema.String, localPath: Schema.String },
+  payload: {
+    jobId: Schema.String,
+    repoId: Schema.String,
+    localPath: Schema.String,
+    force: Schema.optional(Schema.Boolean)
+  },
   success: PlanSummary,
   error: PlanIndexFailedError
 }) {}
@@ -158,6 +164,15 @@ export class Search extends Rpc.make("Search", {
 }) {}
 
 /**
+ * Drop the index table from before CURRENT_INDEX_FORMAT 2, once no repo needs
+ * it. Best effort: a failure is logged and the next re-index tries again.
+ */
+export class DropLegacyIndex extends Rpc.make("DropLegacyIndex", {
+  payload: { repoId: Schema.String },
+  success: Schema.Struct({ dropped: Schema.Boolean })
+}) {}
+
+/**
  * Every operation a worker thread can run for the main thread
  */
 export class StepRpcs extends RpcGroup.make(
@@ -171,5 +186,6 @@ export class StepRpcs extends RpcGroup.make(
   RemoteHead,
   ResetHard,
   PlanChanges,
-  Search
+  Search,
+  DropLegacyIndex
 ) {}

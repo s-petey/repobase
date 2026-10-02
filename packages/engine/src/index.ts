@@ -40,6 +40,7 @@ export {
 
 // Utils
 export { deriveRepoId, extractRepoParts, repoNames, trackingMode, pinnedMode } from "./utils.js"
+export { CURRENT_INDEX_FORMAT, needsReindex } from "./indexFormat.js"
 
 // Errors
 export {
@@ -142,6 +143,7 @@ export {
   Job,
   AddRepoJob,
   SyncRepoJob,
+  ReindexRepoJob,
   AddRepoPayload,
   SyncRepoPayload,
   JobStatus,

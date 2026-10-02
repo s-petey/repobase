@@ -2,7 +2,7 @@ import { DateTime, Effect, Random, Schema } from "effect"
 import { RepoMode } from "../schemas.js"
 import { StepError } from "./errors.js"
 
-// A job is one addRepo or syncRepo run, split into steps. The job and every
+// A job is one addRepo, syncRepo or reindexRepo run, split into steps. The job and every
 // step's state are persisted after each change, so a failed or interrupted job
 // can be retried from the step where it stopped.
 
@@ -81,7 +81,18 @@ export const SyncRepoJob = Schema.Struct({
 })
 export type SyncRepoJob = typeof SyncRepoJob.Type
 
-export const Job = Schema.Union([AddRepoJob, SyncRepoJob])
+/**
+ * Index every file of a repo again in the current index format, without
+ * fetching (see CURRENT_INDEX_FORMAT). Runs for pinned repos too.
+ */
+export const ReindexRepoJob = Schema.Struct({
+  ...jobFields,
+  kind: Schema.Literal("reindexRepo"),
+  payload: Schema.Struct({})
+})
+export type ReindexRepoJob = typeof ReindexRepoJob.Type
+
+export const Job = Schema.Union([AddRepoJob, SyncRepoJob, ReindexRepoJob])
 export type Job = typeof Job.Type
 export type JobKind = Job["kind"]
 

@@ -7,7 +7,7 @@ import {
   type StepError,
   UnexpectedStepError
 } from "../src/jobs/errors.js"
-import type { AddRepoJob, Job, Step, SyncRepoJob } from "../src/jobs/Job.js"
+import type { AddRepoJob, Job, ReindexRepoJob, Step, SyncRepoJob } from "../src/jobs/Job.js"
 import {
   fanOut,
   type JobDefinitions,
@@ -97,9 +97,17 @@ const makeScript = () => {
     run: () => act("fetch", null)
   })
 
+  const reindex = step<ReindexRepoJob, null, never>({
+    name: "reindex",
+    runsOn: "worker",
+    output: Schema.Null,
+    run: () => act("reindex", null)
+  })
+
   const definitions: JobDefinitions<never> = {
     addRepo: { steps: [checkAbsent, clone, saveConfig, indexBatch, finalize] },
-    syncRepo: { steps: [loadRepo, fetch] }
+    syncRepo: { steps: [loadRepo, fetch] },
+    reindexRepo: { steps: [reindex] }
   }
 
   return {

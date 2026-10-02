@@ -68,6 +68,7 @@ const createTestRepo = (id: string, overrides: Partial<RepoConfig> = {}): RepoCo
   cloudEnabled: false,
   lastPushedAt: Option.none(),
   lastPushedCommit: Option.none(),
+  indexFormat: 2,
   ...overrides
 })
 
@@ -93,6 +94,8 @@ describe("RepoStore", () => {
         expect(data.version).toBe(1)
         expect(data.repos).toHaveLength(1)
         expect(data.repos[0].id).toBe("test-repo")
+        // Written before index formats existed, so indexed with the first one
+        expect(data.repos[0].indexFormat).toBe(1)
       }).pipe(
         Effect.provide(
           createTestLayer({

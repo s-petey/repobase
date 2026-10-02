@@ -18,6 +18,7 @@ import type {
   SyncResult
 } from "../schemas.js"
 import { deriveRepoId, trackingMode } from "../utils.js"
+import { CURRENT_INDEX_FORMAT } from "../indexFormat.js"
 import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
 import { Indexer, type SearchOptions, initialIndexingProgress } from "./Indexer.js"
@@ -168,7 +169,8 @@ export const make = Effect.gen(function* () {
         // Cloud sync fields - disabled by default
         cloudEnabled: false,
         lastPushedAt: Option.none(),
-        lastPushedCommit: Option.none()
+        lastPushedCommit: Option.none(),
+        indexFormat: CURRENT_INDEX_FORMAT
       }
 
       // Save config

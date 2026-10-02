@@ -102,7 +102,8 @@ const onlyRpcs = (pool: string, allowed: (rpc: string) => boolean) =>
 
 export const testEnv = (options: { readonly indexingConcurrency?: number } = {}) => {
   const reposDir = tempDir("repos")
-  const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir: tempDir("index"), embed: fakeEmbed }))
+  const indexDir = tempDir("index")
+  const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir, embed: fakeEmbed }))
   const Workers = Layer.mergeAll(
     Layer.effect(WorkerClient)(onlyRpcs("job", (rpc) => rpc !== "IndexBatch")),
     Layer.effect(IndexingClient)(onlyRpcs("indexing", (rpc) => rpc === "IndexBatch"))
@@ -115,7 +116,7 @@ export const testEnv = (options: { readonly indexingConcurrency?: number } = {})
     Layer.provideMerge(JobStoreLayerWith({ dir: tempDir("jobs") })),
     Layer.provide(BunServices.layer)
   )
-  return { reposDir, layer }
+  return { reposDir, indexDir, layer }
 }
 
 const runToEnd = (input: Parameters<JobRunner["Service"]["start"]>[0]) =>
@@ -127,6 +128,8 @@ export const addRepo = (url: string, repoId = "acme-widgets") =>
 
 export const syncRepo = (repoId = "acme-widgets", options: { readonly force?: boolean } = {}) =>
   runToEnd({ kind: "syncRepo", repoId, payload: options })
+
+export const reindexRepo = (repoId = "acme-widgets") => runToEnd({ kind: "reindexRepo", repoId, payload: {} })
 
 export const stepOf = (job: Job, key: string) => job.steps.find((s) => s.key === key)!
 

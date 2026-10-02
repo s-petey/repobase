@@ -47,7 +47,9 @@ describe("syncRepo job", () => {
         deleteRemoved: "skipped",
         indexBatch: "skipped",
         finalizeIndex: "skipped",
-        updateStore: "skipped"
+        updateStore: "skipped",
+        checkLegacyIndex: "skipped",
+        dropLegacyIndex: "skipped"
       })
       expect(stepOf(job, "resolveRemoteHead").output).toEqual({ commit: source.head(), upToDate: true })
     }).pipe(Effect.provide(env.layer))
