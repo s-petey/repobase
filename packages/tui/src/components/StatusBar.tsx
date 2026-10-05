@@ -3,8 +3,9 @@ import { colors } from "../theme/index.js"
 import { featureFlags } from "../config.js"
 
 interface StatusBarProps {
-  mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
+  mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs"
   message?: string
+  outdated?: number
   mcpServerRunning?: boolean
   cloudConfigured?: boolean
   cloudPendingCount?: number
@@ -13,9 +14,9 @@ interface StatusBarProps {
   activity?: string
 }
 
-export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped, jobCounts, activity }: StatusBarProps) => {
+export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped, jobCounts, activity }: StatusBarProps) => {
   const getHelpText = () => {
-    if (mode === "add" || mode === "search" || mode === "confirmDelete" || mode === "jobs") {
+    if (mode === "add" || mode === "search" || mode === "confirmDelete" || mode === "confirmReindex" || mode === "jobs") {
       return "" // Help text shown in modal
     }
     if (mode === "syncing" || mode === "adding") {
@@ -88,6 +89,12 @@ export const StatusBar = ({ mode, message, mcpServerRunning, cloudConfigured, cl
             attributes: message ? TextAttributes.BOLD : undefined,
           }}
         />
+        {outdated > 0 && (
+          <text
+            content={`${outdated === 1 ? "1 repo isn't" : `${outdated} repos aren't`} searchable until re-indexed · [r] Re-index  [R] All`}
+            style={{ fg: colors.status.warning.default }}
+          />
+        )}
         {activity && <text content={activity} style={{ fg: colors.status.info.default }} />}
         {jobParts.length > 0 && (
           <box style={{ flexDirection: "row" }}>

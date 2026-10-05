@@ -18,7 +18,7 @@ import type {
   SyncResult
 } from "../schemas.js"
 import { deriveRepoId, trackingMode } from "../utils.js"
-import { CURRENT_INDEX_FORMAT } from "../indexFormat.js"
+import { CURRENT_INDEX_FORMAT, needsReindex } from "../indexFormat.js"
 import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
 import { Indexer, type SearchOptions, initialIndexingProgress } from "./Indexer.js"
@@ -76,6 +76,8 @@ export interface RepobaseEngineService {
   ) => Effect.Effect<Option.Option<RepoConfig>, EngineError>
   readonly syncRepo: (id: string) => Effect.Effect<SyncResult, EngineError>
   readonly syncAll: () => Effect.Effect<Array<SyncResult>, EngineError>
+  // Index every file again in the current index format, without fetching; runs for pinned repos too
+  readonly reindexRepo: (id: string) => Effect.Effect<IndexSummary, EngineError>
   readonly search: (
     query: string,
     mode: SearchMode,
@@ -289,10 +291,11 @@ export const make = Effect.gen(function* () {
       yield* Effect.log(`Fetching ${id}...`)
       yield* git.fetch(repo.localPath)
 
-      // Check if update needed
+      // Check if update needed; an index in an old format is re-indexed even with nothing new
       const remoteHead = yield* git.getRemoteHead(repo.localPath, repo.mode.branch)
       const previousCommit = repo.lastSyncedCommit
-      const needsUpdate = Option.match(previousCommit, {
+      const outdated = needsReindex(repo)
+      const needsUpdate = outdated || Option.match(previousCommit, {
         onNone: () => true,
         onSome: (prev) => prev !== remoteHead
       })
@@ -318,7 +321,10 @@ export const make = Effect.gen(function* () {
 
       // Update index
       let indexSummary: IndexSummary
-      if (changes.length > 0) {
+      if (outdated) {
+        yield* Effect.log(`Re-indexing every file of ${id} in the current index format...`)
+        indexSummary = yield* indexer.indexRepo(id, repo.localPath, { force: true })
+      } else if (changes.length > 0) {
         // Incremental indexing
         yield* Effect.log(`Incrementally indexing ${changes.length} changed files...`)
         indexSummary = yield* indexer.indexChanges(id, repo.localPath, changes)
@@ -335,8 +341,10 @@ export const make = Effect.gen(function* () {
       // Update store
       yield* store.updateRepo(id, {
         lastSyncedCommit: Option.some(remoteHead),
-        lastSyncedAt: Option.some(yield* DateTime.now)
+        lastSyncedAt: Option.some(yield* DateTime.now),
+        indexFormat: CURRENT_INDEX_FORMAT
       })
+      if (outdated) yield* dropLegacyIndexIfUnused
 
       yield* Effect.log(
         `${id}: updated to ${remoteHead.slice(0, 8)}`
@@ -349,6 +357,26 @@ export const make = Effect.gen(function* () {
         currentCommit: remoteHead,
         indexSummary
       }
+    })
+
+  // The legacy index table goes once no repo is in an old format (see LEGACY_FILES_TABLE).
+  // Best effort, like the job step: a failure is logged and the next re-index tries again
+  const dropLegacyIndexIfUnused = Effect.gen(function* () {
+    const { repos } = yield* store.load()
+    if (repos.some(needsReindex)) return
+    if (yield* indexer.dropLegacyIndex()) yield* Effect.log("Dropped the old index table")
+  }).pipe(Effect.catch((e) => Effect.logWarning(`Dropping the old index table failed, will retry: ${e.message}`)))
+
+  const reindexRepo: RepobaseEngineService["reindexRepo"] = (id) =>
+    Effect.gen(function* () {
+      const repo = yield* store.getRepo(id).pipe(
+        Effect.flatMap(Option.match({ onNone: () => Effect.fail(new RepoNotFoundError({ id })), onSome: Effect.succeed }))
+      )
+      yield* Effect.log(`Re-indexing every file of ${id} in the current index format...`)
+      const summary = yield* indexer.indexRepo(id, repo.localPath, { force: true })
+      yield* store.updateRepo(id, { indexFormat: CURRENT_INDEX_FORMAT })
+      yield* dropLegacyIndexIfUnused
+      return summary
     })
 
   const syncAll: RepobaseEngineService["syncAll"] = () =>
@@ -380,6 +408,7 @@ export const make = Effect.gen(function* () {
     getRepo,
     syncRepo,
     syncAll,
+    reindexRepo,
     search
   })
 })

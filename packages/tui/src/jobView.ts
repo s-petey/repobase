@@ -185,12 +185,17 @@ const RESUMABLE_FAILED_STEPS: ReadonlySet<string> = new Set([
   "indexBatch",
   "finalizeIndex",
   "updateStore",
+  "stampIndexFormat",
 ]);
 
-export const resumableSync = (jobs: ReadonlyArray<Job>, repoId: string): Job | undefined => {
+export const resumableJob = (
+  jobs: ReadonlyArray<Job>,
+  repoId: string,
+  kind: Job["kind"] = "syncRepo",
+): Job | undefined => {
   let latest: Job | undefined;
   for (const job of jobs) {
-    if (job.kind !== "syncRepo" || job.repoId !== repoId) continue;
+    if (job.kind !== kind || job.repoId !== repoId) continue;
     if (!latest || DateTime.toEpochMillis(job.createdAt) > DateTime.toEpochMillis(latest.createdAt)) {
       latest = job;
     }

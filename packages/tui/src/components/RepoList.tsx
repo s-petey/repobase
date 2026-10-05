@@ -1,5 +1,5 @@
 import { TextAttributes } from "@opentui/core"
-import type { RepoConfig } from "@repobase/engine"
+import { needsReindex, type RepoConfig } from "@repobase/engine"
 import { Option } from "effect"
 import { colors } from "../theme/index.js"
 
@@ -11,6 +11,7 @@ interface RepoListProps {
   flatRows: FlatRow[]
   totalRepos: number
   selectedIndex: number
+  reindexing?: ReadonlySet<string>
 }
 
 const formatMode = (repo: RepoConfig): string => {
@@ -20,7 +21,12 @@ const formatMode = (repo: RepoConfig): string => {
   return `pinned: ${repo.mode.ref}`
 }
 
-const formatStatus = (repo: RepoConfig): { text: string; color: string } => {
+const formatStatus = (repo: RepoConfig, reindexing: boolean): { text: string; color: string } => {
+  if (needsReindex(repo)) {
+    return reindexing
+      ? { text: "~ indexing", color: colors.status.info.default }
+      : { text: "! re-index", color: colors.status.warning.default }
+  }
   if (repo.mode._tag === "pinned") {
     return { text: "o pinned", color: colors.text.secondary }
   }
@@ -31,11 +37,11 @@ const formatStatus = (repo: RepoConfig): { text: string; color: string } => {
 
 const formatCloudStatus = (repo: RepoConfig): string => {
   if (!repo.cloudEnabled) return ""
-  
+
   // Check if cloud is in sync with local
   const localCommit = Option.getOrNull(repo.lastSyncedCommit)
   const cloudCommit = repo.lastPushedCommit ? Option.getOrNull(repo.lastPushedCommit) : null
-  
+
   if (localCommit && cloudCommit && localCommit === cloudCommit) {
     return "[C]"
   } else if (repo.cloudEnabled) {
@@ -48,7 +54,7 @@ const repoCountLabel = (count: number): string => {
   return `${count} repo${count !== 1 ? "s" : ""}`
 }
 
-export const RepoList = ({ flatRows, totalRepos, selectedIndex }: RepoListProps) => {
+export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new Set() }: RepoListProps) => {
   if (totalRepos === 0) {
     return (
       <box
@@ -120,7 +126,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex }: RepoListProps)
           }
 
           const repo = row.repo
-          const status = formatStatus(repo)
+          const status = formatStatus(repo, reindexing.has(repo.id))
           const mode = formatMode(repo)
           const cloudStatus = formatCloudStatus(repo)
           const indent = row.indented ? "  " : ""

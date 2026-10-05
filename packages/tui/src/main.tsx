@@ -36,7 +36,7 @@ import {
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
-import { resumableSync, resumePoint } from "./jobView.js"
+import { resumableJob, resumePoint } from "./jobView.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
 import { filterToGlob, type SearchFilter } from "./searchView.js"
 import { shutdown } from "./shutdown.js"
@@ -172,7 +172,7 @@ const program = Effect.gen(function* () {
 
   const runSync = (repoId: string) =>
     Effect.gen(function* () {
-      const unfinished = resumableSync(yield* runner.jobs, repoId)
+      const unfinished = resumableJob(yield* runner.jobs, repoId)
       const job = unfinished
         ? yield* runner.retry(unfinished.id)
         : yield* runner.start({ kind: "syncRepo", repoId, payload: { force: forceSync } })
@@ -181,6 +181,15 @@ const program = Effect.gen(function* () {
         resumedFrom: unfinished ? (resumePoint(unfinished) ?? "where it stopped") : undefined
       }
     })
+
+  // Re-index in the background, picking up an unfinished re-index where it
+  // stopped; false when the repo already has a job running
+  const startReindex = (repoId: string) =>
+    Effect.gen(function* () {
+      const unfinished = resumableJob(yield* runner.jobs, repoId, "reindexRepo")
+      yield* unfinished ? runner.retry(unfinished.id) : runner.start({ kind: "reindexRepo", repoId, payload: {} })
+      return true
+    }).pipe(Effect.catchTag("JobAlreadyRunningError", () => Effect.succeed(false)))
 
   // Render the app
   createRoot(renderer).render(
@@ -262,6 +271,11 @@ const program = Effect.gen(function* () {
         )
       }
       onRefreshRepos={() => runPromise(engine.listRepos())}
+      onReindexRepos={(repoIds) =>
+        runPromise(
+          Effect.forEach(repoIds, startReindex).pipe(Effect.map((started) => started.filter(Boolean).length))
+        )
+      }
       onSearch={(text: string, mode: SearchMode, filter: SearchFilter | undefined, repos) =>
         runPromise(
           query

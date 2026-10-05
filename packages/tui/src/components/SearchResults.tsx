@@ -11,6 +11,8 @@ interface SearchResultsProps {
   filter?: SearchFilter
   // Undefined when the search covered every repository
   scope?: SearchScope
+  // E.g. that some repos in the scope can't be searched until they're re-indexed
+  warning?: string
   results: SearchResult[]
   selectedIndex: number
   onSelectIndex: (index: number) => void
@@ -46,6 +48,7 @@ export const SearchResults = ({
   mode,
   filter,
   scope,
+  warning,
   results,
   selectedIndex,
   onSelectIndex,
@@ -92,7 +95,7 @@ export const SearchResults = ({
         style={{
           flexDirection: "row",
           justifyContent: "space-between",
-          marginBottom: 1,
+          marginBottom: warning ? 0 : 1,
         }}
       >
         <text
@@ -109,6 +112,9 @@ export const SearchResults = ({
           }}
         />
       </box>
+      {warning && (
+        <text content={`⚠ ${warning}`} style={{ fg: colors.status.warning.default, marginBottom: 1 }} />
+      )}
 
       {results.length === 0 ? (
         <box

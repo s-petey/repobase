@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
 import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, Job } from "@repobase/engine"
-import { initialProgress, repoNames } from "@repobase/engine"
+import { initialProgress, needsReindex, repoNames } from "@repobase/engine"
 import { Array as Arr, DateTime, Order } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, TasksView } from "./components/index.js"
@@ -11,7 +11,7 @@ import { featureFlags } from "./config.js"
 import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
 import type { SearchFilter, SearchScope } from "./searchView.js"
 
-type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "jobs"
+type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs"
 
 type ExitStage = "idle" | "confirming" | "quitting"
 
@@ -33,6 +33,7 @@ interface AppProps {
   onSyncRepo: (id: string) => Promise<{ updated: boolean; resumedFrom?: string }>
   onSyncAll: () => Promise<Array<{ id: string; updated: boolean; resumed?: boolean }>>
   onRefreshRepos: () => Promise<RepoConfig[]>
+  onReindexRepos: (repoIds: ReadonlyArray<string>) => Promise<number>
   onSearch: (
     query: string,
     mode: SearchMode,
@@ -85,6 +86,7 @@ export const App = ({
   onSyncRepo,
   onSyncAll,
   onRefreshRepos,
+  onReindexRepos,
   onSearch,
   onJobsChange,
   onRetryJob,
@@ -95,33 +97,26 @@ export const App = ({
 }: AppProps) => {
   const [repos, setRepos] = useState<RepoConfig[]>(initialRepos)
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [mode, setMode] = useState<AppMode>("list")
+  const [mode, setMode] = useState<AppMode>(() => (initialRepos.some(needsReindex) ? "confirmReindex" : "list"))
   const [message, setMessage] = useState<string | undefined>()
   const [inputValue, setInputValue] = useState("")
-
-  // Progress state for adding repos
   const [addProgress, setAddProgress] = useState<AddRepoProgress>(initialProgress)
-
-  // Search state
   const [searchQuery, setSearchQuery] = useState("")
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid")
   const [searchFilter, setSearchFilter] = useState<SearchFilter | undefined>()
   const [searchAll, setSearchAll] = useState(false)
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchResultIndex, setSearchResultIndex] = useState(0)
-
-  // Delete confirmation state
   const [repoToDelete, setRepoToDelete] = useState<RepoConfig | null>(null)
-
-  // Owner groups the user has collapsed
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
-
   const [jobs, setJobs] = useState<ReadonlyArray<Job>>([])
   const completedJobIds = useRef<ReadonlySet<string> | undefined>(undefined)
   const [syncActivity, setSyncActivity] = useState<SyncActivity | undefined>()
-
   const [exitStage, setExitStage] = useState<ExitStage>("idle")
+
   const exitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+
   useEffect(() => () => clearTimeout(exitTimer.current), [])
 
   useEffect(() => onJobsChange(setJobs), [onJobsChange])
@@ -137,7 +132,6 @@ export const App = ({
 
   const flatRows = useMemo(() => buildFlatRows(repos, collapsedGroups), [repos, collapsedGroups])
 
-  // Search covers the highlighted repo, or every repo in a highlighted group
   const highlightedScope = useMemo((): SearchScope | undefined => {
     const row = flatRows[selectedIndex]
     if (!row) return undefined
@@ -145,6 +139,12 @@ export const App = ({
     const ids = repos.filter((r) => repoNames(r).owner === row.owner).map((r) => r.id)
     return { label: `${row.owner} (${ids.length} repos)`, repos: ids }
   }, [flatRows, selectedIndex, repos])
+
+  const outdated = useMemo(() => repos.filter(needsReindex).map((r) => r.id), [repos])
+  const reindexing = useMemo(
+    () => new Set(jobs.filter((j) => j.status === "running" && outdated.includes(j.repoId)).map((j) => j.repoId)),
+    [jobs, outdated]
+  )
 
   // Clamp selectedIndex when flatRows shrinks (deletion, collapsing)
   useEffect(() => {
@@ -292,6 +292,19 @@ export const App = ({
     }
   }, [onSearch, showMessage])
 
+  const handleReindex = useCallback(async (repoIds: ReadonlyArray<string>) => {
+    try {
+      const started = await onReindexRepos(repoIds)
+      showMessage(
+        started === 0
+          ? "Already re-indexing; see [t] Tasks"
+          : `Re-indexing ${started === 1 ? "1 repo" : `${started} repos`} in the background; see [t] Tasks`
+      )
+    } catch (error) {
+      showMessage(`Error: ${error instanceof Error ? error.message : "Failed to start re-indexing"}`)
+    }
+  }, [onReindexRepos, showMessage])
+
   // Back to the search box with the last query, mode, filter and scope, to refine the search
   const handleCloseResults = useCallback(() => {
     setInputValue(searchQuery)
@@ -406,6 +419,8 @@ export const App = ({
         handleCloseResults()
       } else if (mode === "confirmDelete") {
         handleCancelDelete()
+      } else if (mode === "confirmReindex") {
+        setMode("list")
       } else if (mode === "adding") {
         setMode("list")
         showMessage("Adding in the background; see [t] Tasks")
@@ -468,6 +483,21 @@ export const App = ({
           handleSyncRepo(row.repo)
         }
         break
+      case "r": {
+        // [R] every outdated repo, [r] those in the highlighted repo or group. Only
+        // outdated ones: a full re-index of a current repo is expensive and changes nothing
+        if (outdated.length === 0) {
+          showMessage("Every repo is up to date; nothing to re-index")
+          break
+        }
+        const scope = key.shift ? outdated : (highlightedScope?.repos ?? []).filter((id) => outdated.includes(id))
+        if (scope.length === 0) {
+          showMessage(`${highlightedScope?.label ?? "This repo"} doesn't need re-indexing · [R] re-indexes all ${outdated.length}`)
+          break
+        }
+        handleReindex(scope)
+        break
+      }
       case "/":
         setMode("search")
         break
@@ -488,6 +518,12 @@ export const App = ({
 
   // Render search results view
   if (mode === "results") {
+    const searched = searchAll ? repos.map((r) => r.id) : (highlightedScope?.repos ?? [])
+    const unsearchable = searched.filter((id) => outdated.includes(id))
+    const warning =
+      unsearchable.length === 0
+        ? undefined
+        : `${unsearchable.length === 1 ? `${unsearchable[0]} isn't` : `${unsearchable.length} of these repos aren't`} searchable until re-indexed; press [r] in the list`
     return (
       <box
         style={{
@@ -503,6 +539,7 @@ export const App = ({
           mode={searchMode}
           filter={searchFilter}
           scope={searchAll ? undefined : highlightedScope}
+          warning={warning}
           results={searchResults}
           selectedIndex={searchResultIndex}
           onSelectIndex={setSearchResultIndex}
@@ -547,10 +584,11 @@ export const App = ({
       }}
     >
       <Header version="1.0.3" />
-      <RepoList flatRows={flatRows} totalRepos={repos.length} selectedIndex={selectedIndex} />
+      <RepoList flatRows={flatRows} totalRepos={repos.length} selectedIndex={selectedIndex} reindexing={reindexing} />
       <StatusBar
         mode={mode}
         message={exitMessage ?? message}
+        outdated={outdated.length - reindexing.size}
         grouped={flatRows.some(r => r.kind === "header")}
         jobCounts={jobCounts(jobs)}
         activity={syncActivity ? syncActivityText(syncActivity, jobs, workerLimit) : undefined}
@@ -607,6 +645,20 @@ export const App = ({
           message={`Are you sure you want to delete "${repoToDelete.id}"? This action cannot be undone.`}
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
+        />
+      )}
+
+      {mode === "confirmReindex" && (
+        <ConfirmDialog
+          title="Search index update"
+          color={colors.status.warning.default}
+          message={`repobase now indexes whole files. ${outdated.length} of ${repos.length} repos need re-indexing before search can find anything in them. It runs in the background, so you can keep using repobase.`}
+          hints="[Enter] Re-index now  [Esc] Later"
+          onConfirm={() => {
+            setMode("list")
+            handleReindex(outdated)
+          }}
+          onCancel={() => setMode("list")}
         />
       )}
     </box>

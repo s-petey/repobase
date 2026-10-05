@@ -34,6 +34,7 @@ const renderApp = (
       onSyncRepo={async () => ({ updated: false })}
       onSyncAll={async () => []}
       onRefreshRepos={async () => repos}
+      onReindexRepos={async (ids) => ids.length}
       onSearch={async () => []}
       onJobsChange={() => () => {}}
       onRetryJob={async () => {}}
@@ -380,5 +381,107 @@ describe("App owner grouping", () => {
     setup = await renderApp([{ ...repo("local", "thing"), id: "local-thing", url: "file:///srv/thing" }])
     await interact(setup, () => {})
     expect(setup.captureCharFrame()).toContain("local-thing")
+  })
+})
+
+describe("App re-indexing repos in an old index format", () => {
+  const outdated = (owner: string, name: string): RepoConfig => ({ ...repo(owner, name), indexFormat: 1 })
+  // Rows: the Effect-TS header, effect, website, then sindresorhus/ky
+  const repos = [outdated("Effect-TS", "effect"), outdated("Effect-TS", "website"), repo("sindresorhus", "ky")]
+
+  const escape = (s: TestRendererSetup) =>
+    interact(s, async () => {
+      s.mockInput.pressEscape()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+
+  it("doesn't ask when every repo is current", async () => {
+    setup = await renderApp([repo("sindresorhus", "ky")])
+    await interact(setup, () => {})
+
+    expect(setup.captureCharFrame()).not.toContain("Search index update")
+    expect(setup.captureCharFrame()).not.toContain("searchable until re-indexed")
+  })
+
+  it("asks at launch, and re-indexes every outdated repo on Enter", async () => {
+    const onReindexRepos = vi.fn(async (ids: ReadonlyArray<string>) => ids.length)
+    setup = await renderApp(repos, () => {}, { onReindexRepos })
+    await interact(setup, () => {})
+    let frame = setup.captureCharFrame()
+    expect(frame).toContain("Search index update")
+    expect(frame).toContain("2 of 3 repos need re-indexing")
+    // The whole message fits, above the keys
+    expect(frame).toContain("keep using repobase")
+    expect(frame).toContain("[Enter] Re-index now  [Esc] Later")
+
+    await interact(setup, () => setup!.mockInput.pressEnter())
+
+    expect(onReindexRepos.mock.calls).toEqual([[["Effect-TS/effect", "Effect-TS/website"]]])
+    frame = setup.captureCharFrame()
+    expect(frame).not.toContain("Search index update")
+    expect(frame).toContain("Re-indexing 2 repos in the background")
+  })
+
+  it("after Later, marks them, warns, and re-indexes with [r] and [R]", async () => {
+    const onReindexRepos = vi.fn(async (ids: ReadonlyArray<string>) => ids.length)
+    setup = await renderApp(repos, () => {}, { onReindexRepos })
+    await interact(setup, () => {})
+    await escape(setup)
+
+    let frame = setup.captureCharFrame()
+    expect(frame).not.toContain("Search index update")
+    expect(frame).toContain("2 repos aren't searchable until re-indexed · [r] Re-index  [R] All")
+    expect(frame.match(/! re-index/g)).toHaveLength(2)
+    expect(onReindexRepos).not.toHaveBeenCalled()
+
+    // sindresorhus/ky is current: [r] there does nothing
+    for (let i = 0; i < 3; i++) await interact(setup, () => setup!.mockInput.pressKey("j"))
+    await interact(setup, () => setup!.mockInput.pressKey("r"))
+    expect(setup.captureCharFrame()).toContain("sindresorhus/ky doesn't need re-indexing")
+    expect(onReindexRepos).not.toHaveBeenCalled()
+
+    // Effect-TS/effect, then every outdated repo
+    for (let i = 0; i < 2; i++) await interact(setup, () => setup!.mockInput.pressKey("k"))
+    await interact(setup, () => setup!.mockInput.pressKey("r"))
+    expect(onReindexRepos.mock.calls.at(-1)).toEqual([["Effect-TS/effect"]])
+    await interact(setup, () => setup!.mockInput.pressKey("r", { shift: true }))
+    expect(onReindexRepos.mock.calls.at(-1)).toEqual([["Effect-TS/effect", "Effect-TS/website"]])
+
+    // [r] on the group header: its outdated repos
+    await interact(setup, () => setup!.mockInput.pressKey("k"))
+    await interact(setup, () => setup!.mockInput.pressKey("r"))
+    expect(onReindexRepos.mock.calls.at(-1)).toEqual([["Effect-TS/effect", "Effect-TS/website"]])
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("Re-indexing 2 repos in the background")
+  })
+
+  it("shows a repo as indexing while a job runs on it", async () => {
+    const running = { id: "reindex-1", kind: "reindexRepo", repoId: "Effect-TS/effect", payload: {}, status: "running", steps: [] } as unknown as Job
+    setup = await renderApp(repos, () => {}, {
+      onJobsChange: (listener) => {
+        listener([running])
+        return () => {}
+      }
+    })
+    await interact(setup, () => {})
+    await escape(setup)
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("~ indexing")
+    expect(frame.match(/! re-index/g)).toHaveLength(1)
+    expect(frame).toContain("1 repo isn't searchable until re-indexed")
+  })
+
+  it("warns in the results when the search covered an outdated repo", async () => {
+    setup = await renderApp(repos)
+    await interact(setup, () => {})
+    await escape(setup)
+
+    // The Effect-TS header is highlighted, so the search covers its two repos
+    await interact(setup, () => setup!.mockInput.pressKey("/"))
+    await interact(setup, () => setup!.mockInput.pasteBracketedText("duration"))
+    await interact(setup, () => setup!.mockInput.pressEnter())
+
+    expect(setup.captureCharFrame()).toContain("⚠ 2 of these repos aren't searchable until re-indexed; press [r] in the list")
   })
 })
