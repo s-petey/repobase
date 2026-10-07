@@ -186,6 +186,7 @@ const RESUMABLE_FAILED_STEPS: ReadonlySet<string> = new Set([
   "finalizeIndex",
   "updateStore",
   "stampIndexFormat",
+  "recordSynced",
 ]);
 
 export const resumableJob = (
@@ -208,6 +209,14 @@ export const resumableJob = (
   const failed = latest.steps.find((s) => s.status === "failed");
   return failed && RESUMABLE_FAILED_STEPS.has(failed.name) ? latest : undefined;
 };
+
+/**
+ * An add or re-index of the repo that stopped partway and can pick up where it
+ * stopped. A sync has to finish it first: the repo can look synced while some
+ * files were never indexed, so the sync would find nothing new and skip them.
+ */
+export const unfinishedIndexing = (jobs: ReadonlyArray<Job>, repoId: string): Job | undefined =>
+  resumableJob(jobs, repoId, "addRepo") ?? resumableJob(jobs, repoId, "reindexRepo");
 
 export const resumePoint = (job: Job): string | undefined => {
   const batches = job.steps.filter((s) => s.name === "indexBatch" && s.key !== "indexBatch");

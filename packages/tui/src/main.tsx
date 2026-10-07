@@ -32,11 +32,12 @@ import {
   splitPools,
   type SearchMode,
   type AddRepoProgress,
+  type Job,
 } from "@repobase/engine"
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
 import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
-import { resumableJob, resumePoint } from "./jobView.js"
+import { kindLabel, resumableJob, resumePoint, unfinishedIndexing } from "./jobView.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
 import { filterToGlob, type SearchFilter } from "./searchView.js"
 import { shutdown } from "./shutdown.js"
@@ -172,7 +173,21 @@ const program = Effect.gen(function* () {
 
   const runSync = (repoId: string) =>
     Effect.gen(function* () {
-      const unfinished = resumableJob(yield* runner.jobs, repoId)
+      const jobs = yield* runner.jobs
+
+      const indexing = unfinishedIndexing(jobs, repoId)
+      if (indexing) {
+        const finished = yield* runner.retry(indexing.id).pipe(Effect.flatMap((job) => runner.await(job.id)))
+        const resumedFrom = `${resumePoint(indexing) ?? "where it stopped"} of the unfinished ${kindLabel[indexing.kind]}`
+        if (finished.status !== "completed") return { job: finished, resumedFrom }
+        return { ...(yield* sync(repoId, jobs)), resumedFrom }
+      }
+      return yield* sync(repoId, jobs)
+    })
+
+  const sync = (repoId: string, jobs: ReadonlyArray<Job>) =>
+    Effect.gen(function* () {
+      const unfinished = resumableJob(jobs, repoId)
       const job = unfinished
         ? yield* runner.retry(unfinished.id)
         : yield* runner.start({ kind: "syncRepo", repoId, payload: { force: forceSync } })

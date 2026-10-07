@@ -42,7 +42,8 @@ describe("addRepo job", () => {
         "indexBatch",
         "indexBatch:0",
         "indexBatch:1",
-        "finalizeIndex"
+        "finalizeIndex",
+        "recordSynced"
       ])
       expect(stepOf(job, "planFullIndex").output).toEqual({ toIndex: 60, toDelete: 0, skipped: 0 })
       expect(stepOf(job, "indexBatch:0").output).toEqual({ indexed: 50, skipped: 0 })
@@ -209,6 +210,38 @@ describe("addRepo job", () => {
     }).pipe(
       Effect.provide(env.layer),
       Effect.ensuring(Effect.sync(() => (embedFailures.explode = false)))
+    )
+  }, 60_000)
+
+  it.effect("isn't synced until it's indexed, so a sync after it stops partway indexes the rest", () => {
+    const marker = "FAIL_UNTIL_SYNC"
+    const source = makeSourceRepo()
+    source.write("file-55.ts", `${marker}\n`)
+    source.commit("boom")
+    const env = testEnv()
+    return Effect.gen(function* () {
+      embedFailures.markers.add(marker)
+      const failed = yield* addRepo(source.dir)
+      expect(failed.status).toBe("failed")
+      const indexed = (yield* indexedPaths("acme-widgets")).length
+      expect(indexed).toBeLessThan(60)
+
+      // The repo is saved, but not as synced at the cloned commit
+      const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
+      expect(Option.isNone(repo.lastSyncedCommit)).toBe(true)
+
+      // So a sync with nothing new on the remote still finishes the indexing,
+      // re-embedding only the files that are missing
+      embedFailures.markers.delete(marker)
+      const synced = yield* syncRepo()
+      expect(synced.status).toBe("completed")
+      expect(stepOf(synced, "planChanges").output).toMatchObject({ toIndex: 60 - indexed, fullScan: true })
+      expect(yield* indexedPaths("acme-widgets")).toHaveLength(60)
+      const after = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
+      expect(Option.getOrThrow(after.lastSyncedCommit)).toBe(source.head())
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(marker)))
     )
   }, 60_000)
 })

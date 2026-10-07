@@ -158,7 +158,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       Effect.gen(function* () {
         const store = yield* RepoStore
         const { repoId, payload } = ctx.job
-        const { commit, branch } = yield* ctx.output(resolveHead)
+        const { branch } = yield* ctx.output(resolveHead)
         const saveFailed = (e: { readonly message: string }) =>
           new SaveConfigFailedError({ repoId, message: e.message })
 
@@ -178,8 +178,8 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
           url: payload.url,
           localPath: localPath(repoId),
           mode: payload.mode ?? trackingMode(branch ?? "main"),
-          lastSyncedCommit: Option.some(commit),
-          lastSyncedAt: Option.some(now),
+          lastSyncedCommit: Option.none(),
+          lastSyncedAt: Option.none(),
           addedAt: now,
           cloudEnabled: false,
           lastPushedAt: Option.none(),
@@ -199,6 +199,21 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
   })
 
   const addIndexing = indexingSteps(planFullIndex, (ctx) => Effect.succeed(localPath(ctx.job.repoId)), indexingSlots)
+
+  const recordSynced = step<AddRepoJob, null, RepoStore>({
+    name: "recordSynced",
+    runsOn: "main",
+    output: Schema.Null,
+    run: (ctx) =>
+      Effect.gen(function* () {
+        const { commit } = yield* ctx.output(resolveHead)
+        const now = yield* DateTime.now
+        yield* RepoStore.use((store) =>
+          store.updateRepo(ctx.job.repoId, { lastSyncedCommit: Option.some(commit), lastSyncedAt: Option.some(now) })
+        ).pipe(Effect.mapError((e) => new UpdateStoreFailedError({ repoId: ctx.job.repoId, message: e.message })))
+        return null
+      })
+  })
 
   // --- syncRepo ------------------------------------------------------------
 
@@ -373,7 +388,7 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
 
   return {
     addRepo: {
-      steps: [checkAbsent, clone, resolveHead, saveConfig, planFullIndex, ...addIndexing]
+      steps: [checkAbsent, clone, resolveHead, saveConfig, planFullIndex, ...addIndexing, recordSynced]
     },
     syncRepo: {
       steps: [loadRepo, fetch, resolveRemoteHead, resetHard, planChanges, ...syncIndexing, updateStore, ...legacyCleanupSteps<SyncRepoJob>()]

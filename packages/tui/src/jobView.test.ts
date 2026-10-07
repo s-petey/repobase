@@ -2,7 +2,7 @@ import type { Job } from "@repobase/engine"
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
 import { RemoteBranchMissingError, type Step } from "@repobase/engine"
-import { formatAge, jobCounts, resumableJob, resumePoint, syncActivityText } from "./jobView.js"
+import { formatAge, jobCounts, resumableJob, resumePoint, syncActivityText, unfinishedIndexing } from "./jobView.js"
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 
@@ -54,6 +54,25 @@ describe("resumableJob", () => {
     const completed = sync("completed", [step("updateStore", "done")], 1)
     expect(resumableJob([interrupted, completed], "a")).toBeUndefined()
     expect(resumableJob([interrupted], "b")).toBeUndefined()
+  })
+
+  it("finds an unfinished add or re-index for a sync to finish first", () => {
+    const add = { ...sync("interrupted", [step("indexBatch:69", "interrupted")]), kind: "addRepo" } as Job
+    const reindex = { ...sync("failed", [step("indexBatch:2", "failed")], 1), kind: "reindexRepo" } as Job
+    const syncing = sync("interrupted", [step("indexBatch:1", "interrupted")], 2)
+
+    expect(unfinishedIndexing([add, syncing], "a")).toBe(add)
+    expect(unfinishedIndexing([reindex, syncing], "a")).toBe(reindex)
+    // Only adds and re-indexes: an unfinished sync is resumed by the sync itself
+    expect(unfinishedIndexing([syncing], "a")).toBeUndefined()
+    expect(unfinishedIndexing([add], "b")).toBeUndefined()
+  })
+
+  it("doesn't count an add that was retried and finished", () => {
+    const interrupted = { ...sync("interrupted", [step("indexBatch:1", "interrupted")], 0), kind: "addRepo" } as Job
+    const completed = { ...sync("completed", [step("recordSynced", "done")], 1), kind: "addRepo" } as Job
+
+    expect(unfinishedIndexing([interrupted, completed], "a")).toBeUndefined()
   })
 
   it("finds a re-index to resume only when asked for that kind", () => {

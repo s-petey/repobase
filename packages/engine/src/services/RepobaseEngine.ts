@@ -115,7 +115,7 @@ export const make = Effect.gen(function* () {
   const addRepo: RepobaseEngineService["addRepo"] = (url, options) =>
     Effect.gen(function* () {
       const progressRef = options?.progressRef
-      
+
       // Helper to update progress
       const updateProgress = (update: Partial<AddRepoProgress>) =>
         progressRef
@@ -140,18 +140,18 @@ export const make = Effect.gen(function* () {
       )
 
       // Clone the repository
-      yield* updateProgress({ 
-        stage: "cloning", 
-        progress: 10, 
-        message: `Cloning ${url}...` 
+      yield* updateProgress({
+        stage: "cloning",
+        progress: 10,
+        message: `Cloning ${url}...`
       })
       yield* Effect.log(`Cloning ${url}...`)
       yield* git.clone(url, localPath)
 
-      yield* updateProgress({ 
-        stage: "cloning", 
-        progress: 40, 
-        message: "Clone complete, preparing..." 
+      yield* updateProgress({
+        stage: "cloning",
+        progress: 40,
+        message: "Clone complete, preparing..."
       })
 
       // Get current commit
@@ -165,8 +165,8 @@ export const make = Effect.gen(function* () {
         url,
         localPath,
         mode,
-        lastSyncedCommit: Option.some(currentCommit),
-        lastSyncedAt: Option.some(now),
+        lastSyncedCommit: Option.none(),
+        lastSyncedAt: Option.none(),
         addedAt: now,
         // Cloud sync fields - disabled by default
         cloudEnabled: false,
@@ -178,9 +178,9 @@ export const make = Effect.gen(function* () {
       // Save config
       yield* store.addRepo(repo)
 
-      yield* updateProgress({ 
-        stage: "indexing", 
-        progress: 50, 
+      yield* updateProgress({
+        stage: "indexing",
+        progress: 50,
         message: `Indexing ${id}...`,
         filesIndexed: 0,
         totalFiles: 0
@@ -194,14 +194,14 @@ export const make = Effect.gen(function* () {
         Stream.runForEach(SubscriptionRef.changes(indexingProgressRef), (indexingState) =>
           Effect.gen(function* () {
             if (!progressRef) return
-            
+
             const overallProgress = calcIndexingProgress(indexingState)
-            const phaseMessage = indexingState.phase === "scanning" 
+            const phaseMessage = indexingState.phase === "scanning"
               ? "Scanning files..."
               : indexingState.phase === "finalizing"
                 ? "Finalizing index..."
                 : `Indexing: ${indexingState.currentFile ?? "..."}`
-            
+
             yield* SubscriptionRef.update(progressRef, (prev) => ({
               ...prev,
               progress: overallProgress,
@@ -224,9 +224,12 @@ export const make = Effect.gen(function* () {
       // Clean up forwarder
       yield* Fiber.interrupt(forwarderFiber)
 
-      yield* updateProgress({ 
-        stage: "complete", 
-        progress: 100, 
+      const synced = { lastSyncedCommit: Option.some(currentCommit), lastSyncedAt: Option.some(yield* DateTime.now) }
+      yield* store.updateRepo(id, synced)
+
+      yield* updateProgress({
+        stage: "complete",
+        progress: 100,
         message: `Added ${id}`,
         filesIndexed: indexResult.filesIndexed,
         totalFiles: indexResult.filesIndexed
@@ -234,7 +237,7 @@ export const make = Effect.gen(function* () {
 
       yield* Effect.log(`Added repository: ${id}`)
 
-      return repo
+      return { ...repo, ...synced }
     })
 
   const removeRepo: RepobaseEngineService["removeRepo"] = (id) =>

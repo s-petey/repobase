@@ -49,8 +49,7 @@ export const makeSourceRepo = (files = 60, branch = "main") => {
   }
 }
 
-// Files containing EXPLODE fail to embed while this is on
-export const embedFailures = { explode: false }
+export const embedFailures = { explode: false, markers: new Set<string>() }
 
 export const embedConcurrency = { current: 0, peak: 0 }
 
@@ -61,6 +60,7 @@ const fakeEmbed = async (text: string) => {
     // Yield, so embeds from batches that run at the same time overlap
     await new Promise((resolve) => setTimeout(resolve, 1))
     if (embedFailures.explode && text.includes("EXPLODE")) throw new Error("model crashed")
+    for (const marker of embedFailures.markers) if (text.includes(marker)) throw new Error("model crashed")
     const seed = crypto.createHash("sha256").update(text).digest()
     return Array.from({ length: 384 }, (_, i) => seed[i % seed.length] / 255 + 0.01)
   } finally {
