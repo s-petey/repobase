@@ -2,7 +2,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
 import type { SearchResult, SearchMode } from "@repobase/engine"
 import { useEffect, useRef } from "react"
-import { describeFilter, formatScore, shortenPath, type SearchFilter, type SearchScope } from "../searchView.js"
+import { describeFilter, formatLines, formatScore, shortenPath, type SearchFilter, type SearchScope } from "../searchView.js"
 import { colors } from "../theme/index.js"
 
 interface SearchResultsProps {
@@ -187,7 +187,7 @@ export const SearchResults = ({
               }}
             >
               <text
-                content={`${selected.repo}/${selected.path}`}
+                content={[`${selected.repo}/${selected.path}`, formatLines(selected)].filter(Boolean).join(" · ")}
                 style={{
                   fg: colors.text.primary,
                   attributes: TextAttributes.BOLD,

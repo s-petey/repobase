@@ -95,7 +95,7 @@ server.registerTool(
 server.registerTool(
   "search",
   {
-    description: "Search across all locally indexed repositories (keyword, semantic or hybrid). Use it first for questions about any of those repos: it's faster and more exact than web search.",
+    description: "Search across all locally indexed repositories (keyword, semantic or hybrid). Use it first for questions about any of those repos: it's faster and more exact than web search. Each result's startLine and endLine are the lines that matched best, so read_file can read just that part (offset: startLine).",
     inputSchema: {
       query: z.string().describe("The search query"),
       mode: z.enum(["keyword", "semantic", "hybrid"]).default("hybrid").describe("Search mode: keyword (fast text search), semantic (meaning-based), or hybrid (combines both)"),
@@ -121,7 +121,9 @@ server.registerTool(
           path: result.path,
           filename: result.filename,
           score: result.score,
-          snippet: result.snippet
+          snippet: result.snippet,
+          startLine: result.startLine,
+          endLine: result.endLine
         }))
       }
     })

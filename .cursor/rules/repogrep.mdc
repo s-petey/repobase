@@ -209,7 +209,7 @@ repogrep grep "useEffect\(" --type tsx -C 3 --limit 50
 - Search results reference indexed repositories stored in `~/.repogrep/`
 - The tool combines SQLite FTS (fast keyword) + LanceDB (semantic vectors)
 - Semantic search uses embeddings from a local transformer model
-- Maximum indexed file size: 64KB per file
+- Files are indexed in full, split into chunks of about 20–35 lines; search results include the matching lines
 - Binary files are automatically skipped during indexing
 
 ## Adding New Repositories

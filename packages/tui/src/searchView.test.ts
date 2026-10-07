@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { describeFilter, filterToGlob, formatScore, shortenPath } from "./searchView.js"
+import { describeFilter, filterToGlob, formatLines, formatScore, shortenPath } from "./searchView.js"
+
+describe("formatLines", () => {
+  it("shows a range, a single line, or nothing", () => {
+    expect(formatLines({ startLine: 210, endLine: 260 })).toBe("lines 210–260")
+    expect(formatLines({ startLine: 7, endLine: 7 })).toBe("line 7")
+    expect(formatLines({})).toBeUndefined()
+  })
+})
 
 describe("filterToGlob", () => {
   it("uses a glob as is", () => {

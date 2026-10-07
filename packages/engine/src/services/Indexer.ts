@@ -41,7 +41,6 @@ export const INDEX_BATCH_SIZE = 50
 
 // Max ids per `id IN (...)` delete, to keep the SQL predicate a sane size
 const DELETE_CHUNK_SIZE = 500
-const MAX_FILE_SIZE = 64 * 1024 // 64KB
 const EMBEDDING_DIMENSION = 384
 const MODEL_ID = "Xenova/all-MiniLM-L6-v2"
 
@@ -779,7 +778,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           continue
         }
 
-        const contents = new TextDecoder().decode(buffer.value).slice(0, MAX_FILE_SIZE)
+        const contents = new TextDecoder().decode(buffer.value)
         const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
           Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
         )

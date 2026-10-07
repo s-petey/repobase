@@ -399,6 +399,19 @@ describe("Indexer", () => {
       }).pipe(Effect.provide(indexerLayer()))
     )
 
+    it.effect("indexes a large file to its last line", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        const body = Array.from({ length: 5_000 }, (_, i) => `export const value${i} = "padding padding padding"`)
+        writeFile(repoPath, "src/big.ts", [...body, "export const lastLine = 'quokkafinale'"].join("\n"))
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        const [hit] = yield* indexer.searchKeyword("quokkafinale", { repo: REPO })
+        expect(hit).toMatchObject({ path: "src/big.ts", endLine: 5_001 })
+      }).pipe(Effect.provide(indexerLayer()))
+    )
+
     it.effect("returns each file once, however many of its chunks match", () =>
       Effect.gen(function* () {
         const indexer = yield* Indexer

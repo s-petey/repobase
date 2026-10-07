@@ -45,6 +45,14 @@ export interface SearchScope {
 }
 
 /**
+ * The lines a result's best match covers, e.g. "lines 210–260", if the result has them
+ */
+export const formatLines = (result: { readonly startLine?: number; readonly endLine?: number }): string | undefined => {
+  if (result.startLine === undefined || result.endLine === undefined) return undefined
+  return result.startLine === result.endLine ? `line ${result.startLine}` : `lines ${result.startLine}–${result.endLine}`
+}
+
+/**
  * A score as a percentage padded to a fixed width, so a column of them lines up
  */
 export const formatScore = (score: number): string => `${Math.round(score * 100)}%`.padStart(4)

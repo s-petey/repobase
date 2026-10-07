@@ -486,7 +486,8 @@ const searchCommand = Command.make(
 
       yield* Console.log(`Found ${results.length} result(s):\n`)
       for (const result of results) {
-        yield* Console.log(`${result.repo}/${result.path}`)
+        const lines = result.startLine === undefined ? "" : `:${result.startLine}-${result.endLine}`
+        yield* Console.log(`${result.repo}/${result.path}${lines}`)
         yield* Console.log(`  Score: ${result.score.toFixed(3)}`)
         if (result.snippet) {
           const snippet = result.snippet.replace(/\n/g, " ").slice(0, 100)

@@ -99,6 +99,13 @@ describe("SearchResults", () => {
     expect(frame).toContain(`acme-widgets/${longResult.path}`)
   })
 
+  it("shows the lines the selected result's match covers next to its path", async () => {
+    setup = await renderResults([{ ...results[0]!, startLine: 210, endLine: 260 }, results[1]!])
+    await interact(setup, () => {})
+
+    expect(setup.captureCharFrame()).toContain("acme-widgets/src/file-00.ts · lines 210–260")
+  })
+
   it("lines up the scores in one column", async () => {
     setup = await renderResults([results[0]!, longResult, results[1]!])
     await interact(setup, () => {})
