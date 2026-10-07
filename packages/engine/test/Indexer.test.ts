@@ -58,6 +58,54 @@ const indexedPaths = (repo: string) =>
 
 const REPO = "test-repo"
 
+describe("Indexer with the real embedding model", () => {
+  // Unrelated helpers first, so the cart code is far enough down to land in a later chunk
+  const helpers = Array.from(
+    { length: 40 },
+    (_, i) => `export const formatLabel${i} = (value: string) => value.trim().toUpperCase().padStart(${i + 10}, " ")`
+  ).join("\n")
+  const cart = `
+export interface CartItem {
+  readonly price: number
+  readonly quantity: number
+}
+
+// The total price of everything in the shopping cart, with sales tax and a discount code
+export const cartTotal = (items: ReadonlyArray<CartItem>, taxRate: number, discount: number) => {
+  const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  return (subtotal - discount) * (1 + taxRate)
+}`
+  const auth = `
+import { compare } from "bcrypt"
+
+// Check the password a user typed at login against the stored hash
+export const verifyLogin = async (password: string, storedHash: string) => compare(password, storedHash)`
+
+  it.effect("chunks with the real tokenizer and finds code by meaning", () =>
+    Effect.gen(function* () {
+      const indexer = yield* Indexer
+      const repoPath = tempDir("repo")
+      writeFile(repoPath, "src/format.ts", `${helpers}\n${cart}`)
+      writeFile(repoPath, "src/auth.ts", auth)
+      writeFile(repoPath, "README.md", "# Shop\n\nAn example online shop.")
+
+      const summary = yield* indexer.indexRepo(REPO, repoPath)
+      expect(summary.filesIndexed).toBe(3)
+
+      // Worded unlike the code, so only the meaning matches
+      const [cartHit] = yield* indexer.searchSemantic("add up what the customer is buying, including taxes", { repo: REPO })
+      expect(cartHit.path).toBe("src/format.ts")
+      // The matching chunk is the cart code at the end, not the file's opening
+      expect(cartHit.startLine).toBeGreaterThan(1)
+      expect(cartHit.endLine).toBeGreaterThanOrEqual(45)
+
+      const [authHit] = yield* indexer.searchSemantic("check someone's credentials when they sign in", { repo: REPO })
+      expect(authHit.path).toBe("src/auth.ts")
+    }).pipe(Effect.provide(IndexerLayerWith({ indexDir: tempDir("index") }).pipe(Layer.provide(BunServices.layer)))),
+    300_000
+  )
+})
+
 describe("Indexer across connections", () => {
   // Each worker thread has its own connection to the same index, and keeps it
   it.effect("sees rows another connection wrote after it opened the table, and finalizes after them", () =>
@@ -455,8 +503,7 @@ describe("Indexer", () => {
     }
   })
 
-  // FALLBACK: see LEGACY_FILES_TABLE in Indexer.ts
-  describe("legacy table fallback", () => {
+  describe("an index in format 1", () => {
     // An index from format 1: only the old `files` table, one row per file
     const legacySetup = Effect.gen(function* () {
       const reposDir = tempDir("repos")
@@ -480,43 +527,29 @@ describe("Indexer", () => {
       })
       return yield* makeWith({ indexDir, reposDir, embed: fakeEmbed })
     })
-    const legacyRepos = ["old-repo"]
 
-    it.effect("lists, globs, reads and greps the legacy table's files for repos passed as legacy", () =>
-      Effect.gen(function* () {
-        const indexer = yield* legacySetup
-
-        expect((yield* indexer.globFiles("**", { repo: "old-repo", legacyRepos })).map((f) => f.path).sort()).toEqual([
-          "README.md",
-          "src/a.ts"
-        ])
-        expect((yield* indexer.listFiles({ repo: "old-repo", path: "src", legacyRepos })).map((f) => f.path)).toEqual([
-          "src/a.ts"
-        ])
-        expect((yield* indexer.listFiles({ legacyRepos })).map((f) => f.repo)).toEqual(["old-repo"])
-        expect((yield* indexer.readFile("old-repo", "src/a.ts", { legacyRepos })).content).toContain("needle")
-        expect((yield* indexer.grepPattern("needle", { legacyRepos })).map((r) => r.path)).toEqual(["src/a.ts"])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
-    )
-
-    it.effect("ignores the legacy table for repos not passed as legacy", () =>
+    it.effect("is never read: a repo only in the old table is unavailable until re-indexed", () =>
       Effect.gen(function* () {
         const indexer = yield* legacySetup
 
         expect(yield* indexer.globFiles("**", { repo: "old-repo" })).toEqual([])
+        expect(yield* indexer.listFiles({})).toEqual([])
         expect(yield* indexer.grepPattern("needle", {})).toEqual([])
+        // The new table has no full-text index yet: no results rather than an error
+        expect(yield* indexer.searchKeyword("needle", {})).toEqual([])
+        expect(yield* indexer.searchHybrid("needle", {})).toEqual([])
+        expect(yield* indexer.searchSemantic("needle", {})).toEqual([])
         const error = yield* Effect.flip(indexer.readFile("old-repo", "src/a.ts"))
         expect(error._tag).toBe("FileNotFoundError")
       }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
     )
 
-    it.effect("dropLegacyIndex removes the table once, then reports it gone", () =>
+    it.effect("dropLegacyIndex removes the old table once, then reports it gone", () =>
       Effect.gen(function* () {
         const indexer = yield* legacySetup
 
         expect(yield* indexer.dropLegacyIndex()).toBe(true)
         expect(yield* indexer.dropLegacyIndex()).toBe(false)
-        expect(yield* indexer.globFiles("**", { repo: "old-repo", legacyRepos })).toEqual([])
       }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
     )
   })

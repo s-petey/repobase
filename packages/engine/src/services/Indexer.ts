@@ -14,6 +14,7 @@ import * as crypto from "crypto"
 import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
 import { chunkLines } from "../chunk.js"
+import { Connection, Table } from "@lancedb/lancedb"
 
 // Configuration
 const INDEX_DIR = `${os.homedir()}/.repobase/index`
@@ -27,19 +28,9 @@ const FIRST_CHUNK = "chunk = 0"
  */
 const CHUNKS_PER_RESULT = 5
 
-// ---------------------------------------------------------------------------
-// FALLBACK: the legacy `files` table (index format 1)
-//
-// Repos indexed before CURRENT_INDEX_FORMAT 2 only have rows in the old `files`
-// table (one row per file) until they're re-indexed. The file-level queries
-// (grep's file list, globFiles, listFiles, readFile) read it for those repos,
-// which callers pass as `legacyRepos`, so they keep working in the meantime.
-// Search does not fall back: it needs the new table's chunks.
-//
-// Remove this fallback (LEGACY_FILES_TABLE, legacyFileRowsFallback and every
-// `legacyRepos` option) once index format 1 is no longer supported. The table
-// itself is dropped by dropLegacyIndex when the last repo has been re-indexed.
-// ---------------------------------------------------------------------------
+// The table of index format 1 (one row per file). Nothing reads it: repos still
+// on format 1 are unavailable until re-indexed. dropLegacyIndex removes it once
+// no repo is on format 1, so until then the previous version still works.
 const LEGACY_FILES_TABLE = "files"
 
 /**
@@ -209,8 +200,6 @@ export interface ListFilesOptions {
   readonly repo?: string
   readonly path?: string
   readonly ignore?: readonly string[]
-  /** FALLBACK: repos still on index format 1, read from the legacy table (see LEGACY_FILES_TABLE) */
-  readonly legacyRepos?: ReadonlyArray<string>
 }
 
 /**
@@ -219,8 +208,6 @@ export interface ListFilesOptions {
 export interface GlobOptions {
   readonly repo?: string
   readonly limit?: number
-  /** FALLBACK: repos still on index format 1, read from the legacy table (see LEGACY_FILES_TABLE) */
-  readonly legacyRepos?: ReadonlyArray<string>
 }
 
 /**
@@ -230,8 +217,6 @@ export interface ReadFileOptions {
   readonly offset?: number // Start line (1-based, default: 1)
   readonly limit?: number // Number of lines to read
   readonly lineNumbers?: boolean // Include line numbers (default: true)
-  /** FALLBACK: repos still on index format 1, read from the legacy table (see LEGACY_FILES_TABLE) */
-  readonly legacyRepos?: ReadonlyArray<string>
 }
 
 /**
@@ -249,8 +234,6 @@ export interface GrepOptions {
   readonly glob?: string // Only files whose path or filename matches
   readonly exclude?: string // Skip files whose path or filename matches
   readonly limit?: number // Limit output lines
-  /** FALLBACK: repos still on index format 1, read from the legacy table (see LEGACY_FILES_TABLE) */
-  readonly legacyRepos?: ReadonlyArray<string>
 }
 
 /**
@@ -299,7 +282,7 @@ export interface IndexerService {
   ) => Effect.Effect<IndexBatchResult, IndexError>
   // Compact the table and rebuild the full-text index
   readonly finalizeIndex: () => Effect.Effect<void, IndexError>
-  // Drop the legacy table (see LEGACY_FILES_TABLE) once no repo needs it; false if it was already gone
+  // Drop the index format 1 table (see LEGACY_FILES_TABLE) once no repo is on it; false if it was already gone
   readonly dropLegacyIndex: () => Effect.Effect<boolean, IndexError>
 
   // Search
@@ -449,8 +432,7 @@ const matchesGlob = (file: { path: string; filename: string }, glob: string) =>
 /**
  * Apply the search options' repo and path filters to a LanceDB query
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const applySearchFilters = (search: any, options: SearchOptions | undefined) => {
+const applySearchFilters = <Q extends { where(predicate: string): Q }>(search: Q, options: SearchOptions | undefined): Q => {
   if (options?.repo) search = search.where(`repo = ${sqlString(options.repo)}`)
   if (options?.repos && options.repos.length > 0) {
     search = search.where(`repo IN (${options.repos.map(sqlString).join(", ")})`)
@@ -525,9 +507,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   // Initialize LanceDB connection lazily
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let db: any = null
+  let db: Connection | null = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let table: any = null
+  let table: Table | null = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let embedder: any = null
 
@@ -554,7 +536,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // One opener at a time, so concurrent first calls don't all try to create the table
   const tableLock = yield* Semaphore.make(1)
 
-  const openTable = (database: any) =>
+  const openTable = (database: Connection) =>
     Effect.tryPromise({
       try: () => database.openTable(CHUNKS_TABLE),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to open table: ${e}` })
@@ -565,7 +547,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
     const database = yield* getDb
     const tableNames = yield* Effect.tryPromise({
-      try: () => database.tableNames() as Promise<string[]>,
+      try: () => database.tableNames(),
       catch: (e) => new IndexError({ operation: "init", message: `Failed to list tables: ${e}` })
     })
 
@@ -605,37 +587,6 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     }
     return table
   }))
-
-  // FALLBACK (see LEGACY_FILES_TABLE): `rows` from the current table, with the
-  // rows of repos still on index format 1 replaced by the legacy table's. `where`
-  // must only use columns both tables have (repo, path, filename, …).
-  const legacyFileRowsFallback = <Row extends { readonly repo: string }>(
-    rows: ReadonlyArray<Row>,
-    legacyRepos: ReadonlyArray<string> | undefined,
-    where: ReadonlyArray<string>,
-    columns: ReadonlyArray<string>,
-    operation: string
-  ): Effect.Effect<ReadonlyArray<Row>, IndexError> =>
-    Effect.gen(function* () {
-      if (!legacyRepos || legacyRepos.length === 0) return rows
-      const legacy = new Set(legacyRepos)
-      const current = rows.filter((row) => !legacy.has(row.repo))
-
-      const database = yield* getDb
-      const legacyRows = yield* Effect.tryPromise({
-        try: async () => {
-          if (!(await database.tableNames()).includes(LEGACY_FILES_TABLE)) return [] as Array<Row>
-          const legacyTable = await database.openTable(LEGACY_FILES_TABLE)
-          const filters = [`repo IN (${legacyRepos.map(sqlString).join(", ")})`, ...where]
-          return (await legacyTable.query().where(filters.join(" AND ")).select([...columns]).toArray()) as Array<Row>
-        },
-        catch: (e) => new IndexError({ operation, message: `Failed to read the legacy index table: ${e}` })
-      })
-      yield* Effect.logWarning(
-        `FALLBACK: ${operation} read ${legacyRows.length} rows from the legacy index table for ${legacyRepos.join(", ")}, which need re-indexing`
-      )
-      return [...current, ...legacyRows]
-    })
 
   // Initialize embedding model lazily
   const getEmbedder = Effect.gen(function* () {
@@ -999,12 +950,26 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       })
     })
 
+  const hasFullTextIndex = (tbl: Table) =>
+    Effect.tryPromise({
+      try: async () =>
+        ((await tbl.listIndices())).some((index) =>
+          index.columns.includes("text")
+        ),
+      catch: (e) => new SearchError({ message: `Failed to list indexes: ${e}` })
+    })
+
   // Keyword search (FTS only)
   const searchKeyword: IndexerService["searchKeyword"] = (query, options) =>
     Effect.gen(function* () {
       const tbl = yield* getTable.pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
+
+      if (!(yield* hasFullTextIndex(tbl))) {
+        return []
+      }
+
       const limit = options?.limit ?? 20
       const search = applySearchFilters(tbl.query().fullTextSearch(query), options)
 
@@ -1032,7 +997,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
 
-      const search = applySearchFilters(tbl.search(queryVector).column("vector"), options)
+      const search = applySearchFilters(tbl.vectorSearch(queryVector).column("vector"), options)
 
       const results = yield* Effect.tryPromise({
         try: () =>
@@ -1052,6 +1017,11 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       const tbl = yield* getTable.pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
+
+      if (!(yield* hasFullTextIndex(tbl))) {
+        return yield* searchSemantic(query, options)
+      }
+
       const limit = options?.limit ?? 20
       const queryVector = yield* embedText(query).pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
@@ -1105,8 +1075,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             new IndexError({ operation: "listFiles", message: `${e}` })
         })
 
-        // FALLBACK (see LEGACY_FILES_TABLE): repos on index format 1 may have no rows here yet
-        const uniqueRepos = [...new Set([...results.map((r) => r.repo), ...(options.legacyRepos ?? [])])]
+        const uniqueRepos = [...new Set(results.map((r) => r.repo))]
         return uniqueRepos.map(
           (r): FileInfo => ({
             repo: r,
@@ -1124,17 +1093,14 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       // Query files in this repo starting with the path prefix
       const searchPath = dirPath ? `${dirPath}/` : ""
-      const where = [`repo = ${sqlString(repo)}`, `path LIKE ${sqlString(`${searchPath}%`)}`]
-      const columns = ["repo", "path", "filename", "size_bytes", "mtime_ms"]
-      const rows = yield* Effect.tryPromise({
+      const results = yield* Effect.tryPromise({
         try: () =>
           tbl
             .query()
-            .where([...where, FIRST_CHUNK].join(" AND "))
-            .select(columns)
+            .where(`repo = ${sqlString(repo)} AND path LIKE ${sqlString(`${searchPath}%`)} AND ${FIRST_CHUNK}`)
+            .select(["path", "filename", "size_bytes", "mtime_ms"])
             .toArray() as Promise<
             Array<{
-              repo: string
               path: string
               filename: string
               size_bytes: number
@@ -1143,7 +1109,6 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           >,
         catch: (e) => new IndexError({ operation: "listFiles", message: `${e}` })
       })
-      const results = yield* legacyFileRowsFallback(rows, options.legacyRepos, where, columns, "listFiles")
 
       // Extract immediate children (files and subdirectories)
       const entries = new Map<string, FileInfo>()
@@ -1204,14 +1169,13 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       // Query all files (or filtered by repo)
       const where = options?.repo ? [`repo = ${sqlString(options.repo)}`] : []
-      const columns = ["repo", "path", "filename", "size_bytes", "mtime_ms"]
 
-      const rows = yield* Effect.tryPromise({
+      const allFiles = yield* Effect.tryPromise({
         try: () =>
           tbl
             .query()
             .where([...where, FIRST_CHUNK].join(" AND "))
-            .select(columns)
+            .select(["repo", "path", "filename", "size_bytes", "mtime_ms"])
             .toArray() as Promise<
             Array<{
               repo: string
@@ -1223,7 +1187,6 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           >,
         catch: (e) => new IndexError({ operation: "globFiles", message: `${e}` })
       })
-      const allFiles = yield* legacyFileRowsFallback(rows, options?.legacyRepos, where, columns, "globFiles")
 
       // Apply glob pattern matching
       const matched = allFiles.filter((file) => {
@@ -1257,18 +1220,16 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       yield* validatePath(filePath)
 
       // Verify file exists in index
-      const where = [`repo = ${sqlString(repo)}`, `path = ${sqlString(filePath)}`]
-      const rows = yield* Effect.tryPromise({
+      const indexed = yield* Effect.tryPromise({
         try: () =>
           tbl
             .query()
-            .where([...where, FIRST_CHUNK].join(" AND "))
-            .select(["repo", "path"])
+            .where(`repo = ${sqlString(repo)} AND path = ${sqlString(filePath)} AND ${FIRST_CHUNK}`)
+            .select(["path"])
             .limit(1)
-            .toArray() as Promise<Array<{ repo: string; path: string }>>,
+            .toArray() as Promise<Array<{ path: string }>>,
         catch: (e) => new IndexError({ operation: "readFile", message: `${e}` })
       })
-      const indexed = yield* legacyFileRowsFallback(rows, options?.legacyRepos, where, ["repo", "path"], "readFile")
 
       if (indexed.length === 0) {
         return yield* Effect.fail(
@@ -1347,17 +1308,15 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       // Only read files under the glob's fixed directory
       const base = options?.glob ? globBase(options.glob) : undefined
       if (base) where.push(pathFilter(base))
-      const columns = ["repo", "path", "filename"]
 
-      const rows = yield* Effect.tryPromise({
+      const indexed = yield* Effect.tryPromise({
         try: () =>
-          tbl.query().where([...where, FIRST_CHUNK].join(" AND ")).select(columns).toArray() as Promise<
+          tbl.query().where([...where, FIRST_CHUNK].join(" AND ")).select(["repo", "path", "filename"]).toArray() as Promise<
             Array<{ repo: string; path: string; filename: string }>
           >,
         catch: (e) =>
           new IndexError({ operation: "grepPattern", message: `${e}` })
       })
-      const indexed = yield* legacyFileRowsFallback(rows, options?.legacyRepos, where, columns, "grepPattern")
 
       const files = indexed.filter(
         (file) =>

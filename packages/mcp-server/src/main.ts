@@ -12,9 +12,10 @@ import {
   RepoStoreLayer,
   IndexerLayer,
   Indexer,
+  needsReindex,
   type SearchMode
 } from "@repobase/engine"
-import { serverInstructions } from "./instructions.js"
+import { reindexNotice, serverInstructions } from "./instructions.js"
 
 // Layer composition - same pattern as TUI
 const EngineLive = RepobaseEngineLayer.pipe(
@@ -39,6 +40,13 @@ const repos = await runtime.runPromise(
   RepobaseEngine.use((engine) => engine.listRepos()).pipe(Effect.orElseSucceed(() => []))
 )
 
+// A content block to put before a tool's result
+const unavailableNotice = (repo?: string) =>
+  RepobaseEngine.use((engine) => engine.listRepos()).pipe(
+    Effect.map((all) => all.filter((r) => needsReindex(r) && (!repo || r.id === repo)).map((r) => r.id)),
+    Effect.map((ids) => (ids.length > 0 ? [{ type: "text" as const, text: `⚠ ${reindexNotice(ids)}` }] : []))
+  )
+
 // Create MCP server
 const server = new McpServer(
   {
@@ -58,18 +66,20 @@ server.registerTool(
     const program = Effect.gen(function* () {
       const engine = yield* RepobaseEngine
       const repos = yield* engine.listRepos()
-      
+
       return repos.map((repo) => ({
         id: repo.id,
         url: repo.url,
         localPath: repo.localPath,
         lastSyncedAt: Option.match(repo.lastSyncedAt, { onNone: () => null, onSome: DateTime.formatIso }),
-        addedAt: DateTime.formatIso(repo.addedAt)
+        addedAt: DateTime.formatIso(repo.addedAt),
+        // Search finds nothing in it until it's re-indexed in the current index format
+        needsReindex: needsReindex(repo)
       }))
     })
 
     const result = await runtime.runPromise(program)
-    
+
     return {
       content: [
         {
@@ -104,20 +114,23 @@ server.registerTool(
         path,
         glob
       })
-      
-      return results.map((result) => ({
-        repo: result.repo,
-        path: result.path,
-        filename: result.filename,
-        score: result.score,
-        snippet: result.snippet
-      }))
+      return {
+        notice: yield* unavailableNotice(repo),
+        results: results.map((result) => ({
+          repo: result.repo,
+          path: result.path,
+          filename: result.filename,
+          score: result.score,
+          snippet: result.snippet
+        }))
+      }
     })
 
-    const results = await runtime.runPromise(program)
-    
+    const { notice, results } = await runtime.runPromise(program)
+
     return {
       content: [
+        ...notice,
         {
           type: "text" as const,
           text: JSON.stringify(results, null, 2)
@@ -141,21 +154,25 @@ server.registerTool(
     const program = Effect.gen(function* () {
       const indexer = yield* Indexer
       const files = yield* indexer.listFiles({ repo, path })
-      
-      return files.map((file) => ({
-        repo: file.repo,
-        path: file.path,
-        filename: file.filename,
-        isDirectory: file.isDirectory,
-        size: file.size ?? null,
-        mtime: file.mtime ? DateTime.formatIso(file.mtime) : null
-      }))
+
+      return {
+        notice: yield* unavailableNotice(repo),
+        result: files.map((file) => ({
+          repo: file.repo,
+          path: file.path,
+          filename: file.filename,
+          isDirectory: file.isDirectory,
+          size: file.size ?? null,
+          mtime: file.mtime ? DateTime.formatIso(file.mtime) : null
+        }))
+      }
     })
 
-    const result = await runtime.runPromise(program)
+    const { notice, result } = await runtime.runPromise(program)
 
     return {
       content: [
+        ...notice,
         {
           type: "text" as const,
           text: JSON.stringify(result, null, 2)
@@ -183,21 +200,25 @@ server.registerTool(
         repo,
         limit: limit ?? 50
       })
-      
-      return files.map((file) => ({
-        repo: file.repo,
-        path: file.path,
-        filename: file.filename,
-        isDirectory: file.isDirectory,
-        size: file.size ?? null,
-        mtime: file.mtime ? DateTime.formatIso(file.mtime) : null
-      }))
+
+      return {
+        notice: yield* unavailableNotice(repo),
+        result: files.map((file) => ({
+          repo: file.repo,
+          path: file.path,
+          filename: file.filename,
+          isDirectory: file.isDirectory,
+          size: file.size ?? null,
+          mtime: file.mtime ? DateTime.formatIso(file.mtime) : null
+        }))
+      }
     })
 
-    const result = await runtime.runPromise(program)
-    
+    const { notice, result } = await runtime.runPromise(program)
+
     return {
       content: [
+        ...notice,
         {
           type: "text" as const,
           text: JSON.stringify(result, null, 2)
@@ -221,6 +242,10 @@ server.registerTool(
     }
   },
   async ({ repo, path, offset, limit, lineNumbers }) => {
+    // Unavailable until re-indexed: say why, rather than that the file isn't there
+    const notice = await runtime.runPromise(unavailableNotice(repo))
+    if (notice.length > 0) return { content: notice, isError: true }
+
     const program = Effect.gen(function* () {
       const indexer = yield* Indexer
       const content = yield* indexer.readFile(repo, path, {
@@ -228,7 +253,7 @@ server.registerTool(
         limit,
         lineNumbers: lineNumbers ?? true
       })
-      
+
       return {
         repo: content.repo,
         path: content.path,
@@ -240,7 +265,7 @@ server.registerTool(
     })
 
     const result = await runtime.runPromise(program)
-    
+
     return {
       content: [
         {
@@ -290,12 +315,12 @@ server.registerTool(
   }) => {
     const program = Effect.gen(function* () {
       const indexer = yield* Indexer
-      
+
       // If context is provided, use it for both before and after
       const contextVal = context ?? undefined
       const before = contextVal ?? (contextBefore ?? 0)
       const after = contextVal ?? (contextAfter ?? 0)
-      
+
       const results = yield* indexer.grepPattern(pattern, {
         repo,
         ignoreCase: ignoreCase ?? false,
@@ -309,23 +334,27 @@ server.registerTool(
         exclude,
         limit: limit ?? 100
       })
-      
-      return results.map((result) => ({
-        repo: result.repo,
-        path: result.path,
-        matchCount: result.matchCount,
-        matches: result.matches.map((match) => ({
-          lineNumber: match.lineNumber,
-          content: match.content,
-          isMatch: match.isMatch
+
+      return {
+        notice: yield* unavailableNotice(repo),
+        result: results.map((result) => ({
+          repo: result.repo,
+          path: result.path,
+          matchCount: result.matchCount,
+          matches: result.matches.map((match) => ({
+            lineNumber: match.lineNumber,
+            content: match.content,
+            isMatch: match.isMatch
+          }))
         }))
-      }))
+      }
     })
 
-    const result = await runtime.runPromise(program)
-    
+    const { notice, result } = await runtime.runPromise(program)
+
     return {
       content: [
+        ...notice,
         {
           type: "text" as const,
           text: JSON.stringify(result, null, 2)

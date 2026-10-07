@@ -69,7 +69,7 @@ const fakeEmbed = async (text: string) => {
 }
 
 // config.json in memory, so tests never touch ~/.repobase
-const MemoryRepoStore = Layer.effect(
+export const MemoryRepoStore = Layer.effect(
   RepoStore,
   Effect.gen(function* () {
     const data = yield* Ref.make<RepoStoreData>({ version: 1, repos: [] })

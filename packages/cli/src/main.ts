@@ -13,6 +13,7 @@ import {
   Indexer,
   trackingMode,
   pinnedMode,
+  needsReindex,
   type RepoConfig,
   type FileInfo,
   type GrepResult
@@ -51,13 +52,32 @@ const formatRepo = (repo: RepoConfig): string => {
         onSome: formatDate
       })
     : "never"
+  const index = needsReindex(repo)
+    ? `\n    Index: old format, unavailable until re-indexed (run 'repobase reindex ${repo.id}')`
+    : ""
   return `  ${repo.id}
     URL: ${repo.url}
     Mode: ${mode}
     Last sync: ${lastSync}
     Commit: ${commit}
-    Cloud: ${cloudStatus}${repo.cloudEnabled ? ` (last push: ${lastPush})` : ""}`
+    Cloud: ${cloudStatus}${repo.cloudEnabled ? ` (last push: ${lastPush})` : ""}${index}`
 }
+
+const outdatedRepoIds = RepobaseEngine.use((engine) => engine.listRepos()).pipe(
+  Effect.map((repos) => repos.filter(needsReindex).map((r) => r.id))
+)
+
+const noteUnavailable = (repo?: string) =>
+  outdatedRepoIds.pipe(
+    Effect.map((ids) => ids.filter((id) => !repo || id === repo)),
+    Effect.flatMap((ids) =>
+      ids.length === 0
+        ? Effect.void
+        : Console.error(
+            `Note: ${ids.length === 1 ? `${ids[0]} is` : `${ids.length} repositories are`} unavailable until re-indexed; run 'repobase reindex'\n`
+          )
+    )
+  )
 
 // ============================================================================
 // Commands
@@ -160,6 +180,37 @@ const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) =>
   )
 ).pipe(Command.withDescription("Sync repositories (all if no ID specified)"))
 
+// --- REINDEX COMMAND ---
+const reindexIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to re-index (default: every repository in an old index format)"),
+  Argument.optional
+)
+
+const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
+  Effect.gen(function* () {
+    const engine = yield* RepobaseEngine
+    const ids = Option.isSome(id) ? [id.value] : yield* outdatedRepoIds
+    if (ids.length === 0) {
+      yield* Console.log("Every repository is on the current index format; nothing to re-index.")
+      return
+    }
+
+    for (const repoId of ids) {
+      yield* Console.log(`Re-indexing ${repoId}...`)
+      const summary = yield* engine.reindexRepo(repoId)
+      yield* Console.log(
+        `✓ ${repoId}: ${summary.filesIndexed} files re-indexed in ${(summary.durationMs / 1000).toFixed(1)}s`
+      )
+    }
+  }).pipe(
+    Effect.catch((error) =>
+      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+    )
+  )
+).pipe(
+  Command.withDescription("Re-index repositories in the current index format (every outdated one if no ID specified)")
+)
+
 // --- REMOVE COMMAND ---
 const removeIdArg = Argument.String("id").pipe(
   Argument.withDescription("Repository ID to remove")
@@ -233,7 +284,7 @@ const cloudStatusCommand = Command.make("status", {}, () =>
   Effect.gen(function* () {
     const cloud = yield* CloudSync
     const configured = yield* cloud.isConfigured()
-    
+
     if (!configured) {
       yield* Console.log("Cloud sync is not configured.")
       yield* Console.log("Run 'repobase cloud login' to configure.")
@@ -426,6 +477,8 @@ const searchCommand = Command.make(
           ? indexer.searchSemantic(query, options)
           : indexer.searchKeyword(query, options))
 
+      yield* noteUnavailable(options.repo)
+
       if (results.length === 0) {
         yield* Console.log("No results found.")
         return
@@ -476,6 +529,7 @@ const lsCommand = Command.make("ls", { path: lsPathArg }, ({ path }) =>
 
     const indexer = yield* Indexer
     const files = yield* indexer.listFiles({ repo, path: subPath })
+    yield* noteUnavailable(repo)
 
     if (files.length === 0) {
       yield* Console.log("No files found.")
@@ -526,6 +580,7 @@ const globCommand = Command.make(
         repo: Option.getOrUndefined(repo),
         limit
       })
+      yield* noteUnavailable(Option.getOrUndefined(repo))
 
       if (files.length === 0) {
         yield* Console.log("No files matched.")
@@ -584,6 +639,11 @@ const readCommand = Command.make(
       }
       const repo = parts[0]
       const filePath = parts.slice(1).join("/")
+
+      if ((yield* outdatedRepoIds).includes(repo)) {
+        yield* Console.error(`${repo} is unavailable until re-indexed; run 'repobase reindex ${repo}'`)
+        return
+      }
 
       const indexer = yield* Indexer
       const result = yield* indexer.readFile(repo, filePath, {
@@ -743,6 +803,7 @@ const grepCommand = Command.make(
         exclude: Option.getOrUndefined(exclude),
         limit
       })
+      yield* noteUnavailable(Option.getOrUndefined(repo))
 
       if (results.length === 0) {
         yield* Console.log("No matches found.")
@@ -780,6 +841,7 @@ const rootCommand = Command.make("repobase").pipe(
     addCommand,
     listCommand,
     syncCommand,
+    reindexCommand,
     removeCommand,
     cloudCommand,
     searchCommand,
