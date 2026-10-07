@@ -99,7 +99,7 @@ export {
   resolveIndexingConcurrency,
   hostIndexingConcurrency,
   splitPools,
-  onnxThreadsPerWorker,
+  ONNX_THREADS_PER_WORKER,
   type WorkerCount,
   type WorkerCountInput,
   type PoolSizes

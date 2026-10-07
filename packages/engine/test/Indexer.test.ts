@@ -8,6 +8,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { Indexer, IndexError, initialIndexingProgress } from "../src/index.js"
 import { layerWith as IndexerLayerWith, makeWith } from "../src/services/Indexer.js"
+import { ONNX_THREADS_PER_WORKER } from "../src/worker/limits.js"
 
 // These tests run the real Indexer against a real LanceDB table and real
 // files, each in its own temp directory. Only the embedding model is faked.
@@ -101,7 +102,13 @@ export const verifyLogin = async (password: string, storedHash: string) => compa
 
       const [authHit] = yield* indexer.searchSemantic("check someone's credentials when they sign in", { repo: REPO })
       expect(authHit.path).toBe("src/auth.ts")
-    }).pipe(Effect.provide(IndexerLayerWith({ indexDir: tempDir("index") }).pipe(Layer.provide(BunServices.layer)))),
+    }).pipe(
+      Effect.provide(
+        IndexerLayerWith({ indexDir: tempDir("index"), threads: ONNX_THREADS_PER_WORKER }).pipe(
+          Layer.provide(BunServices.layer)
+        )
+      )
+    ),
     300_000
   )
 })

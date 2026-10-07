@@ -142,6 +142,8 @@ export interface IndexerConfig {
   readonly reposDir?: string
   /** Replaces the transformers embedding model (e.g. a deterministic fake in tests) */
   readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
+  /** ONNX Runtime threads the model embeds with, including the caller's; defaults to its own pool */
+  readonly threads?: number
   /**
    * Counts a line's tokens when chunking. Defaults to the model's tokenizer, or
    * to a word count when `embed` replaces the model.
@@ -597,7 +599,13 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     })
 
     embedder = yield* Effect.tryPromise({
-      try: () => transformers.pipeline("feature-extraction", MODEL_ID, { dtype: "fp32" }),
+      try: () =>
+        transformers.pipeline("feature-extraction", MODEL_ID, {
+          dtype: "fp32",
+          ...(config.threads === undefined
+            ? {}
+            : { session_options: { intraOpNumThreads: config.threads, interOpNumThreads: 1 } })
+        }),
       catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to load embedding model: ${e}` })
     })
 

@@ -5,7 +5,6 @@ import {
   hostWorkerCount,
   MAX_INDEXING_ENV,
   MAX_WORKERS_ENV,
-  onnxThreadsPerWorker,
   resolveIndexingConcurrency,
   resolveWorkerCount,
   splitPools
@@ -78,11 +77,12 @@ describe("worker limits", () => {
   describe("resolveIndexingConcurrency", () => {
     it.each([
       { cores: 1, expected: 1 },
-      { cores: 10, expected: 1 },
-      { cores: 16, expected: 1 },
-      { cores: 20, expected: 2 },
-      { cores: 32, expected: 3 }
-    ])("fits about half the cores at ~5 cores per stream ($cores cores)", ({ cores, expected }) => {
+      { cores: 4, expected: 1 },
+      { cores: 8, expected: 2 },
+      { cores: 10, expected: 2 },
+      { cores: 16, expected: 4 },
+      { cores: 32, expected: 4 }
+    ])("fits half the cores at 2 threads per worker, up to 4 workers ($cores cores)", ({ cores, expected }) => {
       expect(resolveIndexingConcurrency({ cores })).toEqual({ count: expected, source: "default" })
     })
 
@@ -98,7 +98,7 @@ describe("worker limits", () => {
 
     it.each(["0", "abc", "1.5"])("ignores invalid override %s", (override) => {
       const result = resolveIndexingConcurrency({ cores: 10, override })
-      expect(result).toMatchObject({ count: 1, source: "default" })
+      expect(result).toMatchObject({ count: 2, source: "default" })
       expect(result.warning).toContain(MAX_INDEXING_ENV)
     })
   })
@@ -153,18 +153,6 @@ describe("worker limits", () => {
     it("reserves one worker for queries", () => {
       expect(splitPools(2)).toEqual({ jobs: 1, query: 1 })
       expect(splitPools(4)).toEqual({ jobs: 3, query: 1 })
-    })
-  })
-
-  describe("onnxThreadsPerWorker", () => {
-    it("divides cores between workers", () => {
-      expect(onnxThreadsPerWorker(8, 4)).toBe(2)
-      expect(onnxThreadsPerWorker(10, 4)).toBe(2)
-    })
-
-    it("never goes below one thread", () => {
-      expect(onnxThreadsPerWorker(2, 4)).toBe(1)
-      expect(onnxThreadsPerWorker(4, 0)).toBe(4)
     })
   })
 })

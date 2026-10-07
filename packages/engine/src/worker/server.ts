@@ -19,7 +19,8 @@ import {
 } from "../jobs/errors.js"
 import { JobStore, layer as JobStoreLayer } from "../jobs/JobStore.js"
 import { GitClient, layer as GitClientLayer } from "../services/GitClient.js"
-import { INDEX_BATCH_SIZE, Indexer, layer as IndexerLayer } from "../services/Indexer.js"
+import { INDEX_BATCH_SIZE, Indexer, layerWith as IndexerLayerWith } from "../services/Indexer.js"
+import { ONNX_THREADS_PER_WORKER } from "./limits.js"
 import { type IndexBatchEvent, StepRpcs } from "./rpcs.js"
 
 /**
@@ -197,7 +198,7 @@ const WorkerLayer = RpcServer.layer(StepRpcs).pipe(
   Layer.provide(HandlersLayer),
   Layer.provide(RpcServer.layerProtocolWorkerRunner),
   Layer.provide(BunWorkerRunner.layer),
-  Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayer, JobStoreLayer)),
+  Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayerWith({ threads: ONNX_THREADS_PER_WORKER }), JobStoreLayer)),
   Layer.provideMerge(fileLoggerLayer(logPath("worker"))),
   Layer.provide(BunServices.layer)
 )

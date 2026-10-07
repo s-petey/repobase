@@ -95,11 +95,18 @@ const withOverride = (env: string, override: string | undefined, fallback: numbe
 export const MAX_INDEXING_ENV = "REPOBASE_MAX_INDEXING"
 
 /**
- * Rough CPU cost of one stream of embedding calls. Measured at about 4.7 cores
- * with transformers 2.17 under Bun, which ignores ONNX thread limits (see the
- * "cap embedding CPU per worker thread" investigation).
+ * ONNX Runtime threads each worker thread embeds with, which is also the cores
+ * one embedding stream uses (the count includes the calling thread). Measured on
+ * transformers 4.3.0: 2 threads embed ~34 chunks/s on 2 cores, where the default
+ * pool embeds ~43/s on ~5, so several capped workers do more with less CPU.
  */
-export const CORES_PER_INDEXING_STREAM = 5
+export const ONNX_THREADS_PER_WORKER = 2
+
+/**
+ * Upper bound on the default indexing worker count: each loads its own
+ * embedding model (fp32, ~90 MB) and ONNX Runtime
+ */
+export const DEFAULT_MAX_INDEXING_WORKERS = 4
 
 /**
  * Fraction of the machine's cores indexing may use by default, leaving the rest
@@ -110,7 +117,8 @@ export const INDEXING_CPU_BUDGET = 0.5
 /**
  * Resolve how many index batches (embedding streams) may run at once across
  * all jobs, which is also how many indexing workers there are. By default
- * that's as many as fit in INDEXING_CPU_BUDGET of the cores, and at least one;
+ * that's as many as fit in INDEXING_CPU_BUDGET of the cores at
+ * ONNX_THREADS_PER_WORKER each, between one and DEFAULT_MAX_INDEXING_WORKERS;
  * a valid override wins, clamped to the core count.
  */
 export const resolveIndexingConcurrency = (input: {
@@ -118,7 +126,11 @@ export const resolveIndexingConcurrency = (input: {
   readonly override?: string | undefined
 }): WorkerCount => {
   const cores = Math.max(1, Math.floor(input.cores))
-  const byBudget = Math.max(1, Math.floor((cores * INDEXING_CPU_BUDGET) / CORES_PER_INDEXING_STREAM))
+  const byBudget = clamp(
+    Math.floor((cores * INDEXING_CPU_BUDGET) / ONNX_THREADS_PER_WORKER),
+    1,
+    DEFAULT_MAX_INDEXING_WORKERS
+  )
   return withOverride(MAX_INDEXING_ENV, input.override, byBudget, cores)
 }
 
@@ -153,12 +165,6 @@ export interface PoolSizes {
  */
 export const splitPools = (count: number): PoolSizes =>
   count <= 1 ? { jobs: 1, query: 0 } : { jobs: count - 1, query: 1 }
-
-/**
- * ONNX intra-op threads per worker, so N workers don't each claim every core
- */
-export const onnxThreadsPerWorker = (cores: number, workers: number): number =>
-  Math.max(1, Math.floor(cores / Math.max(1, workers)))
 
 /**
  * Resolve the worker count for the current machine, with the override from
