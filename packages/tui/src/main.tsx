@@ -289,6 +289,12 @@ const program = Effect.gen(function* () {
           runFork(Fiber.interrupt(fiber))
         }
       }}
+      onProgressChange={(listener) => {
+        const fiber = runFork(Stream.runForEach(progress.changes, (files) => Effect.sync(() => listener(files))))
+        return () => {
+          runFork(Fiber.interrupt(fiber))
+        }
+      }}
       onRetryJob={(jobId) => runPromise(runner.retry(jobId).pipe(Effect.asVoid))}
       onDiscardJob={(jobId) => runPromise(runner.discard(jobId))}
       onQuit={onQuit}

@@ -53,13 +53,15 @@ describe("addRepoProgress", () => {
   })
 
   it("fills 50-95% from per-file progress while indexing", () => {
-    const start = addRepoProgress(jobAt("indexBatch"), { filesStarted: 0, totalFiles: 200 })
+    const batches = new Map<number, string>()
+    const start = addRepoProgress(jobAt("indexBatch"), { filesStarted: 0, totalFiles: 200, batches })
     const half = addRepoProgress(jobAt("indexBatch"), {
       filesStarted: 100,
       totalFiles: 200,
-      currentFile: "src/a.ts"
+      currentFile: "src/a.ts",
+      batches
     })
-    const end = addRepoProgress(jobAt("indexBatch"), { filesStarted: 200, totalFiles: 200 })
+    const end = addRepoProgress(jobAt("indexBatch"), { filesStarted: 200, totalFiles: 200, batches })
 
     expect(start.progress).toBe(50)
     expect(half).toEqual({

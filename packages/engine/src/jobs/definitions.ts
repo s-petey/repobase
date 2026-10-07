@@ -471,9 +471,10 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
           client.IndexBatch({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath, batch, total }).pipe(
             Stream.runForEach((event) =>
               event._tag === "File"
-                ? progress.fileStarted(ctx.job.id, event.path)
+                ? progress.fileStarted(ctx.job.id, batch, event.path)
                 : Ref.set(result, { indexed: event.indexed, skipped: event.skipped })
-            )
+            ),
+            Effect.ensuring(progress.batchEnded(ctx.job.id, batch))
           )
         ))
         return yield* Ref.get(result)

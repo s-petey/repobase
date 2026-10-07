@@ -59,6 +59,63 @@ afterEach(async () => {
   setup = undefined
 })
 
+describe("TasksView live progress", () => {
+  const running = (id: string): Job => ({
+    ...syncJob([step("indexBatch:0", "done"), step("indexBatch:1", "running"), step("indexBatch:2", "running")], "running"),
+    id
+  })
+
+  it("shows a running task's file count and the file each running batch is on", async () => {
+    const job = running("sync-1")
+    const progress = new Map([
+      [job.id, { filesStarted: 812, totalFiles: 3410, currentFile: "b.ts", batches: new Map([[2, "src/b.ts"], [1, "src/a.ts"]]) }]
+    ])
+    setup = await testRender(
+      <TasksView
+        jobs={[job]}
+        onProgressChange={(listener) => {
+          listener(progress)
+          return () => {}
+        }}
+        now={now}
+        onRetry={async () => {}}
+        onDiscard={async () => {}}
+        onClose={() => {}}
+      />,
+      { width: 140, height: 30 }
+    )
+    await interact(setup, () => {})
+    const lines = setup.captureCharFrame().split("\n")
+    const lineOf = (text: string) => lines.findIndex((l) => l.includes(text))
+
+    expect(lineOf("Indexing 812 / 3,410 files")).toBeGreaterThan(-1)
+    // In batch order, under the count
+    expect(lineOf("indexBatch:1   src/a.ts")).toBeGreaterThan(lineOf("Indexing 812"))
+    expect(lineOf("indexBatch:2   src/b.ts")).toBeGreaterThan(lineOf("indexBatch:1   src/a.ts"))
+  })
+
+  it("shows nothing extra for a task that isn't running", async () => {
+    const job = syncJob([step("indexBatch:0", "failed")])
+    setup = await testRender(
+      <TasksView
+        jobs={[job]}
+        onProgressChange={(listener) => {
+          listener(new Map([[job.id, { filesStarted: 1, totalFiles: 2, batches: new Map([[0, "src/a.ts"]]) }]]))
+          return () => {}
+        }}
+        now={now}
+        onRetry={async () => {}}
+        onDiscard={async () => {}}
+        onClose={() => {}}
+      />,
+      { width: 140, height: 30 }
+    )
+    await interact(setup, () => {})
+
+    expect(setup.captureCharFrame()).not.toContain("Indexing 1 / 2 files")
+  })
+})
+
 describe("TasksView", () => {
   it("lists tasks as repo, status and age columns, with the selected task's heading on the right", async () => {
     setup = await renderModal([syncJob([step("loadRepo", "done")])])

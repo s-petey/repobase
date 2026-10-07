@@ -1,6 +1,6 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import type { Job, StepStatus } from "@repobase/engine"
+import type { FileProgress, Job, StepStatus } from "@repobase/engine"
 import { DateTime } from "effect"
 import { useEffect, useRef, useState } from "react"
 import { formatAge, kindLabel, retryState, stepIcon, stepLines } from "../jobView.js"
@@ -8,6 +8,7 @@ import { colors } from "../theme/index.js"
 
 interface TasksViewProps {
   jobs: ReadonlyArray<Job>
+  onProgressChange?: (listener: (progress: ReadonlyMap<string, FileProgress>) => void) => () => void
   now: DateTime.Utc
   onRetry: (jobId: string) => Promise<void>
   onDiscard: (jobId: string) => Promise<void>
@@ -43,10 +44,12 @@ const DETAIL_PAGE = 10
 const fit = (text: string, width: number) =>
   text.length <= width ? text.padEnd(width) : `${text.slice(0, Math.max(0, width - 1))}…`
 
-export const TasksView = ({ jobs, now, onRetry, onDiscard, onClose }: TasksViewProps) => {
+export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onClose }: TasksViewProps) => {
   const { width } = useTerminalDimensions()
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [notice, setNotice] = useState<string | undefined>()
+  const [progress, setProgress] = useState<ReadonlyMap<string, FileProgress>>(new Map())
+  useEffect(() => onProgressChange?.(setProgress), [onProgressChange])
   const listRef = useRef<ScrollBoxRenderable | null>(null)
   const detailRef = useRef<ScrollBoxRenderable | null>(null)
 
@@ -65,6 +68,7 @@ export const TasksView = ({ jobs, now, onRetry, onDiscard, onClose }: TasksViewP
 
   const selected = jobs[selectedIndex]
   const retry = selected ? retryState(selected) : undefined
+  const live = selected?.status === "running" ? progress.get(selected.id) : undefined
 
   const run = async (action: (jobId: string) => Promise<void>, jobId: string) => {
     setNotice(undefined)
@@ -162,6 +166,23 @@ export const TasksView = ({ jobs, now, onRetry, onDiscard, onClose }: TasksViewP
                 content={`${kindLabel[selected.kind]} ${selected.repoId} · ${selected.status}`}
                 style={{ fg: statusColor(selected.status), attributes: TextAttributes.BOLD, marginBottom: 1 }}
               />
+              {live && (
+                <box style={{ flexDirection: "column", marginBottom: 1, flexShrink: 0 }}>
+                  <text
+                    content={`Indexing ${live.filesStarted.toLocaleString()} / ${live.totalFiles.toLocaleString()} files`}
+                    style={{ fg: colors.status.info.default }}
+                  />
+                  {[...live.batches]
+                    .sort(([a], [b]) => a - b)
+                    .map(([batch, path]) => (
+                      <text
+                        key={batch}
+                        content={`  ${`indexBatch:${batch}`.padEnd(14)} ${path}`}
+                        style={{ fg: colors.text.secondary }}
+                      />
+                    ))}
+                </box>
+              )}
               <scrollbox ref={detailRef} style={{ flexGrow: 1 }}>
                 {stepLines(selected).map((line) => (
                   <box key={line.key} style={{ flexDirection: "column" }}>

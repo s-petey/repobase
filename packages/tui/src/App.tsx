@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
-import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, Job } from "@repobase/engine"
+import type { RepoConfig, SearchMode, SearchResult, AddRepoProgress, FileProgress, Job } from "@repobase/engine"
 import { initialProgress, needsReindex, repoNames } from "@repobase/engine"
 import { Array as Arr, DateTime, Order } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -41,6 +41,7 @@ interface AppProps {
     repos: ReadonlyArray<string> | undefined
   ) => Promise<SearchResult[]>
   onJobsChange: (listener: (jobs: ReadonlyArray<Job>) => void) => () => void
+  onProgressChange: (listener: (progress: ReadonlyMap<string, FileProgress>) => void) => () => void
   onRetryJob: (jobId: string) => Promise<void>
   onDiscardJob: (jobId: string) => Promise<void>
   onQuit: () => void
@@ -89,6 +90,7 @@ export const App = ({
   onReindexRepos,
   onSearch,
   onJobsChange,
+  onProgressChange,
   onRetryJob,
   onDiscardJob,
   onQuit,
@@ -564,6 +566,7 @@ export const App = ({
         <Header version="1.0.3" />
         <TasksView
           jobs={jobs}
+          onProgressChange={onProgressChange}
           now={DateTime.nowUnsafe()}
           onRetry={onRetryJob}
           onDiscard={onDiscardJob}

@@ -37,6 +37,7 @@ const renderApp = (
       onReindexRepos={async (ids) => ids.length}
       onSearch={async () => []}
       onJobsChange={() => () => {}}
+      onProgressChange={() => () => {}}
       onRetryJob={async () => {}}
       onDiscardJob={async () => {}}
       onQuit={onQuit}
