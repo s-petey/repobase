@@ -13,6 +13,7 @@ export interface StepLine {
   readonly label: string;
   readonly status: StepStatus;
   readonly error?: StepErrorDisplay;
+  readonly children?: ReadonlyArray<StepLine>;
 }
 
 export const stepIcon: Record<StepStatus, string> = {
@@ -39,6 +40,9 @@ const groupStatus = (steps: ReadonlyArray<Step>): StepStatus => {
 
 const errorOf = (step: Step | undefined) =>
   step?.error ? formatStepError(step.error) : undefined;
+
+const fanOutIndex = (key: string): number =>
+  Number(key.slice(key.indexOf(":") + 1));
 
 /**
  * A job's steps as checklist lines, with fan-out steps (one per batch)
@@ -71,6 +75,12 @@ export const stepLines = (job: Job): ReadonlyArray<StepLine> =>
         label,
         status: groupStatus(items),
         error: errorOf(failed[0]),
+        children: (done === items.length ? [] : items).map((item) => ({
+          key: item.key,
+          label: `batch ${fanOutIndex(item.key) + 1}/${items.length}${item.status === "interrupted" ? " interrupted" : ""}`,
+          status: item.status,
+          error: errorOf(item),
+        })),
       },
     ];
   });
