@@ -30,6 +30,7 @@ import {
   hostWorkerCount,
   hostIndexingConcurrency,
   splitPools,
+  telemetryLayer,
   type SearchMode,
   type AddRepoProgress,
   type Job,
@@ -96,6 +97,7 @@ const EngineLive = Layer.mergeAll(
 // logger layer would not apply to the programs we run and logs would hit the TUI.
 // BunServices is provided last so both the engine and the logger share it.
 const MainLayer = EngineLive.pipe(
+  Layer.provideMerge(telemetryLayer("repobase-tui")),
   Layer.provideMerge(FileLogger),
   Layer.provide(BunServices.layer)
 )

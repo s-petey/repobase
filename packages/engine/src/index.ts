@@ -224,6 +224,8 @@ export {
   silentLoggerLayer
 } from "./file-logger.js"
 
+export { telemetryLayer } from "./telemetry.js"
+
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"
 export { layer as RepoStoreLayer } from "./services/RepoStore.js"

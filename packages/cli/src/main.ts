@@ -14,6 +14,7 @@ import {
   trackingMode,
   pinnedMode,
   needsReindex,
+  telemetryLayer,
   type RepoConfig,
   type FileInfo,
   type GrepResult
@@ -871,7 +872,9 @@ const EngineLive = RepobaseEngineLayer.pipe(
 const CloudSyncLive = CloudSyncLayer.pipe(Layer.provide(RepoStoreLayer))
 
 // All application layers merged together
-const AppLayer = Layer.mergeAll(EngineLive, CloudSyncLive, IndexerLayer)
+const AppLayer = Layer.mergeAll(EngineLive, CloudSyncLive, IndexerLayer).pipe(
+  Layer.provideMerge(telemetryLayer("repobase-cli"))
+)
 
 // Run the CLI - provide AppLayer then BunServices (platform layer)
 cli(process.argv.slice(2)).pipe(

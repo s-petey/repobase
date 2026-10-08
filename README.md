@@ -90,6 +90,25 @@ repobase keeps its state and logs in `~/.repobase`:
 - `config.json` - the repositories you've added
 - `repos/` and `index/` - the cloned repositories and the search index
 
+### Tracing
+
+repobase can send traces and logs over OpenTelemetry (OTLP/HTTP) to see where time goes: searches, greps, and each task's steps and index batches. It's off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set; `OTEL_SDK_DISABLED=true` turns it off again.
+
+For the MCP server, add the variable to its config:
+
+```json
+{
+  "mcpServers": {
+    "repobase": {
+      "command": "repobase-mcp",
+      "env": { "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:27686" }
+    }
+  }
+}
+```
+
+Each process reports as its own service: `repobase-tui`, `repobase-worker` (the worker threads), `repobase-mcp` and `repobase-cli`. A task's steps and the worker work they start share one trace.
+
 ## Development
 
 ```bash

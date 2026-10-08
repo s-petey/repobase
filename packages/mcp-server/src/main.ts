@@ -13,6 +13,7 @@ import {
   IndexerLayer,
   Indexer,
   needsReindex,
+  telemetryLayer,
   type SearchMode
 } from "@repobase/engine"
 import { reindexNotice, serverInstructions } from "./instructions.js"
@@ -28,11 +29,15 @@ const MainLayer = Layer.mergeAll(
   EngineLive,
   IndexerLayer
 ).pipe(
+  Layer.provideMerge(telemetryLayer("repobase-mcp")),
   Layer.provide(BunServices.layer)
 )
 
 // Create a managed runtime with the engine layer
 const runtime = ManagedRuntime.make(MainLayer)
+
+const runTool = <A, E>(tool: string, program: Effect.Effect<A, E, Layer.Success<typeof MainLayer>>) =>
+  runtime.runPromise(program.pipe(Effect.withSpan(`mcp.${tool}`)))
 
 // The instructions name the repos indexed right now; each client session
 // starts its own server, so they're current for that session
@@ -78,7 +83,7 @@ server.registerTool(
       }))
     })
 
-    const result = await runtime.runPromise(program)
+    const result = await runTool("list_repos", program)
 
     return {
       content: [
@@ -128,7 +133,7 @@ server.registerTool(
       }
     })
 
-    const { notice, results } = await runtime.runPromise(program)
+    const { notice, results } = await runTool("search", program)
 
     return {
       content: [
@@ -170,7 +175,7 @@ server.registerTool(
       }
     })
 
-    const { notice, result } = await runtime.runPromise(program)
+    const { notice, result } = await runTool("list_files", program)
 
     return {
       content: [
@@ -216,7 +221,7 @@ server.registerTool(
       }
     })
 
-    const { notice, result } = await runtime.runPromise(program)
+    const { notice, result } = await runTool("glob_files", program)
 
     return {
       content: [
@@ -266,7 +271,7 @@ server.registerTool(
       }
     })
 
-    const result = await runtime.runPromise(program)
+    const result = await runTool("read_file", program)
 
     return {
       content: [
@@ -352,7 +357,7 @@ server.registerTool(
       }
     })
 
-    const { notice, result } = await runtime.runPromise(program)
+    const { notice, result } = await runTool("grep", program)
 
     return {
       content: [

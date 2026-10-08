@@ -20,6 +20,7 @@ import {
 import { JobStore, layer as JobStoreLayer } from "../jobs/JobStore.js"
 import { GitClient, layer as GitClientLayer } from "../services/GitClient.js"
 import { INDEX_BATCH_SIZE, Indexer, layerWith as IndexerLayerWith } from "../services/Indexer.js"
+import { telemetryLayer } from "../telemetry.js"
 import { ONNX_THREADS_PER_WORKER } from "./limits.js"
 import { type IndexBatchEvent, StepRpcs } from "./rpcs.js"
 
@@ -194,11 +195,15 @@ export const HandlersLayer = StepRpcs.toLayer(
 
 // provideMerge so the file logger is in the context the RPC server and its
 // handlers are built with; otherwise worker logs would go to stdout.
-const WorkerLayer = RpcServer.layer(StepRpcs).pipe(
+const WorkerLayer = Layer.merge(
+  RpcServer.layer(StepRpcs),
+  Layer.effectDiscard(Effect.logDebug(`Worker ready (${ONNX_THREADS_PER_WORKER} ONNX threads)`))
+).pipe(
   Layer.provide(HandlersLayer),
   Layer.provide(RpcServer.layerProtocolWorkerRunner),
   Layer.provide(BunWorkerRunner.layer),
   Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayerWith({ threads: ONNX_THREADS_PER_WORKER }), JobStoreLayer)),
+  Layer.provideMerge(telemetryLayer("repobase-worker")),
   Layer.provideMerge(fileLoggerLayer(logPath("worker"))),
   Layer.provide(BunServices.layer)
 )
