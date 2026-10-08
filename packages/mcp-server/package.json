@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",
-    "@modelcontextprotocol/sdk": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
     "@repobase/engine": "workspace:*",
-    "effect": "catalog:",
-    "zod": "catalog:"
+    "effect": "catalog:"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "catalog:",
     "tsx": "^4.23.13"
   }
 }

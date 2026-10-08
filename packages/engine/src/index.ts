@@ -229,7 +229,7 @@ export { telemetryLayer } from "./telemetry.js"
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"
 export { layer as RepoStoreLayer } from "./services/RepoStore.js"
-export { layer as IndexerLayer } from "./services/Indexer.js"
+export { layer as IndexerLayer, layerWith as IndexerLayerWith } from "./services/Indexer.js"
 export { layer as RepobaseEngineLayer } from "./services/RepobaseEngine.js"
 export { layer as CloudSyncLayer } from "./services/CloudSync.js"
 

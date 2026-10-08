@@ -66,13 +66,11 @@ async function buildMCP() {
       "@lancedb/lancedb",
       "@huggingface/transformers",
       // Keep MCP SDK external
-      "@modelcontextprotocol/sdk",
+      "@modelcontextprotocol/server",
       // Keep effect ecosystem external
       "effect",
       "@effect/platform",
       "@effect/platform-node",
-      // Zod
-      "zod",
     ],
   })
   
