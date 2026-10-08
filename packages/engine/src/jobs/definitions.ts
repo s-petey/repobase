@@ -304,6 +304,17 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
         // A forced sync, or one of a repo in an old index format, re-indexes every
         // file rather than just the diff
         const force = (ctx.job.payload.force ?? false) || target.outdated
+
+        let logMessage = '';
+        if (force) {
+          logMessage = `${ctx.job.repoId}: re-indexing every file (${target.outdated ? "the index format is outdated" : "forced"})`
+        } else if (target.previousCommit === null) {
+          logMessage = `${ctx.job.repoId}: no previous sync, so scanning every file`
+        } else {
+          logMessage = `${ctx.job.repoId}: indexing the changes ${target.previousCommit.slice(0, 8)}..${head.commit.slice(0, 8)}`
+        }
+
+        yield* Effect.logDebug(logMessage)
         return yield* client.PlanChanges({
           jobId: ctx.job.id,
           repoId: ctx.job.repoId,

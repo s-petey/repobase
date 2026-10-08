@@ -320,6 +320,10 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
             )
           ),
           Effect.provide(services),
+          Effect.tapCause((cause) =>
+            Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.logWarning(`Step ${key} of job ${jobId} failed`, cause)
+          ),
+          Effect.withSpan(`step.${key.split(":")[0]}`, { attributes: { "job.id": jobId, "step.key": key } }),
           Effect.exit
         )
 
@@ -361,6 +365,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
                 : job.steps
           }))
         ),
+        Effect.tap((job) => Effect.logInfo(`${job.kind} for ${job.repoId} ${status}`)),
         Effect.uninterruptible
       )
 
@@ -478,11 +483,18 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         )
       )
 
+    // Its own trace: a job outlives whatever started it
     const launch = (job: Job) =>
       FiberMap.run(
         fibers,
         job.id,
-        runJob(job.id).pipe(Effect.ensuring(releaseRepo(job.repoId)))
+        runJob(job.id).pipe(
+          Effect.withSpan(`job.${job.kind}`, {
+            root: true,
+            attributes: { "job.id": job.id, "job.repo": job.repoId, "job.kind": job.kind }
+          }),
+          Effect.ensuring(releaseRepo(job.repoId))
+        )
       ).pipe(Effect.asVoid)
 
     const start: JobRunnerService["start"] = (input) =>
@@ -501,6 +513,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
           steps: initialSteps(definition)
         } as Job
         yield* publish(job)
+        yield* Effect.logInfo(`Started ${job.kind} for ${job.repoId} (${job.id})`)
         yield* launch(job)
         return job
       })
@@ -529,6 +542,14 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
           })
         }
         yield* claimRepo(job.repoId)
+        const from = job.steps.find((s) => s.status !== "done" && s.status !== "skipped")
+        const items = job.steps.filter((s) => s.key !== s.name)
+        const itemsDone = items.filter((s) => s.status === "done").length
+        yield* Effect.logInfo(
+          `Resuming ${job.kind} for ${job.repoId} at ${from?.key ?? "the end"}${
+            items.length > 0 ? ` (${itemsDone}/${items.length} ${items[0].name} done)` : ""
+          }`
+        )
         const resumed = yield* updateJob(jobId, (j) => ({
           ...j,
           status: "running",
@@ -540,9 +561,10 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
 
     const discard: JobRunnerService["discard"] = (jobId) =>
       Effect.gen(function* () {
-        yield* findJob(jobId)
+        const job = yield* findJob(jobId)
         // Interrupting runs the job's own finalizers (release the repo, mark interrupted)
         yield* FiberMap.remove(fibers, jobId)
+        yield* Effect.logInfo(`Discarded ${job.kind} for ${job.repoId} (${jobId})`)
         yield* writeLock.withPermit(
           Effect.gen(function* () {
             yield* store.remove(jobId).pipe(

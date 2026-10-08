@@ -1,4 +1,4 @@
-import { Array as Arr, Clock, Context, DateTime, Effect, FileSystem, Layer, Option, Schedule, Semaphore, SubscriptionRef } from "effect"
+import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, Schedule, Semaphore, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
@@ -7,6 +7,7 @@ import type {
   IndexPlan,
   IndexPlanFile,
   IndexSummary,
+  SearchMode,
   SearchResult
 } from "../schemas.js"
 import * as os from "os"
@@ -38,6 +39,8 @@ const LEGACY_FILES_TABLE = "files"
  * write, and the unit a failed index job retries.
  */
 export const INDEX_BATCH_SIZE = 50
+
+const SLOW_FILE_MS = 5_000
 
 // Max ids per `id IN (...)` delete, to keep the SQL predicate a sane size
 const DELETE_CHUNK_SIZE = 500
@@ -477,6 +480,23 @@ const bestChunkPerFile = (
   return results
 }
 
+const traceSearch =
+  (mode: SearchMode, query: string, options: SearchOptions | undefined) =>
+  <E, R>(search: Effect.Effect<SearchResult[], E, R>) =>
+    search.pipe(
+      Effect.tap((results) => Effect.annotateCurrentSpan("search.results", results.length)),
+      Effect.withSpan("Indexer.search", {
+        attributes: {
+          "search.mode": mode,
+          "search.query": query,
+          "search.repo": options?.repo,
+          "search.path": options?.path,
+          "search.glob": options?.glob,
+          "search.limit": options?.limit ?? 20
+        }
+      })
+    )
+
 /**
  * Row id of one chunk of a file in the index
  */
@@ -490,14 +510,27 @@ const recordId = (repoId: string, path: string, chunk: number) => `${repoId}:${p
 const isCommitConflict = (error: IndexError) =>
   /commit conflict|conflicting|retryable|concurrent/i.test(error.message)
 
+const COMMIT_CONFLICT_RETRIES = 5
+
 const retryOnCommitConflict = <A>(effect: Effect.Effect<A, IndexError>) =>
-  effect.pipe(
-    Effect.retry({
-      while: isCommitConflict,
-      schedule: Schedule.exponential("50 millis"),
-      times: 5
-    })
-  )
+  Effect.suspend(() => {
+    let attempt = 0
+    return effect.pipe(
+      Effect.tapError((error) => {
+        if (!isCommitConflict(error)) return Effect.void
+        attempt++
+        return Effect.logWarning(
+          `LanceDB commit conflict in ${error.operation} (attempt ${attempt} of ${COMMIT_CONFLICT_RETRIES + 1})`,
+          error.message
+        )
+      }),
+      Effect.retry({
+        while: isCommitConflict,
+        schedule: Schedule.exponential("50 millis"),
+        times: COMMIT_CONFLICT_RETRIES
+      })
+    )
+  })
 
 /**
  * Create an Indexer for a given index directory
@@ -709,8 +742,13 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       // Indexed files that are no longer in the repo
       const toDelete = [...existingByPath.keys()].filter((p) => !seenPaths.has(p))
 
+      yield* Effect.annotateCurrentSpan({
+        "plan.scanned": files.length,
+        "plan.to_index": toIndex.length,
+        "plan.to_delete": toDelete.length
+      })
       return { toIndex, toDelete, skipped }
-    })
+    }).pipe(Effect.withSpan("Indexer.planFullIndex", { attributes: { "plan.repo": repoId, "plan.force": options?.force ?? false } }))
 
   const planChanges: IndexerService["planChanges"] = (repoId, repoPath, changes) =>
     Effect.gen(function* () {
@@ -742,8 +780,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         toIndex.push({ path: change.path, hash })
       }
 
+      yield* Effect.annotateCurrentSpan({ "plan.to_index": toIndex.length, "plan.to_delete": toDelete.length })
       return { toIndex, toDelete, skipped }
-    })
+    }).pipe(Effect.withSpan("Indexer.planChanges", { attributes: { "plan.repo": repoId, "plan.changes": changes.length } }))
 
   const deletePaths: IndexerService["deletePaths"] = (repoId, paths) =>
     Effect.gen(function* () {
@@ -759,7 +798,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           })
         )
       }
-    })
+    }).pipe(Effect.withSpan("Indexer.deletePaths", { attributes: { "delete.repo": repoId, "delete.paths": paths.length } }))
 
   const indexBatch: IndexerService["indexBatch"] = (repoId, repoPath, files, options) =>
     Effect.gen(function* () {
@@ -776,69 +815,104 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         })
       const countTokens = yield* getTokenCounter.pipe(Effect.mapError(embedError(files[0]?.path ?? "")))
 
-      for (const file of files) {
-        if (options?.onFile) yield* options.onFile(file.path)
+      const indexFile = (file: IndexPlanFile) =>
+        Effect.gen(function* () {
+          // Re-read: the file may have changed or disappeared since planning
+          const buffer = yield* readIndexable(repoPath, file.path)
+          if (Option.isNone(buffer)) return Option.none<Array<Record<string, unknown>>>()
 
-        // Re-read: the file may have changed or disappeared since planning
-        const buffer = yield* readIndexable(repoPath, file.path)
-        if (Option.isNone(buffer)) {
-          gone.push(file.path)
-          continue
-        }
+          const contents = new TextDecoder().decode(buffer.value)
+          const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
+            Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
+          )
+          // The platform's stat gives a JS Date
+          const mtimeMs = Option.isSome(stat.mtime) ? stat.mtime.value.getTime() : yield* Clock.currentTimeMillis
+          const hash = hashBuffer(buffer.value)
 
-        const contents = new TextDecoder().decode(buffer.value)
-        const stat = yield* fs.stat(`${repoPath}/${file.path}`).pipe(
-          Effect.catch(() => Effect.succeed({ mtime: Option.none<Date>(), size: BigInt(0) }))
-        )
-        // The platform's stat gives a JS Date
-        const mtimeMs = Option.isSome(stat.mtime) ? stat.mtime.value.getTime() : yield* Clock.currentTimeMillis
-        const hash = hashBuffer(buffer.value)
+          const rows: Array<Record<string, unknown>> = []
+          for (const chunk of chunkLines(contents, countTokens)) {
+            const vector = yield* embedText(chunk.text).pipe(Effect.mapError(embedError(file.path)))
+            rows.push({
+              id: recordId(repoId, file.path, chunk.chunk),
+              repo: repoId,
+              path: file.path,
+              filename: file.path.split("/").pop() ?? file.path,
+              chunk: chunk.chunk,
+              start_line: chunk.startLine,
+              end_line: chunk.endLine,
+              text: chunk.text,
+              mtime_ms: Math.trunc(mtimeMs),
+              size_bytes: Number(stat.size),
+              hash,
+              vector
+            })
+          }
+          return Option.some(rows)
+        })
 
-        const chunks = chunkLines(contents, countTokens)
-        for (const chunk of chunks) {
-          const vector = yield* embedText(chunk.text).pipe(Effect.mapError(embedError(file.path)))
-          records.push({
-            id: recordId(repoId, file.path, chunk.chunk),
-            repo: repoId,
-            path: file.path,
-            filename: file.path.split("/").pop() ?? file.path,
-            chunk: chunk.chunk,
-            start_line: chunk.startLine,
-            end_line: chunk.endLine,
-            text: chunk.text,
-            mtime_ms: Math.trunc(mtimeMs),
-            size_bytes: Number(stat.size),
-            hash,
-            vector
-          })
-        }
-        chunkCounts.push([file.path, chunks.length])
+      const [embedTime] = yield* Effect.timed(
+        Effect.gen(function* () {
+          for (const file of files) {
+            if (options?.onFile) yield* options.onFile(file.path)
+
+            const [fileTime, rows] = yield* Effect.timed(indexFile(file))
+            if (Option.isNone(rows)) {
+              gone.push(file.path)
+              continue
+            }
+            records.push(...rows.value)
+            chunkCounts.push([file.path, rows.value.length])
+
+            const fileMs = Math.round(Duration.toMillis(fileTime))
+            if (fileMs >= SLOW_FILE_MS) {
+              yield* Effect.logInfo(`Slow file: ${file.path} took ${fileMs}ms for ${rows.value.length} chunk(s)`).pipe(
+                Effect.annotateLogs({ "index.path": file.path, "index.chunks": rows.value.length, "index.file_ms": fileMs })
+              )
+            }
+          }
+        })
+      )
+      if (gone.length > 0) {
+        yield* Effect.logDebug(`Skipped ${gone.length} file(s) that were gone or binary when their batch ran`, gone)
       }
 
-      // Upsert by id, so re-running a batch never duplicates rows
-      if (records.length > 0) {
-        yield* retryOnCommitConflict(
-          Effect.tryPromise({
-            try: () =>
-              tbl.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(records),
-            catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to write batch: ${e}` })
-          })
-        )
-        // Chunks past a file's new end, from when it was longer
-        const stale = chunkCounts.map(([path, count]) => `(path = ${sqlString(path)} AND chunk >= ${count})`).join(" OR ")
-        yield* retryOnCommitConflict(
-          Effect.tryPromise({
-            try: () => tbl.delete(`repo = ${sqlString(repoId)} AND (${stale})`),
-            catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to drop old chunks: ${e}` })
-          })
-        )
-      }
-      yield* deletePaths(repoId, gone).pipe(
-        Effect.mapError((e) => new IndexError({ operation: "indexBatch.write", message: e.message, path: e.path }))
+      const [writeTime] = yield* Effect.timed(
+        Effect.gen(function* () {
+          // Upsert by id, so re-running a batch never duplicates rows
+          if (records.length > 0) {
+            yield* retryOnCommitConflict(
+              Effect.tryPromise({
+                try: () =>
+                  tbl.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(records),
+                catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to write batch: ${e}` })
+              })
+            )
+            // Chunks past a file's new end, from when it was longer
+            const stale = chunkCounts
+              .map(([path, count]) => `(path = ${sqlString(path)} AND chunk >= ${count})`)
+              .join(" OR ")
+            yield* retryOnCommitConflict(
+              Effect.tryPromise({
+                try: () => tbl.delete(`repo = ${sqlString(repoId)} AND (${stale})`),
+                catch: (e) => new IndexError({ operation: "indexBatch.write", message: `Failed to drop old chunks: ${e}` })
+              })
+            )
+          }
+          yield* deletePaths(repoId, gone).pipe(
+            Effect.mapError((e) => new IndexError({ operation: "indexBatch.write", message: e.message, path: e.path }))
+          )
+        })
       )
 
+      yield* Effect.annotateCurrentSpan({
+        "index.indexed": chunkCounts.length,
+        "index.skipped": gone.length,
+        "index.chunks": records.length,
+        "index.embed_ms": Math.round(Duration.toMillis(embedTime)),
+        "index.write_ms": Math.round(Duration.toMillis(writeTime))
+      })
       return { indexed: chunkCounts.length, skipped: gone.length }
-    })
+    }).pipe(Effect.withSpan("Indexer.indexBatch", { attributes: { "index.repo": repoId, "index.files": files.length } }))
 
   const finalizeIndex: IndexerService["finalizeIndex"] = () =>
     Effect.gen(function* () {
@@ -853,15 +927,15 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           try: () => tbl.optimize(),
           catch: (e) => new IndexError({ operation: "finalizeIndex", message: `Failed to compact index: ${e}` })
         })
-      )
+      ).pipe(Effect.withSpan("finalizeIndex.compact"))
       yield* retryOnCommitConflict(
         Effect.tryPromise({
           try: () => tbl.createIndex("text", { config: lancedb.Index.fts(), replace: true }),
           catch: (e) =>
             new IndexError({ operation: "finalizeIndex", message: `Failed to build full-text index: ${e}` })
         })
-      )
-    })
+      ).pipe(Effect.withSpan("finalizeIndex.fts"))
+    }).pipe(Effect.withSpan("Indexer.finalizeIndex"))
 
   const dropLegacyIndex: IndexerService["dropLegacyIndex"] = () =>
     Effect.gen(function* () {
@@ -974,6 +1048,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       )
 
       if (!(yield* hasFullTextIndex(tbl))) {
+        yield* Effect.logWarning("No full-text index yet, so keyword search finds nothing until indexing finishes")
         return []
       }
 
@@ -991,7 +1066,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       })
 
       return bestChunkPerFile(results, (r) => r._score ?? 1, query, limit)
-    })
+    }).pipe(traceSearch("keyword", query, options))
 
   // Semantic search (vector only)
   const searchSemantic: IndexerService["searchSemantic"] = (query, options) =>
@@ -1016,7 +1091,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       })
 
       return bestChunkPerFile(results, (r) => 1 / (1 + (r._distance ?? 0)), query, limit)
-    })
+    }).pipe(traceSearch("semantic", query, options))
 
   // Hybrid search (FTS + vector with RRF reranking)
   const searchHybrid: IndexerService["searchHybrid"] = (query, options) =>
@@ -1026,6 +1101,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       )
 
       if (!(yield* hasFullTextIndex(tbl))) {
+        yield* Effect.logWarning("No full-text index yet, so hybrid search falls back to semantic search")
         return yield* searchSemantic(query, options)
       }
 
@@ -1059,7 +1135,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       })
 
       return bestChunkPerFile(results, (r) => r._relevanceScore ?? 1, query, limit)
-    })
+    }).pipe(traceSearch("hybrid", query, options))
 
   // List files and directories in a repository path
   const listFiles: IndexerService["listFiles"] = (options) =>
@@ -1323,101 +1399,117 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           >,
         catch: (e) =>
           new IndexError({ operation: "grepPattern", message: `${e}` })
-      })
+      }).pipe(Effect.withSpan("grep.query"))
 
       const files = indexed.filter(
         (file) =>
           (!options?.glob || matchesGlob(file, options.glob)) &&
           (!options?.exclude || !matchesGlob(file, options.exclude))
       )
+      yield* Effect.annotateCurrentSpan({ "grep.indexed_files": indexed.length, "grep.candidates": files.length })
 
-      const results: GrepResult[] = []
-      let outputCount = 0
-      const limit = options?.limit ?? Number.MAX_SAFE_INTEGER
+      return yield* Effect.gen(function* () {
+        const results: GrepResult[] = []
+        let outputCount = 0
+        let filesRead = 0
+        const limit = options?.limit ?? Number.MAX_SAFE_INTEGER
 
-      const contextBefore = options?.contextBefore ?? 0
-      const contextAfter = options?.contextAfter ?? 0
+        const contextBefore = options?.contextBefore ?? 0
+        const contextAfter = options?.contextAfter ?? 0
 
-      for (const file of files) {
-        if (outputCount >= limit) break
-
-        const absolutePath = `${config.reposDir}/${file.repo}/${file.path}`
-        const contentResult = yield* fs.readFileString(absolutePath).pipe(
-          Effect.option,
-          Effect.catch(() => Effect.succeed(Option.none()))
-        )
-
-        if (Option.isNone(contentResult)) continue
-
-        const lines = contentResult.value.split("\n")
-        const matchingLineNums = new Set<number>()
-
-        // Find all matching lines
-        for (let i = 0; i < lines.length; i++) {
-          if (regex.test(lines[i])) {
-            matchingLineNums.add(i)
-          }
-          regex.lastIndex = 0 // Reset for global regex
-        }
-
-        if (matchingLineNums.size === 0) continue
-
-        if (options?.filesWithMatches) {
-          results.push({
-            repo: file.repo,
-            path: file.path,
-            matches: [],
-            matchCount: matchingLineNums.size
-          })
-          outputCount++
-          continue
-        }
-
-        if (options?.count) {
-          results.push({
-            repo: file.repo,
-            path: file.path,
-            matches: [],
-            matchCount: matchingLineNums.size
-          })
-          continue
-        }
-
-        // Build matches with context
-        const linesToShow = new Set<number>()
-        for (const matchLine of matchingLineNums) {
-          for (
-            let i = Math.max(0, matchLine - contextBefore);
-            i <= Math.min(lines.length - 1, matchLine + contextAfter);
-            i++
-          ) {
-            linesToShow.add(i)
-          }
-        }
-
-        const matches: GrepMatch[] = []
-        const sortedLines = [...linesToShow].sort((a, b) => a - b)
-
-        for (const lineNum of sortedLines) {
-          matches.push({
-            lineNumber: lineNum + 1,
-            content: lines[lineNum],
-            isMatch: matchingLineNums.has(lineNum)
-          })
-          outputCount++
+        for (const file of files) {
           if (outputCount >= limit) break
+          filesRead++
+
+          const absolutePath = `${config.reposDir}/${file.repo}/${file.path}`
+          const contentResult = yield* fs.readFileString(absolutePath).pipe(
+            Effect.option,
+            Effect.catch(() => Effect.succeed(Option.none()))
+          )
+
+          if (Option.isNone(contentResult)) continue
+
+          const lines = contentResult.value.split("\n")
+          const matchingLineNums = new Set<number>()
+
+          // Find all matching lines
+          for (let i = 0; i < lines.length; i++) {
+            if (regex.test(lines[i])) {
+              matchingLineNums.add(i)
+            }
+            regex.lastIndex = 0 // Reset for global regex
+          }
+
+          if (matchingLineNums.size === 0) continue
+
+          if (options?.filesWithMatches) {
+            results.push({
+              repo: file.repo,
+              path: file.path,
+              matches: [],
+              matchCount: matchingLineNums.size
+            })
+            outputCount++
+            continue
+          }
+
+          if (options?.count) {
+            results.push({
+              repo: file.repo,
+              path: file.path,
+              matches: [],
+              matchCount: matchingLineNums.size
+            })
+            continue
+          }
+
+          // Build matches with context
+          const linesToShow = new Set<number>()
+          for (const matchLine of matchingLineNums) {
+            for (
+              let i = Math.max(0, matchLine - contextBefore);
+              i <= Math.min(lines.length - 1, matchLine + contextAfter);
+              i++
+            ) {
+              linesToShow.add(i)
+            }
+          }
+
+          const matches: GrepMatch[] = []
+          const sortedLines = [...linesToShow].sort((a, b) => a - b)
+
+          for (const lineNum of sortedLines) {
+            matches.push({
+              lineNumber: lineNum + 1,
+              content: lines[lineNum],
+              isMatch: matchingLineNums.has(lineNum)
+            })
+            outputCount++
+            if (outputCount >= limit) break
+          }
+
+          results.push({
+            repo: file.repo,
+            path: file.path,
+            matches,
+            matchCount: matchingLineNums.size
+          })
         }
 
-        results.push({
-          repo: file.repo,
-          path: file.path,
-          matches,
-          matchCount: matchingLineNums.size
-        })
-      }
-
-      return results
-    })
+        yield* Effect.annotateCurrentSpan({ "grep.files_read": filesRead, "grep.files_matched": results.length })
+        return results
+      }).pipe(Effect.withSpan("grep.scan"))
+    }).pipe(
+      Effect.withSpan("Indexer.grepPattern", {
+        attributes: {
+          "grep.pattern": pattern,
+          "grep.repo": options?.repo,
+          "grep.path": options?.path,
+          "grep.glob": options?.glob,
+          "grep.ignore_case": options?.ignoreCase ?? false
+        }
+      })
+    )
 
   return Indexer.of({
     indexRepo,
