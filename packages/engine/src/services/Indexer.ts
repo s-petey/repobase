@@ -1,4 +1,4 @@
-import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, Schedule, Semaphore, SubscriptionRef } from "effect"
+import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, Schedule, Semaphore, Stream, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
@@ -432,6 +432,8 @@ const globFilter = (glob: string) => `regexp_match(path, ${sqlString(globToRegex
 
 const matchesGlob = (file: { path: string; filename: string }, glob: string) =>
   micromatch.isMatch(file.path, glob) || micromatch.isMatch(file.filename, glob)
+
+const GREP_READ_CONCURRENCY = 16
 
 /**
  * Apply the search options' repo and path filters to a LanceDB query
@@ -1417,19 +1419,19 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         const contextBefore = options?.contextBefore ?? 0
         const contextAfter = options?.contextAfter ?? 0
 
-        for (const file of files) {
-          if (outputCount >= limit) break
+        const readFile = (file: { repo: string; path: string }) => {
           filesRead++
-
-          const absolutePath = `${config.reposDir}/${file.repo}/${file.path}`
-          const contentResult = yield* fs.readFileString(absolutePath).pipe(
+          return fs.readFileString(`${config.reposDir}/${file.repo}/${file.path}`).pipe(
             Effect.option,
-            Effect.catch(() => Effect.succeed(Option.none()))
+            Effect.catch(() => Effect.succeed(Option.none<string>())),
+            Effect.map((content) => ({ file, content }))
           )
+        }
 
-          if (Option.isNone(contentResult)) continue
+        const handleFile = (file: { repo: string; path: string }, content: Option.Option<string>) => {
+          if (Option.isNone(content)) return
 
-          const lines = contentResult.value.split("\n")
+          const lines = content.value.split("\n")
           const matchingLineNums = new Set<number>()
 
           // Find all matching lines
@@ -1440,7 +1442,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             regex.lastIndex = 0 // Reset for global regex
           }
 
-          if (matchingLineNums.size === 0) continue
+          if (matchingLineNums.size === 0) return
 
           if (options?.filesWithMatches) {
             results.push({
@@ -1450,7 +1452,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
               matchCount: matchingLineNums.size
             })
             outputCount++
-            continue
+            return
           }
 
           if (options?.count) {
@@ -1460,7 +1462,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
               matches: [],
               matchCount: matchingLineNums.size
             })
-            continue
+            return
           }
 
           // Build matches with context
@@ -1494,6 +1496,19 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             matches,
             matchCount: matchingLineNums.size
           })
+        }
+
+        // Reads run ahead concurrently but arrive in order, and reading stops once the limit is reached
+        if (limit > 0) {
+          yield* Stream.fromIterable(files).pipe(
+            Stream.mapEffect(readFile, { concurrency: GREP_READ_CONCURRENCY }),
+            Stream.runForEachWhile(({ file, content }) =>
+              Effect.sync(() => {
+                handleFile(file, content)
+                return outputCount < limit
+              })
+            )
+          )
         }
 
         yield* Effect.annotateCurrentSpan({ "grep.files_read": filesRead, "grep.files_matched": results.length })
