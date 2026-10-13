@@ -15,6 +15,7 @@ import * as crypto from "crypto"
 import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
 import { chunkLines } from "../chunk.js"
+import { EMBED_LOG_ENV, hostEmbedLog } from "../embedLog.js"
 import { Connection, Table } from "@lancedb/lancedb"
 
 // Configuration
@@ -633,13 +634,19 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to import transformers: ${e}` })
     })
 
+    const embedLog = yield* hostEmbedLog.pipe(
+      Effect.mapError((e) => new IndexError({ operation: "loadEmbedder", message: `Failed to read ${EMBED_LOG_ENV}: ${e}` }))
+    )
+    if (embedLog.warning) yield* Effect.logWarning(embedLog.warning)
+
     embedder = yield* Effect.tryPromise({
       try: () =>
         transformers.pipeline("feature-extraction", MODEL_ID, {
           dtype: "fp32",
-          ...(config.threads === undefined
-            ? {}
-            : { session_options: { intraOpNumThreads: config.threads, interOpNumThreads: 1 } })
+          session_options: {
+            logSeverityLevel: embedLog.severity,
+            ...(config.threads === undefined ? {} : { intraOpNumThreads: config.threads, interOpNumThreads: 1 })
+          }
         }),
       catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to load embedding model: ${e}` })
     })

@@ -1,6 +1,9 @@
 import { BunServices, BunWorkerRunner } from "@effect/platform-bun"
 import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Queue, Stream } from "effect"
+import type { Context } from "effect"
 import { RpcServer } from "effect/unstable/rpc"
+import { format } from "node:util"
+import { consoleLogLevel, type EmbedLog, type EmbedLogLevel, hostEmbedLog } from "../embedLog.js"
 import { fileLoggerLayer, logPath } from "../file-logger.js"
 import {
   CloneFailedError,
@@ -193,10 +196,36 @@ export const HandlersLayer = StepRpcs.toLayer(
   })
 )
 
+/**
+ * A console method that writes to the worker log, at the level consoleLogLevel
+ * picks for `level`
+ */
+const logConsoleCall =
+  (context: Context.Context<never>, embedLog: EmbedLog, level: EmbedLogLevel) =>
+  (...args: Array<unknown>) => {
+    Effect.runForkWith(context)(Effect.logWithLevel(consoleLogLevel(embedLog, level))(format(...args)))
+  }
+
+/**
+ * Send console output to the worker log instead of the terminal. transformers.js
+ * reports a failed model run with console.error.
+ */
+const ConsoleToLogLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const embedLog = yield* hostEmbedLog
+    const context = yield* Effect.context<never>()
+    console.error = logConsoleCall(context, embedLog, "error")
+    console.warn = logConsoleCall(context, embedLog, "warning")
+    console.info = logConsoleCall(context, embedLog, "info")
+    console.log = logConsoleCall(context, embedLog, "info")
+  })
+)
+
 // provideMerge so the file logger is in the context the RPC server and its
 // handlers are built with; otherwise worker logs would go to stdout.
-const WorkerLayer = Layer.merge(
+const WorkerLayer = Layer.mergeAll(
   RpcServer.layer(StepRpcs),
+  ConsoleToLogLayer,
   Layer.effectDiscard(Effect.logDebug(`Worker ready (${ONNX_THREADS_PER_WORKER} ONNX threads)`))
 ).pipe(
   Layer.provide(HandlersLayer),
