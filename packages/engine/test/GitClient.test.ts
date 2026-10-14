@@ -17,14 +17,18 @@ interface MockCommand {
 
 const mockCommands: Record<string, MockCommand> = {
   "git clone --depth 1 https://github.com/test/repo /tmp/repo": { exitCode: 0 },
+  "git clone --depth 1 --branch dev https://github.com/test/repo /tmp/repo": { exitCode: 0 },
+  "git clone --depth 1 --no-checkout https://github.com/test/repo /tmp/repo": { exitCode: 0 },
+  "git -C /tmp/repo fetch --depth 1 origin v1.0.0": { exitCode: 0 },
+  "git -C /tmp/repo checkout --detach FETCH_HEAD": { exitCode: 0 },
   "git -C /tmp/repo fetch origin": { exitCode: 0 },
   "git -C /tmp/repo rev-parse HEAD": { stdout: "abc123def456\n" },
   "git -C /tmp/repo rev-parse --abbrev-ref HEAD": { stdout: "master\n" },
   "git -C /tmp/repo rev-parse origin/main": { stdout: "xyz789abc\n" },
   "git -C /tmp/repo reset --hard abc123": { exitCode: 0 },
   "git -C /tmp/repo checkout v1.0.0": { exitCode: 0 },
-  "git -C /tmp/repo diff --name-status --no-renames abc..xyz": {
-    stdout: "A\tnew-file.ts\nM\tmodified.ts\nD\tdeleted.ts\n"
+  "git -C /tmp/repo diff --name-status --no-renames -z abc..xyz": {
+    stdout: "A\0new-file.ts\0M\0docs/café.md\0D\0has\ttab.ts\0"
   },
   // Failure cases
   "git clone --depth 1 https://github.com/invalid/repo /tmp/invalid": {
@@ -42,7 +46,7 @@ const mockCommands: Record<string, MockCommand> = {
     exitCode: 128,
     stderr: "fatal: ambiguous argument 'origin/gone': unknown revision or path not in the working tree.\n"
   },
-  "git -C /tmp/repo diff --name-status --no-renames abc..missing": {
+  "git -C /tmp/repo diff --name-status --no-renames -z abc..missing": {
     exitCode: 128,
     stderr: "fatal: bad revision 'abc..missing'\n"
   },
@@ -121,6 +125,20 @@ describe("GitClient", () => {
         const git = yield* GitClient
         yield* git.clone("https://github.com/test/repo", "/tmp/repo")
         // If we get here without error, the test passes
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("clones the tracked branch", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        yield* git.clone("https://github.com/test/repo", "/tmp/repo", { _tag: "tracking", branch: "dev" })
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("checks out a pinned ref", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        yield* git.clone("https://github.com/test/repo", "/tmp/repo", { _tag: "pinned", ref: "v1.0.0" })
       }).pipe(Effect.provide(TestGitClientLayer))
     )
 
@@ -242,15 +260,16 @@ describe("GitClient", () => {
   })
 
   describe("diffNameStatus", () => {
-    it.effect("parses file changes correctly", () =>
+    it.effect("parses file changes, keeping non-ASCII and tab characters in paths", () =>
       Effect.gen(function* () {
         const git = yield* GitClient
         const changes = yield* git.diffNameStatus("/tmp/repo", "abc", "xyz")
 
-        expect(changes).toHaveLength(3)
-        expect(changes[0]).toEqual({ status: "A", path: "new-file.ts" })
-        expect(changes[1]).toEqual({ status: "M", path: "modified.ts" })
-        expect(changes[2]).toEqual({ status: "D", path: "deleted.ts" })
+        expect(changes).toEqual([
+          { status: "A", path: "new-file.ts" },
+          { status: "M", path: "docs/café.md" },
+          { status: "D", path: "has\ttab.ts" }
+        ])
       }).pipe(Effect.provide(TestGitClientLayer))
     )
 

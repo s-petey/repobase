@@ -146,7 +146,7 @@ export const make = Effect.gen(function* () {
         message: `Cloning ${url}...`
       })
       yield* Effect.log(`Cloning ${url}...`)
-      yield* git.clone(url, localPath)
+      yield* git.clone(url, localPath, options?.mode)
 
       yield* updateProgress({
         stage: "cloning",
@@ -319,8 +319,8 @@ export const make = Effect.gen(function* () {
         onSome: (prev) => git.diffNameStatus(repo.localPath, prev, remoteHead)
       })
 
-      // Update working tree - use origin/<branch> for shallow clones
-      yield* git.resetHard(repo.localPath, `origin/${repo.mode.branch}`)
+      // The commit the diff was taken against
+      yield* git.resetHard(repo.localPath, remoteHead)
 
       // Update index
       let indexSummary: IndexSummary

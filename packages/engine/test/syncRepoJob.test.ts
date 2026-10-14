@@ -102,6 +102,27 @@ describe("syncRepo job", () => {
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 
+  it.effect("syncs changes to files with non-ASCII names", () => {
+    const source = makeSourceRepo(3)
+    source.write("café.ts", "export const before = 1\n")
+    source.write("naïve.ts", "export const gone = 1\n")
+    source.commit()
+    const env = testEnv()
+    return Effect.gen(function* () {
+      yield* addRepo(source.dir)
+      source.write("café.ts", "export const croissant = 2\n")
+      source.remove("naïve.ts")
+      source.commit()
+
+      const job = yield* syncRepo()
+
+      expect(stepOf(job, "planChanges").output).toEqual({ toIndex: 1, toDelete: 1, skipped: 0, fullScan: false })
+      expect(yield* indexedPaths(REPO)).not.toContain("naïve.ts")
+      const hits = yield* Indexer.use((indexer) => indexer.searchKeyword("croissant", { repo: REPO }))
+      expect(hits.map((h) => h.path)).toEqual(["café.ts"])
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
   it.effect("scans everything when there is no previous commit", () => {
     const source = makeSourceRepo(5)
     const env = testEnv()

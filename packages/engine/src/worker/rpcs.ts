@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/unstable/rpc"
 import { SearchError } from "../errors.js"
-import { SearchMode, SearchResult } from "../schemas.js"
+import { RepoMode, SearchMode, SearchResult } from "../schemas.js"
 import {
   CloneFailedError,
   DeleteRemovedFailedError,
@@ -19,10 +19,11 @@ import {
 // so the main thread can record it as-is.
 
 /**
- * Clone a repository into `localPath`, replacing any partial clone left there
+ * Clone a repository into `localPath`, replacing any partial clone left there.
+ * Without a mode it checks out the remote's default branch.
  */
 export class Clone extends Rpc.make("Clone", {
-  payload: { repoId: Schema.String, url: Schema.String, localPath: Schema.String },
+  payload: { repoId: Schema.String, url: Schema.String, localPath: Schema.String, mode: Schema.optional(RepoMode) },
   error: CloneFailedError
 }) {}
 

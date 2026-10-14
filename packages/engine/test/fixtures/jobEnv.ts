@@ -45,7 +45,9 @@ export const makeSourceRepo = (files = 60, branch = "main") => {
     write: (file: string, contents: string) => nodeFs.writeFileSync(path.join(dir, file), contents),
     remove: (file: string) => nodeFs.rmSync(path.join(dir, file)),
     rename: (from: string, to: string) => execSync(`git mv ${from} ${to}`, { cwd: dir }),
-    commit: (message = "change") => gitCommit(dir, message)
+    commit: (message = "change") => gitCommit(dir, message),
+    tag: (name: string) => execSync(`git tag ${name}`, { cwd: dir }),
+    branch: (name: string) => execSync(`git branch ${name}`, { cwd: dir })
   }
 }
 

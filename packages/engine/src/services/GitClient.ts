@@ -1,13 +1,17 @@
 import { Context, Effect, Layer, type PlatformError, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitError } from "../errors.js"
-import type { FileChange } from "../schemas.js"
+import type { FileChange, RepoMode } from "../schemas.js"
 
 /**
  * Git client service interface
  */
 export interface GitClientService {
-  readonly clone: (url: string, path: string) => Effect.Effect<void, GitError>
+  /**
+   * Shallow-clone `url`, checking out the tracked branch or pinned ref of `mode`,
+   * or the remote's default branch without one
+   */
+  readonly clone: (url: string, path: string, mode?: RepoMode) => Effect.Effect<void, GitError>
   readonly fetch: (path: string) => Effect.Effect<void, GitError>
   readonly resetHard: (path: string, ref: string) => Effect.Effect<void, GitError>
   readonly checkout: (path: string, ref: string) => Effect.Effect<void, GitError>
@@ -91,7 +95,18 @@ export const make = Effect.gen(function* () {
     )
 
   return GitClient.of({
-    clone: (url, path) => run("clone", "clone", "--depth", "1", url, path).pipe(Effect.asVoid),
+    clone: (url, path, mode) => {
+      if (mode?._tag === "pinned") {
+        // --branch takes no commit SHA, so fetch the ref on its own
+        return run("clone", "clone", "--depth", "1", "--no-checkout", url, path).pipe(
+          Effect.andThen(run("fetch", "-C", path, "fetch", "--depth", "1", "origin", mode.ref)),
+          Effect.andThen(run("checkout", "-C", path, "checkout", "--detach", "FETCH_HEAD")),
+          Effect.asVoid
+        )
+      }
+      const branch = mode?._tag === "tracking" ? ["--branch", mode.branch] : []
+      return run("clone", "clone", "--depth", "1", ...branch, url, path).pipe(Effect.asVoid)
+    },
 
     fetch: (path) => run("fetch", "-C", path, "fetch", "origin").pipe(Effect.asVoid),
 
@@ -110,7 +125,8 @@ export const make = Effect.gen(function* () {
 
     checkout: (path, ref) => run("checkout", "-C", path, "checkout", ref).pipe(Effect.asVoid),
 
-    // --no-renames reports a rename as D + A, so every change is one of A/M/D
+    // --no-renames reports a rename as D + A, so every change is one of A/M/D.
+    // -z keeps paths unquoted: without it git quotes non-ASCII paths.
     diffNameStatus: (path, fromCommit, toCommit) =>
       run(
         "diff",
@@ -119,20 +135,18 @@ export const make = Effect.gen(function* () {
         "diff",
         "--name-status",
         "--no-renames",
+        "-z",
         `${fromCommit}..${toCommit}`
       ).pipe(
-        Effect.map((stdout) =>
-          stdout
-            .split("\n")
-            .filter((line) => line.trim().length > 0)
-            .map((line) => {
-              const [status, ...pathParts] = line.split("\t")
-              return {
-                status: status as "A" | "M" | "D",
-                path: pathParts.join("\t")
-              }
-            })
-        )
+        Effect.map((stdout) => {
+          // status NUL path NUL, repeated
+          const fields = stdout.split("\0")
+          const changes: FileChange[] = []
+          for (let i = 0; i + 1 < fields.length; i += 2) {
+            changes.push({ status: fields[i] as "A" | "M" | "D", path: fields[i + 1] })
+          }
+          return changes
+        })
       )
   })
 })

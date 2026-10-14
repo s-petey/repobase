@@ -13,7 +13,7 @@ import { JobProgress } from "../src/jobs/JobProgress.js"
 import { JobRunner } from "../src/jobs/JobRunner.js"
 import { Indexer } from "../src/services/Indexer.js"
 import { RepoStore } from "../src/services/RepoStore.js"
-import { pinnedMode } from "../src/utils.js"
+import { pinnedMode, trackingMode } from "../src/utils.js"
 import {
   addRepo,
   embedFailures,
@@ -101,8 +101,32 @@ describe("addRepo job", () => {
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 
-  it.effect("keeps an explicitly requested mode", () => {
+  it.effect("clones and tracks a branch that isn't the default", () => {
+    const source = makeSourceRepo(3)
+    source.branch("dev")
+    source.write("main-only.ts", "export const m = 1\n")
+    source.commit()
+    const env = testEnv()
+    return Effect.gen(function* () {
+      const job = yield* JobRunner.use((runner) =>
+        runner
+          .start({ kind: "addRepo", repoId: "acme-widgets", payload: { url: source.dir, mode: trackingMode("dev") } })
+          .pipe(Effect.flatMap((j) => runner.await(j.id)))
+      )
+      expect(job.status).toBe("completed")
+
+      const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
+      expect(repo.mode).toEqual({ _tag: "tracking", branch: "dev" })
+      expect(yield* indexedPaths("acme-widgets")).not.toContain("main-only.ts")
+      expect((yield* syncRepo()).status).toBe("completed")
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
+  it.effect("checks out a pinned ref, not the default branch", () => {
     const source = makeSourceRepo(3, "master")
+    source.tag("v1.0.0")
+    source.write("after-tag.ts", "export const later = 1\n")
+    source.commit()
     const env = testEnv()
     return Effect.gen(function* () {
       const job = yield* JobRunner.use((runner) =>
@@ -118,6 +142,8 @@ describe("addRepo job", () => {
 
       const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo("acme-widgets")))
       expect(repo.mode).toEqual({ _tag: "pinned", ref: "v1.0.0" })
+      expect(nodeFs.existsSync(path.join(repo.localPath, "after-tag.ts"))).toBe(false)
+      expect(yield* indexedPaths("acme-widgets")).toEqual(["file-00.ts", "file-01.ts", "file-02.ts"])
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 

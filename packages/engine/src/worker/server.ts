@@ -42,7 +42,7 @@ export const HandlersLayer = StepRpcs.toLayer(
     const readPlan = (jobId: string) => jobs.readPlan(jobId).pipe(Effect.map(Option.getOrUndefined))
 
     return StepRpcs.of({
-      Clone: ({ repoId, url, localPath }) =>
+      Clone: ({ repoId, url, localPath, mode }) =>
         Effect.gen(function* () {
           // A retried clone starts from scratch: drop whatever a failed attempt left
           yield* Effect.all([
@@ -53,7 +53,7 @@ export const HandlersLayer = StepRpcs.toLayer(
               (e) => new CloneFailedError({ repoId, url, reason: "unknown", message: e.message })
             )
           )
-          yield* git.clone(url, localPath).pipe(Effect.mapError(cloneFailed({ repoId, url })))
+          yield* git.clone(url, localPath, mode).pipe(Effect.mapError(cloneFailed({ repoId, url })))
         }),
 
       ResolveHead: ({ repoId, localPath }) =>

@@ -140,7 +140,12 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
     output: Schema.Null,
     run: (ctx, client) =>
       client
-        .Clone({ repoId: ctx.job.repoId, url: ctx.job.payload.url, localPath: localPath(ctx.job.repoId) })
+        .Clone({
+          repoId: ctx.job.repoId,
+          url: ctx.job.payload.url,
+          localPath: localPath(ctx.job.repoId),
+          mode: ctx.job.payload.mode
+        })
         .pipe(Effect.as(null))
   })
 
@@ -283,13 +288,11 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
     output: Schema.Null,
     run: (ctx, client) =>
       Effect.gen(function* () {
-        const target = yield* trackedBranch(ctx)
-        // origin/<branch>, since the clone is shallow
-        yield* client.ResetHard({
-          repoId: ctx.job.repoId,
-          localPath: target.localPath,
-          ref: `origin/${target.branch}`
-        })
+        const target = yield* ctx.output(loadRepo)
+        // The commit this sync plans, not origin/<branch>: a resumed sync may run
+        // after a later fetch moved the branch
+        const { commit } = yield* ctx.output(resolveRemoteHead)
+        yield* client.ResetHard({ repoId: ctx.job.repoId, localPath: target.localPath, ref: commit })
         return null
       })
   })
