@@ -208,25 +208,31 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
       new Map(stored.map((job) => [job.id, job]))
     )
 
-    // Repos with a job in flight; a second job for the same repo is refused
-    const activeRepos = yield* Ref.make<ReadonlySet<string>>(new Set())
+    // Repos with a job in flight; a second job for the same repo is refused. Each
+    // claim is its own symbol, so a run that ends late can only release its own
+    // claim, never the next job's for the same repo.
+    const activeRepos = yield* Ref.make<ReadonlyMap<string, symbol>>(new Map())
 
     const claimRepo = (repoId: string) =>
-      Ref.modify(activeRepos, (active) =>
-        active.has(repoId) ? [false, active] : [true, new Set(active).add(repoId)]
-      ).pipe(
-        Effect.flatMap((claimed) =>
-          claimed
-            ? Effect.void
+      Effect.suspend(() => {
+        const claim = Symbol(repoId)
+        return Ref.modify(activeRepos, (active) =>
+          active.has(repoId) ? [undefined, active] : [claim, new Map(active).set(repoId, claim)]
+        )
+      }).pipe(
+        Effect.flatMap((claim) =>
+          claim !== undefined
+            ? Effect.succeed(claim)
             : Effect.fail(
                 new JobAlreadyRunningError({ repoId, message: `A job for ${repoId} is already running` })
               )
         )
       )
 
-    const releaseRepo = (repoId: string) =>
+    const releaseRepo = (repoId: string, claim: symbol) =>
       Ref.update(activeRepos, (active) => {
-        const next = new Set(active)
+        if (active.get(repoId) !== claim) return active
+        const next = new Map(active)
         next.delete(repoId)
         return next
       })
@@ -345,16 +351,39 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         return yield* Effect.fail(error)
       })
 
-    // Free the repo before publishing the final status, so whoever awaits the
-    // job can start the next one for the same repo straight away
-    const releaseJobRepo = (jobId: string) =>
-      current(jobId).pipe(
-        Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (job) => releaseRepo(job.repoId) }))
+    // Finished jobs that nothing will look at again: for each repo only its
+    // latest job is kept, plus failed and interrupted ones until they're retried
+    // or discarded. Their plans can list every file of a repo. A job that just
+    // finished is its repo's latest, even when it's a retry of an older job.
+    const prune = (justFinished?: Job) =>
+      writeLock.withPermit(
+        Effect.gen(function* () {
+          const done = (job: Job) => job.status === "completed" || job.status === "skipped"
+          const jobs = [...(yield* SubscriptionRef.get(state)).values()]
+          const stale = justFinished
+            ? jobs.filter((job) => job.repoId === justFinished.repoId && job.id !== justFinished.id && done(job))
+            : jobs
+                .sort((a, b) => DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt))
+                .filter((job, i, latestFirst) => done(job) && latestFirst.findIndex((j) => j.repoId === job.repoId) !== i)
+          if (stale.length === 0) return
+          yield* Effect.forEach(stale, (job) =>
+            store
+              .remove(job.id)
+              .pipe(Effect.catch((e) => Effect.logWarning(`Could not delete job ${job.id}: ${e.message}`)))
+          )
+          yield* SubscriptionRef.update(state, (jobs) => {
+            const next = new Map(jobs)
+            for (const job of stale) next.delete(job.id)
+            return next
+          })
+        })
       )
 
+    // Free the repo before publishing the final status, so whoever awaits the
+    // job can start the next one for the same repo straight away.
     // Uninterruptible, so a job that has started finishing isn't then saved as interrupted
-    const finish = (jobId: string, status: JobStatus) =>
-      releaseJobRepo(jobId).pipe(
+    const finish = (jobId: string, status: JobStatus, release: Effect.Effect<void>) =>
+      release.pipe(
         Effect.andThen(
           updateJob(jobId, (job) => ({
             ...job,
@@ -366,6 +395,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
           }))
         ),
         Effect.tap((job) => Effect.logInfo(`${job.kind} for ${job.repoId} ${status}`)),
+        Effect.tap(prune),
         Effect.uninterruptible
       )
 
@@ -423,7 +453,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
       })
 
     // Run a job's remaining steps in order
-    const runJob = (jobId: string) =>
+    const runJob = (jobId: string, release: Effect.Effect<void>) =>
       Effect.gen(function* () {
         const initial = Option.getOrThrow(yield* current(jobId))
         const definition = definitions[initial.kind] as unknown as JobDefinition<Job, R>
@@ -438,16 +468,19 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
             continue
           }
 
-          if (job.steps.find((s) => s.key === def.name)?.status === "done") continue
-          const ctx = yield* snapshot(jobId)
-          const output = yield* runStep(jobId, def.name, def.output, def.run(ctx))
+          // A step done before an interrupt still decides whether the job ends there
+          const saved = job.steps.find((s) => s.key === def.name)
+          const output =
+            saved?.status === "done"
+              ? yield* Schema.decodeUnknownEffect(def.output)(saved.output).pipe(Effect.orDie)
+              : yield* runStep(jobId, def.name, def.output, def.run(yield* snapshot(jobId)))
           const early = def.finishJob ? def.finishJob(output) : Option.none()
           if (Option.isSome(early)) {
-            yield* finish(jobId, early.value)
+            yield* finish(jobId, early.value, release)
             return
           }
         }
-        yield* finish(jobId, "completed")
+        yield* finish(jobId, "completed", release)
       }).pipe(
         // A failed step is already recorded on the step. Anything else (a bug
         // in the runner or a definition) is logged; either way the job ends
@@ -459,12 +492,12 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
                 if (Result.isFailure(Cause.findError(cause))) {
                   yield* Effect.logError(`Job ${jobId} crashed`, cause)
                 }
-                yield* finish(jobId, "failed")
+                yield* finish(jobId, "failed", release)
               })
         ),
         // A job that finished just before the interrupt keeps its final status
         Effect.onInterrupt(() =>
-          releaseJobRepo(jobId).pipe(
+          release.pipe(
             Effect.andThen(
               updateJob(jobId, (job, now) =>
                 job.status !== "running"
@@ -484,22 +517,24 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
       )
 
     // Its own trace: a job outlives whatever started it
-    const launch = (job: Job) =>
-      FiberMap.run(
+    const launch = (job: Job, claim: symbol) => {
+      const release = releaseRepo(job.repoId, claim)
+      return FiberMap.run(
         fibers,
         job.id,
-        runJob(job.id).pipe(
+        runJob(job.id, release).pipe(
           Effect.withSpan(`job.${job.kind}`, {
             root: true,
             attributes: { "job.id": job.id, "job.repo": job.repoId, "job.kind": job.kind }
           }),
-          Effect.ensuring(releaseRepo(job.repoId))
+          Effect.ensuring(release)
         )
       ).pipe(Effect.asVoid)
+    }
 
     const start: JobRunnerService["start"] = (input) =>
       Effect.gen(function* () {
-        yield* claimRepo(input.repoId)
+        const claim = yield* claimRepo(input.repoId)
         const now = yield* DateTime.now
         const definition = definitions[input.kind] as unknown as JobDefinition<Job, R>
         const job = {
@@ -514,7 +549,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         } as Job
         yield* publish(job)
         yield* Effect.logInfo(`Started ${job.kind} for ${job.repoId} (${job.id})`)
-        yield* launch(job)
+        yield* launch(job, claim)
         return job
       })
 
@@ -541,8 +576,8 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
             message: `Step ${permanent.key} can't succeed on retry: ${permanent.error.message}`
           })
         }
-        yield* claimRepo(job.repoId)
-        const from = job.steps.find((s) => s.status !== "done" && s.status !== "skipped")
+        const claim = yield* claimRepo(job.repoId)
+        const from =job.steps.find((s) => s.status !== "done" && s.status !== "skipped")
         const items = job.steps.filter((s) => s.key !== s.name)
         const itemsDone = items.filter((s) => s.status === "done").length
         yield* Effect.logInfo(
@@ -555,7 +590,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
           status: "running",
           steps: j.steps.map((s) => (unfinished(s) ? { ...s, status: "pending" as const } : s))
         }))
-        yield* launch(resumed)
+        yield* launch(resumed, claim)
         return resumed
       })
 
@@ -592,6 +627,8 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
           onSome: Effect.succeed
         })
       })
+
+    yield* prune()
 
     return JobRunner.of({
       jobs: SubscriptionRef.get(state).pipe(Effect.map(sorted)),

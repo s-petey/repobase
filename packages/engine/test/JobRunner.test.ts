@@ -369,6 +369,75 @@ describe("JobRunner", () => {
     }).pipe(Effect.scoped, Effect.provide(layerMemory))
   })
 
+  it.effect("ends a resumed job at a step that finished before the interrupt and ends the job", () => {
+    const script = makeScript()
+    const now = DateTime.makeUnsafe("2026-09-25T10:00:00Z")
+    // Interrupted after loadRepo saved `pinned`, before the job was marked skipped
+    const interrupted: Job = {
+      id: "syncRepo-acme-widgets-old",
+      kind: "syncRepo",
+      repoId: "acme-widgets",
+      payload: {},
+      status: "interrupted",
+      createdAt: now,
+      updatedAt: now,
+      steps: [
+        { key: "loadRepo", name: "loadRepo", runsOn: "main", status: "done", attempts: 1, output: { pinned: true } },
+        { key: "fetch", name: "fetch", runsOn: "worker", status: "pending", attempts: 0 }
+      ]
+    }
+    return Effect.gen(function* () {
+      yield* JobStore.use((store) => store.save(interrupted))
+      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2 })
+
+      yield* runner.retry(interrupted.id)
+      const job = yield* runner.await(interrupted.id)
+
+      expect(job.status).toBe("skipped")
+      expect(script.ran).toEqual([])
+    }).pipe(Effect.scoped, Effect.provide(layerMemory))
+  })
+
+  it.effect("keeps each repo's latest job and any failed ones, and deletes older finished jobs", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      script.failing.set("fetch", cloneFailure)
+      const failed = yield* runner.await((yield* runner.start(syncRepo())).id)
+      script.failing.delete("fetch")
+      const first = yield* runner.await((yield* runner.start(syncRepo())).id)
+      const second = yield* runner.await((yield* runner.start(syncRepo())).id)
+      const other = yield* runner.await((yield* runner.start(syncRepo("other-repo"))).id)
+
+      const kept = (yield* runner.jobs).map((j) => `${j.id} ${j.status}`).sort()
+      expect(kept).toEqual(
+        [`${failed.id} failed`, `${second.id} completed`, `${other.id} completed`].sort()
+      )
+      expect(yield* JobStore.use((store) => store.get(first.id))).toEqual(Option.none())
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
+  it.effect("a resumed job finishing late doesn't free the repo for the next job's claim", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      script.failing.set("fetch", cloneFailure)
+      const failed = yield* runner.await((yield* runner.start(syncRepo())).id)
+      script.failing.delete("fetch")
+
+      // Retry, await, then start the next job at once, like the TUI's sync
+      yield* runner.retry(failed.id)
+      yield* runner.await(failed.id)
+      yield* script.block("fetch")
+      yield* runner.start(syncRepo())
+      yield* Effect.yieldNow
+
+      // The retried job's fiber has ended, and the new job still holds the repo
+      const refused = yield* Effect.flip(runner.start(syncRepo()))
+      expect(refused).toBeInstanceOf(JobAlreadyRunningError)
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
   it.effect("interruptAll stops every running job and saves each as interrupted", () => {
     const script = makeScript()
     return Effect.gen(function* () {

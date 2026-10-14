@@ -17,7 +17,8 @@ export interface JobStoreService {
   // Delete a job and its plan
   readonly remove: (id: string) => Effect.Effect<void, StoreError>
   // Mark jobs left `running` by a previous process as interrupted, along with
-  // their running steps. Returns the jobs that changed.
+  // their running steps, and delete the temp files its writes left. Returns the
+  // jobs that changed.
   readonly markInterrupted: () => Effect.Effect<ReadonlyArray<Job>, StoreError>
   // A job's index plan is kept apart from the job: it can list every file in the repo
   readonly writePlan: (jobId: string, plan: IndexPlan) => Effect.Effect<void, StoreError>
@@ -135,6 +136,15 @@ export const makeWith = (config: { readonly dir: string }) =>
         const stale = (yield* list()).filter((job) => job.status === "running")
         const interrupted = stale.map((job) => interruptJob(job, now))
         yield* Effect.forEach(interrupted, save, { discard: true })
+
+        if (yield* fs.exists(config.dir).pipe(Effect.mapError(toStoreError("markInterrupted")))) {
+          const ours = `.tmp-${process.pid}-`
+          const leftovers = (yield* fs.readDirectory(config.dir).pipe(Effect.mapError(toStoreError("markInterrupted"))))
+            .filter((entry) => entry.includes(".json.tmp-") && !entry.includes(ours))
+          yield* Effect.forEach(leftovers, (entry) => fs.remove(path.join(config.dir, entry)).pipe(Effect.ignore), {
+            discard: true
+          })
+        }
         return interrupted
       })
 

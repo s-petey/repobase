@@ -510,12 +510,21 @@ const indexingSteps = <J extends Job, P extends PlanSummary>(
       })
   })
 
-  const finalizeIndex = workerStep<J, null>({
+  const finalizeIndex = step<J, null, WorkerClient | JobProgress>({
     name: "finalizeIndex",
+    runsOn: "worker",
     output: Schema.Null,
-    // Alone: compaction and the full-text rebuild fail if another job writes meanwhile
-    run: (ctx, client) =>
-      ctx.indexLock.exclusive(client.FinalizeIndex({ repoId: ctx.job.repoId })).pipe(Effect.as(null))
+    // The batches are done, so their live progress goes. Then alone: compaction
+    // and the full-text rebuild fail if another job writes meanwhile
+    run: (ctx) =>
+      JobProgress.use((progress) => progress.clear(ctx.job.id)).pipe(
+        Effect.andThen(
+          onWorker(ctx, "finalizeIndex", (client) =>
+            ctx.indexLock.exclusive(client.FinalizeIndex({ repoId: ctx.job.repoId }))
+          )
+        ),
+        Effect.as(null)
+      )
   })
 
   return [deleteRemoved, indexBatch, finalizeIndex] as const
