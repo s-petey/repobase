@@ -7,7 +7,7 @@ import {
   RepoConfig,
   RepoStoreData
 } from "../src/schemas.js"
-import { deriveRepoId, extractRepoParts, repoNames, trackingMode, pinnedMode } from "../src/utils.js"
+import { deriveRepoId, extractRepoParts, repoNames, splitRepoPath, trackingMode, pinnedMode } from "../src/utils.js"
 
 const STORED_DATE_MS = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-09-21T12:00:00Z"))
 
@@ -61,6 +61,30 @@ describe("schemas", () => {
         owner: "local-thing",
         name: "local-thing"
       })
+    })
+  })
+
+  describe("splitRepoPath", () => {
+    const ids = ["honojs/hono", "honojs/hono-extra", "old-style"]
+
+    it("splits an owner/name id from the path inside it", () => {
+      expect(splitRepoPath(ids, "honojs/hono/src/index.ts")).toEqual({ repo: "honojs/hono", path: "src/index.ts" })
+    })
+
+    it("takes a bare repo id as the repo's root", () => {
+      expect(splitRepoPath(ids, "honojs/hono")).toEqual({ repo: "honojs/hono", path: "" })
+    })
+
+    it("doesn't mistake a repo for another one its id starts with", () => {
+      expect(splitRepoPath(ids, "honojs/hono-extra/README.md")).toEqual({ repo: "honojs/hono-extra", path: "README.md" })
+    })
+
+    it("still reads ids without a slash", () => {
+      expect(splitRepoPath(ids, "old-style/a/b.ts")).toEqual({ repo: "old-style", path: "a/b.ts" })
+    })
+
+    it("finds nothing for a repo that isn't indexed", () => {
+      expect(splitRepoPath(ids, "honojs/other/README.md")).toBeUndefined()
     })
   })
 

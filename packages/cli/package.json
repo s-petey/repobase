@@ -8,8 +8,8 @@
   "main": "src/main.ts",
   "types": "src/main.ts",
   "scripts": {
-    "start": "bun run src/main.ts",
-    "repobase": "bun run src/main.ts"
+    "start": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts",
+    "repobase": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts"
   },
   "dependencies": {
     "@repobase/engine": "workspace:*",

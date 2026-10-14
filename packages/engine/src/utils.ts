@@ -25,6 +25,21 @@ export function repoNames(repo: { readonly id: string; readonly url: string }): 
   }
 }
 
+/**
+ * Split `owner/name/path/to/file` into the repo and the path inside it. Repo
+ * ids contain a slash (and older ones don't), so the repo is the longest
+ * indexed id the path starts with.
+ */
+export function splitRepoPath(
+  repoIds: ReadonlyArray<string>,
+  path: string
+): { readonly repo: string; readonly path: string } | undefined {
+  const repo = repoIds
+    .filter((id) => path === id || path.startsWith(`${id}/`))
+    .reduce<string | undefined>((longest, id) => (longest === undefined || id.length > longest.length ? id : longest), undefined)
+  return repo === undefined ? undefined : { repo, path: path.slice(repo.length + 1) }
+}
+
 // Utility: create a default tracking mode
 export function trackingMode(branch: string = "main"): TrackingMode {
   return { _tag: "tracking", branch }

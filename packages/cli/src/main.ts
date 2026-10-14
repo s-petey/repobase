@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S LANCEDB_LOG=error bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, DateTime, Effect, Layer, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
@@ -15,6 +15,7 @@ import {
   pinnedMode,
   needsReindex,
   telemetryLayer,
+  splitRepoPath,
   type RepoConfig,
   type FileInfo,
   type GrepResult
@@ -64,6 +65,19 @@ const formatRepo = (repo: RepoConfig): string => {
     Cloud: ${cloudStatus}${repo.cloudEnabled ? ` (last push: ${lastPush})` : ""}${index}`
 }
 
+// Commands print their own errors, so they succeed and only set the exit code
+const printError = (message: string) =>
+  Console.error(message).pipe(
+    Effect.andThen(
+      Effect.sync(() => {
+        process.exitCode = 1
+      })
+    )
+  )
+
+const reportError = (error: { readonly _tag: string }) =>
+  printError(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+
 const outdatedRepoIds = RepobaseEngine.use((engine) => engine.listRepos()).pipe(
   Effect.map((repos) => repos.filter(needsReindex).map((r) => r.id))
 )
@@ -91,7 +105,7 @@ const urlArg = Argument.String("url").pipe(
 
 const branchOption = Flag.String("branch").pipe(
   Flag.withAlias("b"),
-  Flag.withDescription("Branch to track (default: main)"),
+  Flag.withDescription("Branch to track (default: the repository's default branch)"),
   Flag.optional
 )
 
@@ -108,18 +122,17 @@ const addCommand = Command.make(
     Effect.gen(function* () {
       const engine = yield* RepobaseEngine
 
-      // Determine mode from options
-      const mode = Option.match(pin, {
-        onSome: (ref) => pinnedMode(ref),
-        onNone: () => trackingMode(Option.getOrElse(branch, () => "main"))
-      })
+      // Without --pin or --branch the engine tracks the remote's default branch
+      const mode = Option.isSome(pin)
+        ? pinnedMode(pin.value)
+        : Option.getOrUndefined(Option.map(branch, trackingMode))
 
       const repo = yield* engine.addRepo(url, { mode })
       yield* Console.log(`✓ Added repository: ${repo.id}`)
       yield* Console.log(`  Path: ${repo.localPath}`)
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Add a GitHub repository"))
@@ -141,7 +154,7 @@ const listCommand = Command.make("list", {}, () =>
     }
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("List all repositories"))
@@ -176,7 +189,7 @@ const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) =>
     }
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Sync repositories (all if no ID specified)"))
@@ -198,14 +211,19 @@ const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
 
     for (const repoId of ids) {
       yield* Console.log(`Re-indexing ${repoId}...`)
-      const summary = yield* engine.reindexRepo(repoId)
-      yield* Console.log(
-        `✓ ${repoId}: ${summary.filesIndexed} files re-indexed in ${(summary.durationMs / 1000).toFixed(1)}s`
+      yield* engine.reindexRepo(repoId).pipe(
+        Effect.flatMap((summary) =>
+          Console.log(
+            `✓ ${repoId}: ${summary.filesIndexed} files re-indexed in ${(summary.durationMs / 1000).toFixed(1)}s`
+          )
+        ),
+        // One repo failing doesn't stop the rest
+        Effect.catch(reportError)
       )
     }
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(
@@ -224,7 +242,7 @@ const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) =>
     yield* Console.log(`✓ Removed repository: ${id}`)
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Remove a repository"))
@@ -262,7 +280,7 @@ const cloudLoginCommand = Command.make(
       yield* Console.log(`  Endpoint: ${endpoint}`)
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Configure cloud sync credentials"))
@@ -275,7 +293,7 @@ const cloudLogoutCommand = Command.make("logout", {}, () =>
     yield* Console.log(`✓ Cloud sync configuration cleared`)
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Clear cloud sync configuration"))
@@ -312,7 +330,7 @@ const cloudStatusCommand = Command.make("status", {}, () =>
     }
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Show cloud sync status"))
@@ -332,7 +350,7 @@ const cloudEnableCommand = Command.make(
       yield* Console.log(`✓ Cloud sync enabled for: ${id}`)
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Enable cloud sync for a repository"))
@@ -352,7 +370,7 @@ const cloudDisableCommand = Command.make(
       yield* Console.log(`✓ Cloud sync disabled for: ${id}`)
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Disable cloud sync for a repository"))
@@ -387,7 +405,7 @@ const cloudPushCommand = Command.make(
       }
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Push repos to cloud"))
@@ -402,7 +420,7 @@ const cloudPullCommand = Command.make("pull", {}, () =>
     )
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Pull index from cloud (for new device setup)"))
@@ -498,14 +516,14 @@ const searchCommand = Command.make(
       }
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Search across indexed repositories"))
 
 // --- LS COMMAND ---
 const lsPathArg = Argument.String("path").pipe(
-  Argument.withDescription("Repository or path (e.g., 'repo' or 'repo/src')"),
+  Argument.withDescription("Repository or path (e.g., 'owner/name' or 'owner/name/src')"),
   Argument.optional
 )
 
@@ -523,11 +541,18 @@ const formatSize = (bytes: number): string => {
 
 const lsCommand = Command.make("ls", { path: lsPathArg }, ({ path }) =>
   Effect.gen(function* () {
-    // Parse path into repo and subpath
-    const pathStr = Option.getOrElse(path, () => "")
-    const parts = pathStr.split("/")
-    const repo = parts[0] || undefined
-    const subPath = parts.slice(1).join("/") || undefined
+    const engine = yield* RepobaseEngine
+    let repo: string | undefined
+    let subPath: string | undefined
+    if (Option.isSome(path)) {
+      const ids = (yield* engine.listRepos()).map((r) => r.id)
+      const split = splitRepoPath(ids, path.value)
+      if (split === undefined) {
+        return yield* printError(`No indexed repository matches ${path.value}; 'repobase list' shows them`)
+      }
+      repo = split.repo
+      subPath = split.path || undefined
+    }
 
     const indexer = yield* Indexer
     const files = yield* indexer.listFiles({ repo, path: subPath })
@@ -550,7 +575,7 @@ const lsCommand = Command.make("ls", { path: lsPathArg }, ({ path }) =>
     }
   }).pipe(
     Effect.catch((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("List files and directories"))
@@ -595,14 +620,14 @@ const globCommand = Command.make(
       }
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Find files matching a glob pattern"))
 
 // --- READ COMMAND ---
 const readPathArg = Argument.String("path").pipe(
-  Argument.withDescription("File path (e.g., 'repo/src/main.ts')")
+  Argument.withDescription("File path (e.g., 'owner/name/src/main.ts')")
 )
 
 const readOffsetOption = Flag.Int("offset").pipe(
@@ -633,18 +658,15 @@ const readCommand = Command.make(
   },
   ({ path, offset, lines, noLineNumbers }) =>
     Effect.gen(function* () {
-      // Parse path into repo and file path
-      const parts = path.split("/")
-      if (parts.length < 2) {
-        yield* Console.error("Path must be in format: repo/path/to/file")
-        return
+      const engine = yield* RepobaseEngine
+      const split = splitRepoPath((yield* engine.listRepos()).map((r) => r.id), path)
+      if (split === undefined || split.path === "") {
+        return yield* printError("Path must be in format: owner/name/path/to/file, for an indexed repository")
       }
-      const repo = parts[0]
-      const filePath = parts.slice(1).join("/")
+      const { repo, path: filePath } = split
 
       if ((yield* outdatedRepoIds).includes(repo)) {
-        yield* Console.error(`${repo} is unavailable until re-indexed; run 'repobase reindex ${repo}'`)
-        return
+        return yield* printError(`${repo} is unavailable until re-indexed; run 'repobase reindex ${repo}'`)
       }
 
       const indexer = yield* Indexer
@@ -660,7 +682,7 @@ const readCommand = Command.make(
       yield* Console.log(result.content)
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Read file contents"))
@@ -829,7 +851,7 @@ const grepCommand = Command.make(
       }
     }).pipe(
       Effect.catch((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Search for regex pattern in file contents"))
