@@ -1,13 +1,13 @@
 import { describe, it, expect } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import * as lancedb from "@lancedb/lancedb"
-import { DateTime, Effect, Layer, Option } from "effect"
+import { DateTime, Effect, FileSystem, Layer, Option, Path } from "effect"
 import { execSync } from "node:child_process"
 import { CURRENT_INDEX_FORMAT } from "../src/indexFormat.js"
 import type { RepoConfig } from "../src/schemas.js"
 import { layer as GitClientLayer } from "../src/services/GitClient.js"
-import { layerWith as IndexerLayerWith } from "../src/services/Indexer.js"
-import { layer as RepobaseEngineLayer, RepobaseEngine } from "../src/services/RepobaseEngine.js"
+import { Indexer, layerWith as IndexerLayerWith } from "../src/services/Indexer.js"
+import { layerWith as RepobaseEngineLayerWith, RepobaseEngine } from "../src/services/RepobaseEngine.js"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { pinnedMode, trackingMode } from "../src/utils.js"
 import { indexedPaths, makeSourceRepo, MemoryRepoStore, tempDir } from "./fixtures/jobEnv.js"
@@ -16,7 +16,11 @@ import { indexedPaths, makeSourceRepo, MemoryRepoStore, tempDir } from "./fixtur
 const REPO = "acme-widgets"
 const fakeEmbed = async () => Array.from({ length: 384 }, (_, i) => (i + 1) / 384)
 
-const setup = (source: ReturnType<typeof makeSourceRepo>, mode: RepoConfig["mode"] = trackingMode("main")) => {
+const setup = (
+  source: ReturnType<typeof makeSourceRepo>,
+  mode: RepoConfig["mode"] = trackingMode("main"),
+  reposDir = tempDir("repos")
+) => {
   const indexDir = tempDir("index")
   const localPath = tempDir("clone")
   execSync(`git clone -q ${source.dir} ${localPath}`)
@@ -33,7 +37,7 @@ const setup = (source: ReturnType<typeof makeSourceRepo>, mode: RepoConfig["mode
     lastPushedCommit: Option.none(),
     indexFormat: 1
   }
-  const layer = RepobaseEngineLayer.pipe(
+  const layer = RepobaseEngineLayerWith({ reposDir }).pipe(
     Layer.provideMerge(
       Layer.mergeAll(GitClientLayer, MemoryRepoStore, IndexerLayerWith({ indexDir, embed: fakeEmbed }))
     ),
@@ -79,6 +83,54 @@ describe("RepobaseEngine on a repo in an old index format", () => {
 
       expect(summary.filesIndexed).toBe(3)
       expect(yield* indexFormat).toBe(CURRENT_INDEX_FORMAT)
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
+  it.effect("reindexRepo gives a repo with an id from before owner/name ids its new id", () => {
+    const source = makeSourceRepo(3)
+    const reposDir = tempDir("repos")
+    const env = setup(source, trackingMode("main"), reposDir)
+    return Effect.gen(function* () {
+      yield* env.addRepo
+      yield* RepoStore.use((store) => store.updateRepo(REPO, { url: "https://github.com/acme/widgets" }))
+      const oldClone = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo(REPO))).localPath
+      // Something indexed under the old id
+      yield* Indexer.use((indexer) => indexer.indexRepo(REPO, oldClone))
+      const engine = yield* RepobaseEngine
+
+      const summary = yield* engine.reindexRepo(REPO)
+
+      expect(summary.id).toBe("acme/widgets")
+      const ids = (yield* engine.listRepos()).map((r) => r.id)
+      expect(ids).toEqual(["acme/widgets"])
+      const repo = Option.getOrThrow(yield* engine.getRepo("acme/widgets"))
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      expect(repo.localPath).toBe(path.join(reposDir, "acme", "widgets"))
+      expect(yield* fs.exists(path.join(repo.localPath, "file-00.ts"))).toBe(true)
+      expect(yield* fs.exists(oldClone)).toBe(false)
+      expect(repo.indexFormat).toBe(CURRENT_INDEX_FORMAT)
+      expect(yield* indexedPaths(REPO)).toEqual([])
+      expect(yield* indexedPaths("acme/widgets")).toHaveLength(3)
+
+      // Current ids are left alone
+      expect(yield* engine.migrateRepoId("acme/widgets")).toBe("acme/widgets")
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
+  it.effect("migrateRepoId removes an old copy of a repo that was added again under its new id", () => {
+    const source = makeSourceRepo(2)
+    const env = setup(source, trackingMode("main"), tempDir("repos"))
+    return Effect.gen(function* () {
+      yield* env.addRepo
+      yield* RepoStore.use((store) => store.updateRepo(REPO, { url: "https://github.com/acme/widgets" }))
+      const old = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo(REPO)))
+      yield* RepoStore.use((store) => store.addRepo({ ...old, id: "acme/widgets", localPath: tempDir("clone") }))
+      const engine = yield* RepobaseEngine
+
+      expect(yield* engine.migrateRepoId(REPO)).toBe("acme/widgets")
+      expect((yield* engine.listRepos()).map((r) => r.id)).toEqual(["acme/widgets"])
+      expect(yield* FileSystem.FileSystem.use((fs) => fs.exists(old.localPath))).toBe(false)
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 

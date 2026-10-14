@@ -214,7 +214,7 @@ const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
       yield* engine.reindexRepo(repoId).pipe(
         Effect.flatMap((summary) =>
           Console.log(
-            `✓ ${repoId}: ${summary.filesIndexed} files re-indexed in ${(summary.durationMs / 1000).toFixed(1)}s`
+            `✓ ${summary.id === repoId ? repoId : `${repoId} (now ${summary.id})`}: ${summary.filesIndexed} files re-indexed in ${(summary.durationMs / 1000).toFixed(1)}s`
           )
         ),
         // One repo failing doesn't stop the rest

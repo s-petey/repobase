@@ -297,6 +297,8 @@ export const App = ({
   const handleReindex = useCallback(async (repoIds: ReadonlyArray<string>) => {
     try {
       const started = await onReindexRepos(repoIds)
+      // Repos with an id from before owner/name ids were renamed
+      setRepos(await onRefreshRepos())
       showMessage(
         started === 0
           ? "Already re-indexing; see [t] Tasks"
@@ -305,7 +307,7 @@ export const App = ({
     } catch (error) {
       showMessage(`Error: ${error instanceof Error ? error.message : "Failed to start re-indexing"}`)
     }
-  }, [onReindexRepos, showMessage])
+  }, [onReindexRepos, onRefreshRepos, showMessage])
 
   // Back to the search box with the last query, mode, filter and scope, to refine the search
   const handleCloseResults = useCallback(() => {

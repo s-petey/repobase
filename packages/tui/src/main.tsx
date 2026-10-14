@@ -200,9 +200,17 @@ const program = Effect.gen(function* () {
     })
 
   // Re-index in the background, picking up an unfinished re-index where it
-  // stopped; false when the repo already has a job running
-  const startReindex = (repoId: string) =>
+  // stopped; false when the repo already has a job running. A repo with an id
+  // from before owner/name ids gets its new id first, and its jobs under the
+  // old id go: they can't resume under a name the repo no longer has.
+  const startReindex = (oldId: string) =>
     Effect.gen(function* () {
+      if ((yield* runner.jobs).some((j) => j.repoId === oldId && j.status === "running")) return false
+      const repoId = yield* engine.migrateRepoId(oldId)
+      if (repoId !== oldId) {
+        const stale = (yield* runner.jobs).filter((j) => j.repoId === oldId)
+        yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
+      }
       const unfinished = resumableJob(yield* runner.jobs, repoId, "reindexRepo")
       yield* unfinished ? runner.retry(unfinished.id) : runner.start({ kind: "reindexRepo", repoId, payload: {} })
       return true

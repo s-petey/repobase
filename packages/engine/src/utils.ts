@@ -26,6 +26,20 @@ export function repoNames(repo: { readonly id: string; readonly url: string }): 
 }
 
 /**
+ * The owner/name id a repo added before ids were owner/name (e.g. "honojs-hono")
+ * should have now, or undefined when its id is current or its URL isn't a
+ * GitHub URL
+ */
+export function migratedRepoId(repo: { readonly id: string; readonly url: string }): string | undefined {
+  try {
+    const id = deriveRepoId(repo.url)
+    return id === repo.id ? undefined : id
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Split `owner/name/path/to/file` into the repo and the path inside it. Repo
  * ids contain a slash (and older ones don't), so the repo is the longest
  * indexed id the path starts with.

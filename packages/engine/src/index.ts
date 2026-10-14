@@ -39,7 +39,15 @@ export {
 } from "./schemas.js"
 
 // Utils
-export { deriveRepoId, extractRepoParts, repoNames, splitRepoPath, trackingMode, pinnedMode } from "./utils.js"
+export {
+  deriveRepoId,
+  extractRepoParts,
+  migratedRepoId,
+  repoNames,
+  splitRepoPath,
+  trackingMode,
+  pinnedMode
+} from "./utils.js"
 export { CURRENT_INDEX_FORMAT, needsReindex } from "./indexFormat.js"
 
 // Errors

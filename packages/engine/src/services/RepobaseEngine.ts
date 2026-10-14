@@ -17,7 +17,7 @@ import type {
   SearchResult,
   SyncResult
 } from "../schemas.js"
-import { deriveRepoId, trackingMode } from "../utils.js"
+import { deriveRepoId, migratedRepoId, trackingMode } from "../utils.js"
 import { CURRENT_INDEX_FORMAT, needsReindex } from "../indexFormat.js"
 import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
@@ -76,8 +76,8 @@ export interface RepobaseEngineService {
   ) => Effect.Effect<Option.Option<RepoConfig>, EngineError>
   readonly syncRepo: (id: string) => Effect.Effect<SyncResult, EngineError>
   readonly syncAll: () => Effect.Effect<Array<SyncResult>, EngineError>
-  // Index every file again in the current index format, without fetching; runs for pinned repos too
-  readonly reindexRepo: (id: string) => Effect.Effect<IndexSummary, EngineError>
+  readonly reindexRepo: (id: string) => Effect.Effect<IndexSummary & { readonly id: string }, EngineError>
+  readonly migrateRepoId: (id: string) => Effect.Effect<string, EngineError>
   readonly search: (
     query: string,
     mode: SearchMode,
@@ -93,16 +93,17 @@ export class RepobaseEngine extends Context.Service<RepobaseEngine, RepobaseEngi
 ) {}
 
 /**
- * Create the RepobaseEngine service implementation
+ * Create the RepobaseEngine service implementation, with clones in `reposDir`
+ * (default ~/.repobase/repos)
  */
-export const make = Effect.gen(function* () {
+export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.gen(function* () {
   const git = yield* GitClient
   const store = yield* RepoStore
   const indexer = yield* Indexer
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
 
-  const reposDir = path.join(os.homedir(), ".repobase", "repos")
+  const reposDir = config.reposDir ?? path.join(os.homedir(), ".repobase", "repos")
 
   // An owner's directory under repos/ goes once its last repo is removed
   const removeIfEmptyOwnerDir = (dir: string) =>
@@ -370,16 +371,51 @@ export const make = Effect.gen(function* () {
     if (yield* indexer.dropLegacyIndex()) yield* Effect.log("Dropped the old index table")
   }).pipe(Effect.catch((e) => Effect.logWarning(`Dropping the old index table failed, will retry: ${e.message}`)))
 
-  const reindexRepo: RepobaseEngineService["reindexRepo"] = (id) =>
+  const requireRepo = (id: string) =>
+    store.getRepo(id).pipe(
+      Effect.flatMap(Option.match({ onNone: () => Effect.fail(new RepoNotFoundError({ id })), onSome: Effect.succeed }))
+    )
+
+  const migrateRepoId: RepobaseEngineService["migrateRepoId"] = (id) =>
     Effect.gen(function* () {
-      const repo = yield* store.getRepo(id).pipe(
-        Effect.flatMap(Option.match({ onNone: () => Effect.fail(new RepoNotFoundError({ id })), onSome: Effect.succeed }))
-      )
+      const repo = yield* requireRepo(id)
+      const newId = migratedRepoId(repo)
+      if (newId === undefined) return id
+
+      // Already added again under its new id: this one is a duplicate
+      if (Option.isSome(yield* store.getRepo(newId))) {
+        yield* Effect.log(`${id} was added again as ${newId}; removing the old copy`)
+        yield* removeRepo(id)
+        return newId
+      }
+
+      // Each step can be re-run, so a migration that stopped partway finishes next time
+      const localPath = path.join(reposDir, newId)
+      yield* Effect.gen(function* () {
+        if (yield* fs.exists(repo.localPath)) {
+          yield* fs.makeDirectory(path.dirname(localPath), { recursive: true })
+          yield* fs.rename(repo.localPath, localPath)
+        }
+      }).pipe(Effect.mapError((e) => new StoreError({ operation: "moveClone", message: e.message })))
+      yield* indexer.removeIndex(id)
+      const data = yield* store.load()
+      yield* store.save({
+        ...data,
+        repos: data.repos.map((r) => (r.id === id ? { ...r, id: newId, localPath } : r))
+      })
+      yield* Effect.log(`Renamed ${id} to ${newId}`)
+      return newId
+    })
+
+  const reindexRepo: RepobaseEngineService["reindexRepo"] = (requestedId) =>
+    Effect.gen(function* () {
+      const id = yield* migrateRepoId(requestedId)
+      const repo = yield* requireRepo(id)
       yield* Effect.log(`Re-indexing every file of ${id} in the current index format...`)
       const summary = yield* indexer.indexRepo(id, repo.localPath, { force: true })
       yield* store.updateRepo(id, { indexFormat: CURRENT_INDEX_FORMAT })
       yield* dropLegacyIndexIfUnused
-      return summary
+      return { ...summary, id }
     })
 
   const syncAll: RepobaseEngineService["syncAll"] = () =>
@@ -412,11 +448,19 @@ export const make = Effect.gen(function* () {
     syncRepo,
     syncAll,
     reindexRepo,
+    migrateRepoId,
     search
   })
 })
+
+export const make = makeWith()
 
 /**
  * RepobaseEngine layer - requires GitClient, RepoStore, Indexer, FileSystem and Path
  */
 export const layer = Layer.effect(RepobaseEngine, make)
+
+/**
+ * RepobaseEngine with clones in a custom directory
+ */
+export const layerWith = (config: { readonly reposDir: string }) => Layer.effect(RepobaseEngine, makeWith(config))
