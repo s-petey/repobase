@@ -23,7 +23,7 @@ export const reindexNotice = (repoIds: ReadonlyArray<string>): string =>
   `${repoIds.length === 1 ? `${repoIds[0]} uses` : `These repositories use`} an old index format, so every ` +
   `repobase tool finds nothing in ${repoIds.length === 1 ? "it" : "them"} until re-indexed` +
   `${repoIds.length === 1 ? "" : `: ${repoIds.join(", ")}`}. ` +
-  "Tell the user to run `repobase reindex` or open the repobase TUI to re-index."
+  "Tell the user to open repobase (run `repobase`) and press R to re-index."
 
 /**
  * What the server tells MCP clients when they connect. Clients like Claude Code

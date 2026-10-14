@@ -90,8 +90,9 @@ import "../tui/main.js"
 `
   await Bun.write(join(DIST, "bin/repobase.js"), tuiBin)
   
-  // MCP wrapper - uses bun for consistency
-  const mcpBin = `#!/usr/bin/env bun
+  // MCP wrapper - uses bun for consistency. LANCEDB_LOG=error keeps LanceDB's
+  // warnings out of MCP clients' logs.
+  const mcpBin = `#!/usr/bin/env -S LANCEDB_LOG=error bun
 import "../mcp-server/main.js"
 `
   await Bun.write(join(DIST, "bin/repobase-mcp.js"), mcpBin)

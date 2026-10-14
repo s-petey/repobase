@@ -40,7 +40,7 @@ describe("serverInstructions", () => {
     ])
 
     expect(text).toContain("honojs/hono uses an old index format, so every repobase tool finds nothing in it until re-indexed")
-    expect(text).toContain("`repobase reindex`")
+    expect(text).toContain("run `repobase`) and press R to re-index")
     expect(text).not.toContain("vuejs/core uses")
   })
 

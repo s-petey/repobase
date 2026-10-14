@@ -98,6 +98,29 @@ describe("repobase MCP server", () => {
 
     const notAnInteger = await client.callTool({ name: "grep", arguments: { pattern: "x", limit: 1.5 } })
     expect(notAnInteger.isError).toBe(true)
+
+    const zero = await client.callTool({ name: "search", arguments: { query: "x", limit: 0 } })
+    expect(zero.isError).toBe(true)
+    expect(JSON.stringify(zero.content)).not.toContain("k must be positive")
+  })
+
+  it("says which repo isn't indexed", async () => {
+    const client = await connect()
+
+    for (const [name, args] of [
+      ["read_file", { repo: "nobody/nothing", path: "README.md" }],
+      ["grep", { pattern: "x", repo: "nobody/nothing" }],
+      ["search", { query: "x", repo: "nobody/nothing" }]
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError).toBe(true)
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: expect.stringContaining("Repository nobody/nothing isn't indexed in repobase")
+        }
+      ])
+    }
   })
 
   it("runs a tool with its defaults", async () => {

@@ -1,7 +1,7 @@
 // No shebang: it makes Bun.build mark the bundle `// @bun`, which Bun then
 // decodes as Latin-1. dist/bin/repobase-mcp.js carries the shebang.
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio"
-import { Layer, ManagedRuntime } from "effect"
+import { Layer, ManagedRuntime, References } from "effect"
 import { BunServices } from "@effect/platform-bun"
 import {
   RepobaseEngineLayer,
@@ -24,6 +24,7 @@ const MainLayer = Layer.mergeAll(
   IndexerLayer
 ).pipe(
   Layer.provideMerge(telemetryLayer("repobase-mcp")),
+  Layer.provideMerge(Layer.succeed(References.LogToStderr, true)),
   Layer.provide(BunServices.layer)
 )
 
