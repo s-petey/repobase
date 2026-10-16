@@ -1,4 +1,4 @@
-import { Context, Effect, FileSystem, Layer, Option, Schema } from "effect"
+import { Context, Effect, FileSystem, Layer, Option, Schema, Semaphore } from "effect"
 import { StoreError } from "../errors.js"
 import { RepoConfig, RepoStoreData } from "../schemas.js"
 import * as os from "os"
@@ -16,6 +16,8 @@ export interface RepoStoreService {
     update: Partial<Omit<RepoConfig, "id">>
   ) => Effect.Effect<void, StoreError>
   readonly removeRepo: (id: string) => Effect.Effect<void, StoreError>
+  // Load, change and save in one step, so no other change in this process lands in between
+  readonly modify: (f: (data: RepoStoreData) => RepoStoreData) => Effect.Effect<void, StoreError>
 }
 
 /**
@@ -36,6 +38,8 @@ const toStoreError =
       message: error instanceof Error ? error.message : String(error)
     })
 
+const RepoStoreJson = Schema.fromJsonString(RepoStoreData)
+
 /**
  * Get the config file path
  */
@@ -54,6 +58,9 @@ export const make = Effect.gen(function* () {
   const configPath = getConfigPath()
   const repobaseDir = getRepobaseDir()
 
+  // Concurrent jobs change the config; each change loads and saves it whole
+  const writeLock = yield* Semaphore.make(1)
+
   const load: RepoStoreService["load"] = () =>
     Effect.gen(function* () {
       const exists = yield* fs.exists(configPath)
@@ -61,52 +68,36 @@ export const make = Effect.gen(function* () {
         return { version: 1 as const, repos: [] }
       }
       const content = yield* fs.readFileString(configPath)
-      return yield* Schema.decodeUnknownEffect(RepoStoreData)(JSON.parse(content))
+      return yield* Schema.decodeUnknownEffect(RepoStoreJson)(content)
     }).pipe(Effect.mapError(toStoreError("load")))
 
-  const save: RepoStoreService["save"] = (data) =>
+  // Written to a temp file and renamed over the config, so another process
+  // (the MCP server) never reads it half-written
+  const write = (data: RepoStoreData) =>
     Effect.gen(function* () {
       const encoded = yield* Schema.encodeEffect(RepoStoreData)(data)
       yield* fs.makeDirectory(repobaseDir, { recursive: true })
-      yield* fs.writeFileString(configPath, JSON.stringify(encoded, null, 2))
+      const tmp = `${configPath}.tmp-${process.pid}`
+      yield* fs.writeFileString(tmp, JSON.stringify(encoded, null, 2))
+      yield* fs.rename(tmp, configPath)
     }).pipe(Effect.mapError(toStoreError("save")))
 
+  const save: RepoStoreService["save"] = (data) => writeLock.withPermit(write(data))
+
+  const modify: RepoStoreService["modify"] = (f) =>
+    writeLock.withPermit(load().pipe(Effect.flatMap((data) => write(f(data)))))
+
   const getRepo: RepoStoreService["getRepo"] = (id) =>
-    Effect.gen(function* () {
-      const data = yield* load()
-      const repo = data.repos.find((r) => r.id === id)
-      return Option.fromNullishOr(repo)
-    })
+    load().pipe(Effect.map((data) => Option.fromNullishOr(data.repos.find((r) => r.id === id))))
 
   const addRepo: RepoStoreService["addRepo"] = (repo) =>
-    Effect.gen(function* () {
-      const data = yield* load()
-      const updated: RepoStoreData = {
-        ...data,
-        repos: [...data.repos, repo]
-      }
-      yield* save(updated)
-    })
+    modify((data) => ({ ...data, repos: [...data.repos, repo] }))
 
   const updateRepo: RepoStoreService["updateRepo"] = (id, update) =>
-    Effect.gen(function* () {
-      const data = yield* load()
-      const updated: RepoStoreData = {
-        ...data,
-        repos: data.repos.map((r) => (r.id === id ? { ...r, ...update } : r))
-      }
-      yield* save(updated)
-    })
+    modify((data) => ({ ...data, repos: data.repos.map((r) => (r.id === id ? { ...r, ...update } : r)) }))
 
   const removeRepo: RepoStoreService["removeRepo"] = (id) =>
-    Effect.gen(function* () {
-      const data = yield* load()
-      const updated: RepoStoreData = {
-        ...data,
-        repos: data.repos.filter((r) => r.id !== id)
-      }
-      yield* save(updated)
-    })
+    modify((data) => ({ ...data, repos: data.repos.filter((r) => r.id !== id) }))
 
   return RepoStore.of({
     load,
@@ -114,7 +105,8 @@ export const make = Effect.gen(function* () {
     getRepo,
     addRepo,
     updateRepo,
-    removeRepo
+    removeRepo,
+    modify
   })
 })
 

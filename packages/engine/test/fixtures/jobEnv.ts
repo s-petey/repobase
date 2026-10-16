@@ -83,7 +83,8 @@ export const MemoryRepoStore = Layer.effect(
       addRepo: (repo) => Ref.update(data, (d) => ({ ...d, repos: [...d.repos, repo] })),
       updateRepo: (id, update) =>
         Ref.update(data, (d) => ({ ...d, repos: d.repos.map((r) => (r.id === id ? { ...r, ...update } : r)) })),
-      removeRepo: (id) => Ref.update(data, (d) => ({ ...d, repos: d.repos.filter((r) => r.id !== id) }))
+      removeRepo: (id) => Ref.update(data, (d) => ({ ...d, repos: d.repos.filter((r) => r.id !== id) })),
+      modify: (f) => Ref.update(data, f)
     })
   })
 )

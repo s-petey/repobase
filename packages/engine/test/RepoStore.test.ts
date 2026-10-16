@@ -30,6 +30,14 @@ const createMockFileSystem = (initialData: Record<string, string> = {}) => {
       files.set(path, content)
       return Effect.succeed(void 0)
     },
+    rename: (from, to) => {
+      const content = files.get(from)
+      if (content !== undefined) {
+        files.set(to, content)
+        files.delete(from)
+      }
+      return Effect.succeed(void 0)
+    },
     makeDirectory: (path, _options) => {
       directories.add(path)
       return Effect.succeed(void 0)
@@ -225,6 +233,36 @@ describe("RepoStore", () => {
           expect(Option.getOrNull(result.value.lastSyncedCommit)).toBe("abc123")
         }
       }).pipe(Effect.provide(createTestLayer()))
+    )
+  })
+
+  describe("concurrent changes", () => {
+    it.effect("keeps every change when several land at once", () =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        yield* store.addRepo(createTestRepo("existing"))
+
+        yield* Effect.all(
+          [
+            store.addRepo(createTestRepo("added")),
+            store.updateRepo("existing", { indexFormat: 3 }),
+            store.addRepo(createTestRepo("also-added"))
+          ],
+          { concurrency: "unbounded" }
+        )
+
+        const data = yield* store.load()
+        expect(data.repos.map((r) => r.id).sort()).toEqual(["added", "also-added", "existing"])
+        expect(Option.getOrThrow(yield* store.getRepo("existing")).indexFormat).toBe(3)
+      }).pipe(Effect.provide(createTestLayer()))
+    )
+
+    it.effect("fails with a StoreError, not a defect, for a config that isn't JSON", () =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        const error = yield* Effect.flip(store.load())
+        expect(error._tag).toBe("StoreError")
+      }).pipe(Effect.provide(createTestLayer({ [configPath]: '{"version": 1, "repos": [' })))
     )
   })
 
