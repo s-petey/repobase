@@ -37,6 +37,14 @@ export class RepoAlreadyExistsError extends Schema.TaggedError<RepoAlreadyExists
 ) {}
 
 /**
+ * A URL that isn't a GitHub repository's, so it has no owner/name id
+ */
+export class InvalidRepoUrlError extends Schema.TaggedError<InvalidRepoUrlError>()("InvalidRepoUrlError", {
+  url: Schema.String,
+  message: Schema.String
+}) {}
+
+/**
  * Error from indexing operations
  */
 export class IndexError extends Schema.TaggedError<IndexError>()("IndexError", {
@@ -96,6 +104,7 @@ export type EngineError =
   | StoreError
   | RepoNotFoundError
   | RepoAlreadyExistsError
+  | InvalidRepoUrlError
   | IndexError
   | SearchError
   | CloudError

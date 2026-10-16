@@ -60,6 +60,7 @@ export {
   CloudNotConfiguredError,
   RepoNotFoundError,
   RepoAlreadyExistsError,
+  InvalidRepoUrlError,
   FileNotFoundError,
   InvalidPatternError,
   type EngineError

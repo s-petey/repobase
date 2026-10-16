@@ -13,6 +13,10 @@ describe("chunkLines", () => {
     expect(chunkLines("a b\nc", words)).toEqual([{ chunk: 0, startLine: 1, endLine: 2, text: "a b\nc" }])
   })
 
+  it("doesn't count the newline at the end of the file as another line", () => {
+    expect(chunkLines("a b\nc\n", words)).toEqual([{ chunk: 0, startLine: 1, endLine: 2, text: "a b\nc" }])
+  })
+
   it("gives an empty file one empty chunk", () => {
     expect(chunkLines("", words)).toEqual([{ chunk: 0, startLine: 1, endLine: 1, text: "" }])
   })

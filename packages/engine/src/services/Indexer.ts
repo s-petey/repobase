@@ -14,7 +14,7 @@ import * as os from "os"
 import * as crypto from "crypto"
 import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
-import { chunkLines } from "../chunk.js"
+import { chunkLines, splitLines } from "../chunk.js"
 import { EMBED_LOG_ENV, hostEmbedLog } from "../embedLog.js"
 import { Connection, Table } from "@lancedb/lancedb"
 
@@ -347,6 +347,19 @@ function isBinary(buffer: Uint8Array): boolean {
   return suspicious / sample.length > 0.3
 }
 
+// Generators mark their output in its header: tree-sitter's parser.c ("@generated"),
+// protoc, Go ("Code generated ... DO NOT EDIT")
+const GENERATED_MARKER = /@generated\b|\bDO NOT EDIT\b|\b(?:code|auto(?:matically)?)[ -]generated\b/i
+
+/**
+ * Whether a file says in its first 1 KB that a tool generated it. It is still
+ * text, but large, repetitive and not what anyone searches for.
+ */
+export function isGenerated(buffer: Uint8Array): boolean {
+  const header = new TextDecoder().decode(buffer.subarray(0, 1024))
+  return GENERATED_MARKER.test(header)
+}
+
 /**
  * Compute SHA-256 hash of a buffer
  */
@@ -427,14 +440,21 @@ const globBase = (glob: string): string | undefined => {
 }
 
 /**
- * LanceDB filter for paths matching a glob
+ * LanceDB filter for paths matching a glob; `!glob` matches the paths it doesn't
  */
-const globFilter = (glob: string) => `regexp_match(path, ${sqlString(globToRegex(glob))})`
+const globFilter = (glob: string) =>
+  glob.startsWith("!")
+    ? `NOT regexp_like(path, ${sqlString(globToRegex(glob.slice(1)))})`
+    : `regexp_like(path, ${sqlString(globToRegex(glob))})`
 
+// `*` matches dotfiles, as in search's globs
 const matchesGlob = (file: { path: string; filename: string }, glob: string) =>
-  micromatch.isMatch(file.path, glob) || micromatch.isMatch(file.filename, glob)
+  micromatch.isMatch(file.path, glob, { dot: true }) || micromatch.isMatch(file.filename, glob, { dot: true })
 
 const GREP_READ_CONCURRENCY = 16
+
+// Bigger files are mostly data, fixtures or generated code, and slow to embed
+export const MAX_INDEXED_FILE_BYTES = 1024 * 1024
 
 /**
  * Apply the search options' repo and path filters to a LanceDB query
@@ -680,12 +700,24 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
     return (line: string) => model.tokenizer.encode(line, { add_special_tokens: false }).length
   })
 
-  // Read a file for indexing; None if it is gone, unreadable or binary
+  // A file's path inside `root`, if no symlink is on the way to it: a cloned
+  // repo can't point indexing, read_file or grep at files outside itself
+  const fileInRepo = (root: string, filePath: string) =>
+    Effect.gen(function* () {
+      const expected = `${yield* fs.realPath(root)}/${filePath}`
+      return (yield* fs.realPath(expected)) === expected ? Option.some(expected) : Option.none<string>()
+    }).pipe(Effect.orElseSucceed(() => Option.none<string>()))
+
+  // Read a file for indexing; None if it is gone, unreadable, a symlink, too large, binary or generated
   const readIndexable = (repoPath: string, filePath: string) =>
-    fs.readFile(`${repoPath}/${filePath}`).pipe(
-      Effect.map((buffer) => (isBinary(buffer) ? Option.none() : Option.some(buffer))),
-      Effect.orElseSucceed(() => Option.none<Uint8Array>())
-    )
+    Effect.gen(function* () {
+      const file = yield* fileInRepo(repoPath, filePath)
+      if (Option.isNone(file)) return Option.none<Uint8Array>()
+      const info = yield* fs.stat(file.value)
+      if (info.type !== "File" || Number(info.size) > MAX_INDEXED_FILE_BYTES) return Option.none<Uint8Array>()
+      const buffer = yield* fs.readFile(file.value)
+      return isBinary(buffer) || isGenerated(buffer) ? Option.none<Uint8Array>() : Option.some(buffer)
+    }).pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()))
 
   const existingHashes = (repoId: string) =>
     Effect.gen(function* () {
@@ -722,7 +754,8 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             cwd: repoPath,
             ignore: DEFAULT_IGNORE_PATTERNS,
             onlyFiles: true,
-            dot: true
+            dot: true,
+            followSymbolicLinks: false
           }),
         catch: (e) => new IndexError({ operation: "planIndex.glob", message: `Failed to glob files: ${e}` })
       })
@@ -1153,16 +1186,14 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       const { repo, path: dirPath = "" } = options
 
       if (!repo) {
-        // List all repositories - get unique repo names
-        // Query all rows (with a high limit) to ensure we get all repos
+        // List all repositories: the repo of every file, with no limit, so none drops out
         const results = yield* Effect.tryPromise({
           try: () =>
             tbl
               .query()
               .where(FIRST_CHUNK)
-              .select(["repo", "path"])
-              .limit(10000) // High limit to get all repos
-              .toArray() as Promise<Array<{ repo: string; path: string }>>,
+              .select(["repo"])
+              .toArray() as Promise<Array<{ repo: string }>>,
           catch: (e) =>
             new IndexError({ operation: "listFiles", message: `${e}` })
         })
@@ -1189,7 +1220,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         try: () =>
           tbl
             .query()
-            .where(`repo = ${sqlString(repo)} AND path LIKE ${sqlString(`${searchPath}%`)} AND ${FIRST_CHUNK}`)
+            .where(`repo = ${sqlString(repo)} AND starts_with(path, ${sqlString(searchPath)}) AND ${FIRST_CHUNK}`)
             .select(["path", "filename", "size_bytes", "mtime_ms"])
             .toArray() as Promise<
             Array<{
@@ -1249,16 +1280,6 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       const tbl = yield* getTable
       const limit = options?.limit ?? 100
 
-      // Import micromatch for proper glob matching
-      const micromatch = yield* Effect.tryPromise({
-        try: () => import("micromatch"),
-        catch: (e) =>
-          new InvalidPatternError({
-            pattern,
-            message: `Failed to import micromatch: ${e}`
-          })
-      })
-
       // Query all files (or filtered by repo)
       const where = options?.repo ? [`repo = ${sqlString(options.repo)}`] : []
 
@@ -1281,12 +1302,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       })
 
       // Apply glob pattern matching
-      const matched = allFiles.filter((file) => {
-        return (
-          micromatch.isMatch(file.path, pattern) ||
-          micromatch.isMatch(file.filename, pattern)
-        )
-      })
+      const matched = allFiles.filter((file) => matchesGlob(file, pattern))
 
       // Limit results
       const limited = matched.slice(0, limit)
@@ -1333,8 +1349,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       }
 
       // Read from disk
-      const absolutePath = `${config.reposDir}/${repo}/${filePath}`
-      const content = yield* fs.readFileString(absolutePath).pipe(
+      const file = yield* fileInRepo(`${config.reposDir}/${repo}`, filePath)
+      if (Option.isNone(file)) return yield* new FileNotFoundError({ repo, path: filePath })
+      const content = yield* fs.readFileString(file.value).pipe(
         Effect.mapError(
           () =>
             new FileNotFoundError({
@@ -1344,7 +1361,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         )
       )
 
-      const lines = content.split("\n")
+      const lines = splitLines(content)
       const totalLines = lines.length
       const offset = Math.max(1, options?.offset ?? 1)
       const limit = options?.limit ?? totalLines
@@ -1395,7 +1412,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       // Query indexed files
       const where: Array<string> = []
       if (options?.repo) where.push(`repo = ${sqlString(options.repo)}`)
-      if (options?.fileType) where.push(`filename LIKE ${sqlString(`%.${options.fileType}`)}`)
+      if (options?.fileType) where.push(`ends_with(filename, ${sqlString(`.${options.fileType}`)})`)
       if (options?.path) where.push(pathFilter(options.path))
       // Only read files under the glob's fixed directory
       const base = options?.glob ? globBase(options.glob) : undefined
@@ -1428,8 +1445,8 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
         const readFile = (file: { repo: string; path: string }) => {
           filesRead++
-          return fs.readFileString(`${config.reposDir}/${file.repo}/${file.path}`).pipe(
-            Effect.option,
+          return fileInRepo(`${config.reposDir}/${file.repo}`, file.path).pipe(
+            Effect.flatMap(Option.match({ onNone: () => Effect.succeedNone, onSome: (path) => Effect.option(fs.readFileString(path)) })),
             Effect.catch(() => Effect.succeed(Option.none<string>())),
             Effect.map((content) => ({ file, content }))
           )

@@ -2,6 +2,7 @@ import { Context, DateTime, Effect, Fiber, FileSystem, Layer, Option, Path, Stre
 import {
   GitError,
   IndexError,
+  InvalidRepoUrlError,
   RepoAlreadyExistsError,
   RepoNotFoundError,
   SearchError,
@@ -60,6 +61,7 @@ export type EngineError =
   | SearchError
   | RepoNotFoundError
   | RepoAlreadyExistsError
+  | InvalidRepoUrlError
 
 /**
  * RepobaseEngine service interface
@@ -123,7 +125,10 @@ export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.
           ? SubscriptionRef.update(progressRef, (prev) => ({ ...prev, ...update }))
           : Effect.void
 
-      const id = deriveRepoId(url)
+      const id = yield* Effect.try({
+        try: () => deriveRepoId(url),
+        catch: () => new InvalidRepoUrlError({ url, message: `${url} isn't a GitHub repository URL` })
+      })
       const localPath = path.join(reposDir, id)
 
       // Check if already exists
@@ -398,11 +403,10 @@ export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.
         }
       }).pipe(Effect.mapError((e) => new StoreError({ operation: "moveClone", message: e.message })))
       yield* indexer.removeIndex(id)
-      const data = yield* store.load()
-      yield* store.save({
+      yield* store.modify((data) => ({
         ...data,
         repos: data.repos.map((r) => (r.id === id ? { ...r, id: newId, localPath } : r))
-      })
+      }))
       yield* Effect.log(`Renamed ${id} to ${newId}`)
       return newId
     })

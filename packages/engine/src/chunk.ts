@@ -31,6 +31,13 @@ export interface ChunkOptions {
 }
 
 /**
+ * A file's lines. The newline that ends the last line doesn't start another
+ * one, so line numbers match an editor's.
+ */
+export const splitLines = (text: string): Array<string> =>
+  (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n")
+
+/**
  * Split `text` into chunks of whole lines. `countTokens` counts the word pieces
  * of one line, without special tokens. A line longer than a whole chunk gets a
  * chunk to itself (the model truncates it). Always returns at least one chunk,
@@ -44,7 +51,7 @@ export const chunkLines = (
   const budget = (options?.maxTokens ?? CHUNK_MAX_TOKENS) - SPECIAL_TOKENS
   // At most half a chunk, so each chunk moves on by at least half
   const overlap = Math.min(options?.overlapTokens ?? CHUNK_OVERLAP_TOKENS, Math.floor(budget / 2))
-  const lines = text.split("\n")
+  const lines = splitLines(text)
   const tokens = lines.map(countTokens)
 
   const chunks: Array<Chunk> = []
