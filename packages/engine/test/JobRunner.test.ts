@@ -215,6 +215,51 @@ describe("JobRunner", () => {
     }).pipe(Effect.provide(runnerLayer(script.definitions)))
   })
 
+  it.effect("resumes a job saved before its definition gained steps", () => {
+    const script = makeScript()
+    const resolve = step<SyncRepoJob, { commit: string }, never>({
+      name: "resolve",
+      runsOn: "worker",
+      output: Schema.Struct({ commit: Schema.String }),
+      run: () => Effect.succeed({ commit: "def456" })
+    })
+    const record = step<SyncRepoJob, string, never>({
+      name: "record",
+      runsOn: "main",
+      output: Schema.String,
+      run: (ctx) => ctx.output(resolve).pipe(Effect.map((r) => r.commit))
+    })
+    const definitions: JobDefinitions<never> = {
+      ...script.definitions,
+      syncRepo: { steps: [...script.definitions.syncRepo.steps, resolve, record] }
+    }
+    const at = DateTime.makeUnsafe(0)
+    const saved: SyncRepoJob = {
+      id: "syncRepo-acme-widgets-old",
+      kind: "syncRepo",
+      repoId: "acme-widgets",
+      payload: {},
+      status: "interrupted",
+      createdAt: at,
+      updatedAt: at,
+      steps: [
+        { key: "loadRepo", name: "loadRepo", runsOn: "main", status: "done", attempts: 1, output: { pinned: false } },
+        { key: "fetch", name: "fetch", runsOn: "worker", status: "interrupted", attempts: 1 }
+      ]
+    }
+    return Effect.gen(function* () {
+      yield* JobStore.use((store) => store.save(saved))
+      const runner = yield* makeJobRunner(definitions, { concurrency: 2 })
+
+      yield* runner.retry(saved.id)
+      const job = yield* runner.await(saved.id)
+
+      expect(job.status).toBe("completed")
+      expect(job.steps.map((s) => s.key)).toEqual(["loadRepo", "fetch", "resolve", "record"])
+      expect(stepOf(job, "record").output).toBe("def456")
+    }).pipe(Effect.scoped, Effect.provide(layerMemory))
+  })
+
   it.effect("lets the other batches finish when one fails, then retries only that one", () => {
     const script = makeScript()
     script.failing.set(

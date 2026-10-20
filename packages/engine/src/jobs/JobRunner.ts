@@ -168,6 +168,19 @@ const initialSteps = <J extends Job>(definition: JobDefinition<J, any>): Readonl
     attempts: 0
   }))
 
+const hasEveryStep = <J extends Job>(job: J, definition: JobDefinition<J, any>) =>
+  definition.steps.every((def) => job.steps.some((s) => s.name === def.name))
+
+const withEveryStep = <J extends Job>(job: J, definition: JobDefinition<J, any>): J => ({
+  ...job,
+  steps: definition.steps.flatMap((def) => {
+    const saved = job.steps.filter((s) => s.name === def.name)
+    return saved.length > 0
+      ? saved
+      : [{ key: def.name, name: def.name, runsOn: def.runsOn, status: "pending" as const, attempts: 0 }]
+  })
+})
+
 // Steps a retry should run again
 const unfinished = (step: Step) =>
   step.status === "failed" || step.status === "interrupted" || step.status === "running"
@@ -457,6 +470,9 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
       Effect.gen(function* () {
         const initial = Option.getOrThrow(yield* current(jobId))
         const definition = definitions[initial.kind] as unknown as JobDefinition<Job, R>
+        if (!hasEveryStep(initial, definition)) {
+          yield* updateJob(jobId, (job) => withEveryStep(job, definition))
+        }
 
         for (const def of definition.steps) {
           const job = Option.getOrThrow(yield* current(jobId))
