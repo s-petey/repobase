@@ -23,6 +23,7 @@ export const RepoConfig = Schema.Struct({
   mode: RepoMode,
   lastSyncedCommit: Schema.OptionFromNullOr(Schema.String),
   lastSyncedAt: Schema.OptionFromNullOr(Schema.DateTimeUtcFromMillis),
+  lastSyncedCommitAt: Schema.optional(Schema.DateTimeUtcFromMillis),
   addedAt: Schema.DateTimeUtcFromMillis,
   // Cloud sync fields - wip
   cloudEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultType(Effect.succeed(false))),

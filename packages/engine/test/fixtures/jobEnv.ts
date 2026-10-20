@@ -24,8 +24,11 @@ import { HandlersLayer } from "../../src/worker/server.js"
 
 export const tempDir = (prefix: string) => nodeFs.mkdtempSync(path.join(os.tmpdir(), `repobase-${prefix}-`))
 
-const gitCommit = (dir: string, message: string) =>
-  execSync(`git add -A && git -c user.email=t@t -c user.name=t commit -qm ${JSON.stringify(message)}`, { cwd: dir })
+const gitCommit = (dir: string, message: string, committedAt?: string) =>
+  execSync(`git add -A && git -c user.email=t@t -c user.name=t commit -qm ${JSON.stringify(message)}`, {
+    cwd: dir,
+    env: committedAt ? { ...process.env, GIT_COMMITTER_DATE: committedAt } : undefined
+  })
 
 /**
  * A git repo whose default branch is `branch`, with `files` small TypeScript
@@ -39,13 +42,15 @@ export const makeSourceRepo = (files = 60, branch = "main") => {
   execSync(`git init -q -b ${branch}`, { cwd: dir })
   gitCommit(dir, "init")
   const head = () => execSync("git rev-parse HEAD", { cwd: dir }).toString().trim()
+  const commitTime = () => Number(execSync("git show -s --format=%ct HEAD", { cwd: dir }).toString()) * 1000
   return {
     dir,
     head,
+    commitTime,
     write: (file: string, contents: string) => nodeFs.writeFileSync(path.join(dir, file), contents),
     remove: (file: string) => nodeFs.rmSync(path.join(dir, file)),
     rename: (from: string, to: string) => execSync(`git mv ${from} ${to}`, { cwd: dir }),
-    commit: (message = "change") => gitCommit(dir, message),
+    commit: (message = "change", committedAt?: string) => gitCommit(dir, message, committedAt),
     tag: (name: string) => execSync(`git tag ${name}`, { cwd: dir }),
     branch: (name: string) => execSync(`git branch ${name}`, { cwd: dir })
   }

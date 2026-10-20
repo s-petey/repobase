@@ -28,11 +28,11 @@ export class Clone extends Rpc.make("Clone", {
 }) {}
 
 /**
- * The commit and branch checked out in a local clone
+ * The commit and branch checked out in a local clone, and when that commit was committed
  */
 export class ResolveHead extends Rpc.make("ResolveHead", {
   payload: { repoId: Schema.String, localPath: Schema.String },
-  success: Schema.Struct({ commit: Schema.String, branch: Schema.String }),
+  success: Schema.Struct({ commit: Schema.String, branch: Schema.String, committedAt: Schema.DateTimeUtcFromMillis }),
   error: ResolveHeadFailedError
 }) {}
 
@@ -113,11 +113,11 @@ export class Fetch extends Rpc.make("Fetch", {
 }) {}
 
 /**
- * The commit origin/<branch> points at after a fetch
+ * The commit origin/<branch> points at after a fetch, and when it was committed
  */
 export class RemoteHead extends Rpc.make("RemoteHead", {
   payload: { repoId: Schema.String, localPath: Schema.String, branch: Schema.String },
-  success: Schema.Struct({ commit: Schema.String }),
+  success: Schema.Struct({ commit: Schema.String, committedAt: Schema.DateTimeUtcFromMillis }),
   error: Schema.Union([RemoteBranchMissingError, ResolveHeadFailedError])
 }) {}
 

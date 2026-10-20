@@ -57,7 +57,11 @@ export const HandlersLayer = StepRpcs.toLayer(
         }),
 
       ResolveHead: ({ repoId, localPath }) =>
-        Effect.all({ commit: git.getCurrentCommit(localPath), branch: git.getCurrentBranch(localPath) }).pipe(
+        Effect.all({
+          commit: git.getCurrentCommit(localPath),
+          branch: git.getCurrentBranch(localPath),
+          committedAt: git.getCommitTime(localPath, "HEAD")
+        }).pipe(
           Effect.mapError((e) => new ResolveHeadFailedError({ repoId, message: e.message }))
         ),
 
@@ -131,7 +135,9 @@ export const HandlersLayer = StepRpcs.toLayer(
 
       RemoteHead: ({ repoId, localPath, branch }) =>
         git.getRemoteHead(localPath, branch).pipe(
-          Effect.map((commit) => ({ commit })),
+          Effect.flatMap((commit) =>
+            git.getCommitTime(localPath, commit).pipe(Effect.map((committedAt) => ({ commit, committedAt })))
+          ),
           Effect.mapError(remoteHeadFailed({ repoId, branch }))
         ),
 

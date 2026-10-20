@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Fiber, Option, Stream } from "effect"
+import { DateTime, Effect, Fiber, Option, Stream } from "effect"
 import * as nodeFs from "node:fs"
 import * as path from "node:path"
 import {
@@ -53,6 +53,7 @@ describe("addRepo job", () => {
       expect(repo.url).toBe(source.dir)
       expect(repo.localPath).toBe(path.join(env.reposDir, "acme-widgets"))
       expect(Option.getOrThrow(repo.lastSyncedCommit)).toBe(source.head())
+      expect(repo.lastSyncedCommitAt && DateTime.toEpochMillis(repo.lastSyncedCommitAt)).toBe(source.commitTime())
       expect(nodeFs.existsSync(path.join(repo.localPath, "file-00.ts"))).toBe(true)
 
       expect(yield* indexedPaths("acme-widgets")).toHaveLength(60)

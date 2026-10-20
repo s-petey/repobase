@@ -167,7 +167,7 @@ export const makeServer = async (runtime: ManagedRuntime.ManagedRuntime<Services
     "list_repos",
     {
       description:
-        "List the repositories indexed locally in repobase, with when each was last synced. Check it when you're unsure whether a library or repo is available here."
+        "List the repositories indexed locally in repobase, with when each was last synced and when its synced commit was made (how current its code is). Check it when you're unsure whether a library or repo is available here."
     },
     async () => {
       const result = await runTool(
@@ -179,6 +179,8 @@ export const makeServer = async (runtime: ManagedRuntime.ManagedRuntime<Services
               url: repo.url,
               localPath: repo.localPath,
               lastSyncedAt: Option.match(repo.lastSyncedAt, { onNone: () => null, onSome: DateTime.formatIso }),
+              lastSyncedCommit: Option.getOrNull(repo.lastSyncedCommit),
+              lastSyncedCommitAt: repo.lastSyncedCommitAt ? DateTime.formatIso(repo.lastSyncedCommitAt) : null,
               addedAt: DateTime.formatIso(repo.addedAt),
               // Search finds nothing in it until it's re-indexed in the current index format
               needsReindex: needsReindex(repo)

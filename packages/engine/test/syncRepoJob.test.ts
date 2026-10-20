@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Option } from "effect"
+import { DateTime, Effect, Option } from "effect"
 import {
   formatStepError,
   IndexBatchFailedError,
@@ -28,6 +28,10 @@ const lastSyncedCommit = RepoStore.use((store) => store.getRepo(REPO)).pipe(
   Effect.map((repo) => Option.getOrThrow(Option.getOrThrow(repo).lastSyncedCommit))
 )
 
+const lastSyncedCommitAt = RepoStore.use((store) => store.getRepo(REPO)).pipe(
+  Effect.map((repo) => Option.getOrThrow(repo).lastSyncedCommitAt)
+)
+
 describe("syncRepo job", () => {
   it.effect("stops after resolving the remote head when nothing changed", () => {
     const source = makeSourceRepo(3)
@@ -51,7 +55,11 @@ describe("syncRepo job", () => {
         checkLegacyIndex: "skipped",
         dropLegacyIndex: "skipped"
       })
-      expect(stepOf(job, "resolveRemoteHead").output).toEqual({ commit: source.head(), upToDate: true })
+      expect(stepOf(job, "resolveRemoteHead").output).toEqual({
+        commit: source.head(),
+        committedAt: source.commitTime(),
+        upToDate: true
+      })
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 
@@ -64,7 +72,11 @@ describe("syncRepo job", () => {
       const job = yield* syncRepo(REPO, { force: true })
 
       expect(job.status).toBe("completed")
-      expect(stepOf(job, "resolveRemoteHead").output).toEqual({ commit: source.head(), upToDate: false })
+      expect(stepOf(job, "resolveRemoteHead").output).toEqual({
+        commit: source.head(),
+        committedAt: source.commitTime(),
+        upToDate: false
+      })
       expect(stepOf(job, "planChanges").output).toMatchObject({ toIndex: 60, fullScan: true })
       expect(stepOf(job, "finalizeIndex").status).toBe("done")
       expect(yield* indexedPaths(REPO)).toHaveLength(60)
@@ -80,7 +92,7 @@ describe("syncRepo job", () => {
       source.write("brand-new.ts", "export const fresh = true\n") // added
       source.remove("file-02.ts") // deleted
       source.rename("file-03.ts", "renamed.ts") // renamed: D + A
-      source.commit()
+      source.commit("change", "2026-01-02T03:04:05Z")
 
       const job = yield* syncRepo()
 
@@ -89,6 +101,7 @@ describe("syncRepo job", () => {
       expect(stepOf(job, "deleteRemoved").output).toEqual({ count: 2 })
       expect(stepOf(job, "indexBatch:0").output).toEqual({ indexed: 3, skipped: 0 })
       expect(yield* lastSyncedCommit).toBe(source.head())
+      expect(yield* lastSyncedCommitAt).toEqual(DateTime.makeUnsafe("2026-01-02T03:04:05Z"))
 
       const paths = yield* indexedPaths(REPO)
       expect(paths).toHaveLength(60)

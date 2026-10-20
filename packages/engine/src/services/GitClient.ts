@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, type PlatformError, Stream } from "effect"
+import { Context, DateTime, Effect, Layer, type PlatformError, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitError } from "../errors.js"
 import type { FileChange, RepoMode } from "../schemas.js"
@@ -16,6 +16,7 @@ export interface GitClientService {
   readonly resetHard: (path: string, ref: string) => Effect.Effect<void, GitError>
   readonly checkout: (path: string, ref: string) => Effect.Effect<void, GitError>
   readonly getCurrentCommit: (path: string) => Effect.Effect<string, GitError>
+  readonly getCommitTime: (path: string, ref: string) => Effect.Effect<DateTime.Utc, GitError>
   readonly getCurrentBranch: (path: string) => Effect.Effect<string, GitError>
   readonly getRemoteHead: (path: string, branch: string) => Effect.Effect<string, GitError>
   readonly diffNameStatus: (
@@ -112,6 +113,11 @@ export const make = Effect.gen(function* () {
 
     getCurrentCommit: (path) =>
       run("rev-parse", "-C", path, "rev-parse", "HEAD").pipe(Effect.map((s) => s.trim())),
+
+    getCommitTime: (path, ref) =>
+      run("show", "-C", path, "show", "-s", "--format=%ct", ref).pipe(
+        Effect.map((s) => DateTime.fromEpochSeconds(Number(s.trim())))
+      ),
 
     getCurrentBranch: (path) =>
       run("rev-parse", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").pipe(Effect.map((s) => s.trim())),

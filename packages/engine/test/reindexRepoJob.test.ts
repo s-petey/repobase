@@ -1,6 +1,6 @@
 import { describe, it, expect } from "@effect/vitest"
 import * as lancedb from "@lancedb/lancedb"
-import { Effect, Option } from "effect"
+import { DateTime, Effect, Option } from "effect"
 import { CURRENT_INDEX_FORMAT } from "../src/indexFormat.js"
 import { Indexer } from "../src/services/Indexer.js"
 import { RepoStore } from "../src/services/RepoStore.js"
@@ -46,6 +46,23 @@ describe("reindexRepo job", () => {
       expect(stepOf(job, "planFullIndex").output).toMatchObject({ toIndex: 5 })
       expect(yield* indexedPaths(REPO)).toHaveLength(5)
       expect(yield* indexFormat()).toBe(CURRENT_INDEX_FORMAT)
+    }).pipe(Effect.provide(env.layer))
+  }, 60_000)
+
+  it.effect("records the commit date of a repo synced before commit dates were recorded", () => {
+    const source = makeSourceRepo(3)
+    source.write("later.ts", "export const later = true\n")
+    source.commit("later", "2026-01-02T03:04:05Z")
+    const env = testEnv()
+    return Effect.gen(function* () {
+      yield* addRepo(source.dir)
+      yield* RepoStore.use((store) => store.updateRepo(REPO, { lastSyncedCommitAt: undefined }))
+      yield* makeOutdated()
+
+      yield* reindexRepo()
+
+      const repo = Option.getOrThrow(yield* RepoStore.use((store) => store.getRepo(REPO)))
+      expect(repo.lastSyncedCommitAt).toEqual(DateTime.makeUnsafe("2026-01-02T03:04:05Z"))
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 

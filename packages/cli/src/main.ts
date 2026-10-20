@@ -45,7 +45,7 @@ const formatRepo = (repo: RepoConfig): string => {
   })
   const commit = Option.match(repo.lastSyncedCommit, {
     onNone: () => "none",
-    onSome: (c) => c.slice(0, 8)
+    onSome: (c) => (repo.lastSyncedCommitAt ? `${c.slice(0, 8)} (${formatDate(repo.lastSyncedCommitAt)})` : c.slice(0, 8))
   })
   const cloudStatus = repo.cloudEnabled ? "☁️ enabled" : "local only"
   const lastPush = repo.lastPushedAt

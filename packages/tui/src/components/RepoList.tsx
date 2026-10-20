@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { needsReindex, type RepoConfig } from "@repobase/engine"
-import { Option } from "effect"
+import { DateTime, Option } from "effect"
 import { colors } from "../theme/index.js"
 
 export type FlatRow =
@@ -35,7 +35,12 @@ const formatStatus = (repo: RepoConfig, reindexing: boolean): { text: string; co
     : { text: "o pending", color: colors.status.warning.default }
 }
 
-const formatCloudStatus = (repo: RepoConfig): string => {
+const formatCommitDate = (repo: RepoConfig): string =>
+  repo.lastSyncedCommitAt
+    ? DateTime.formatLocal(repo.lastSyncedCommitAt, { locale: "en-US", year: "numeric", month: "short", day: "numeric" })
+    : ""
+
+const formatCloudStatus =(repo: RepoConfig): string => {
   if (!repo.cloudEnabled) return ""
 
   // Check if cloud is in sync with local
@@ -128,6 +133,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
           const repo = row.repo
           const status = formatStatus(repo, reindexing.has(repo.id))
           const mode = formatMode(repo)
+          const commitDate = formatCommitDate(repo)
           const cloudStatus = formatCloudStatus(repo)
           const indent = row.indented ? "  " : ""
 
@@ -141,7 +147,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
               }}
             >
               <text
-                content={`${prefix}${indent}${row.label.padEnd(24 - indent.length)} ${mode.padEnd(18)} ${status.text.padEnd(12)} ${cloudStatus}`}
+                content={`${prefix}${indent}${row.label.padEnd(24 - indent.length)} ${mode.padEnd(18)} ${status.text.padEnd(12)} ${commitDate.padEnd(12)} ${cloudStatus}`}
                 style={{
                   fg: isSelected ? colors.text.primary : colors.interactive.default,
                   attributes: isSelected ? TextAttributes.BOLD : undefined,

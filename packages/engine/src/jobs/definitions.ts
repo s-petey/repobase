@@ -149,9 +149,9 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
         .pipe(Effect.as(null))
   })
 
-  const resolveHead = workerStep<AddRepoJob, { readonly commit: string; readonly branch?: string }>({
+  const resolveHead = workerStep<AddRepoJob, HeadResult>({
     name: "resolveHead",
-    output: Schema.Struct({ commit: Schema.String, branch: Schema.optional(Schema.String) }),
+    output: HeadResult,
     run: (ctx, client) => client.ResolveHead({ repoId: ctx.job.repoId, localPath: localPath(ctx.job.repoId) })
   })
 
@@ -211,10 +211,14 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
     output: Schema.Null,
     run: (ctx) =>
       Effect.gen(function* () {
-        const { commit } = yield* ctx.output(resolveHead)
+        const { commit, committedAt } = yield* ctx.output(resolveHead)
         const now = yield* DateTime.now
         yield* RepoStore.use((store) =>
-          store.updateRepo(ctx.job.repoId, { lastSyncedCommit: Option.some(commit), lastSyncedAt: Option.some(now) })
+          store.updateRepo(ctx.job.repoId, {
+            lastSyncedCommit: Option.some(commit),
+            lastSyncedAt: Option.some(now),
+            lastSyncedCommitAt: committedAt
+          })
         ).pipe(Effect.mapError((e) => new UpdateStoreFailedError({ repoId: ctx.job.repoId, message: e.message })))
         return null
       })
@@ -270,14 +274,14 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
     run: (ctx, client) =>
       Effect.gen(function* () {
         const target = yield* trackedBranch(ctx)
-        const { commit } = yield* client.RemoteHead({
+        const { commit, committedAt } = yield* client.RemoteHead({
           repoId: ctx.job.repoId,
           localPath: target.localPath,
           branch: target.branch
         })
         // An index in an old format needs the full re-index even with nothing new on the remote
         const upToDate = !ctx.job.payload.force && !target.outdated && commit === target.previousCommit
-        return { commit, upToDate }
+        return { commit, committedAt, upToDate }
       }),
     // Nothing new on the remote: done, no re-index
     finishJob: (head) => (head.upToDate ? Option.some("completed" as const) : Option.none())
@@ -338,12 +342,13 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
     run: (ctx) =>
       Effect.gen(function* () {
         const store = yield* RepoStore
-        const { commit } = yield* ctx.output(resolveRemoteHead)
+        const { commit, committedAt } = yield* ctx.output(resolveRemoteHead)
         const now = yield* DateTime.now
         yield* store
           .updateRepo(ctx.job.repoId, {
             lastSyncedCommit: Option.some(commit),
             lastSyncedAt: Option.some(now),
+            lastSyncedCommitAt: committedAt,
             // Already current, or just fully re-indexed because it wasn't
             indexFormat: CURRENT_INDEX_FORMAT
           })
@@ -375,16 +380,18 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
   const reindexPath = (ctx: StepContext<ReindexRepoJob>) =>
     ctx.output(loadReindexTarget).pipe(Effect.map((t) => t.localPath))
 
-  const planReindex = workerStep<ReindexRepoJob, PlanSummary>({
+  const planReindex = workerStep<ReindexRepoJob, ReindexPlanSummary>({
     name: "planFullIndex",
-    output: PlanSummary,
+    output: ReindexPlanSummary,
     run: (ctx, client) =>
-      reindexPath(ctx).pipe(
+      Effect.gen(function* () {
+        const repoPath = yield* reindexPath(ctx)
+        // Repos synced before commit dates were recorded get theirs here
+        const { committedAt } = yield* client.ResolveHead({ repoId: ctx.job.repoId, localPath: repoPath })
         // Every file: what's indexed was written in an older format
-        Effect.flatMap((repoPath) =>
-          client.PlanFullIndex({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath: repoPath, force: true })
-        )
-      )
+        const plan = yield* client.PlanFullIndex({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath: repoPath, force: true })
+        return { ...plan, committedAt }
+      })
   })
 
   const reindexIndexing = indexingSteps(planReindex, reindexPath, indexingSlots)
@@ -394,7 +401,16 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
     runsOn: "main",
     output: Schema.Null,
     run: (ctx) =>
-      RepoStore.use((store) => store.updateRepo(ctx.job.repoId, { indexFormat: CURRENT_INDEX_FORMAT })).pipe(
+      ctx.output(planReindex).pipe(
+        Effect.flatMap(({ committedAt }) =>
+          RepoStore.use((store) =>
+            store.updateRepo(ctx.job.repoId, {
+              indexFormat: CURRENT_INDEX_FORMAT,
+              // A job saved before commit dates were recorded has none: keep what's there
+              ...(committedAt ? { lastSyncedCommitAt: committedAt } : {})
+            })
+          )
+        ),
         Effect.mapError((e) => new UpdateStoreFailedError({ repoId: ctx.job.repoId, message: e.message })),
         Effect.as(null)
       )
@@ -453,8 +469,23 @@ const SyncTarget = Schema.Struct({
 })
 type SyncTarget = typeof SyncTarget.Type
 
-const RemoteHeadResult = Schema.Struct({ commit: Schema.String, upToDate: Schema.Boolean })
+// committedAt is optional in step outputs: jobs saved before it was recorded don't have it
+const HeadResult = Schema.Struct({
+  commit: Schema.String,
+  branch: Schema.optional(Schema.String),
+  committedAt: Schema.optional(Schema.DateTimeUtcFromMillis)
+})
+type HeadResult = typeof HeadResult.Type
+
+const RemoteHeadResult = Schema.Struct({
+  commit: Schema.String,
+  committedAt: Schema.optional(Schema.DateTimeUtcFromMillis),
+  upToDate: Schema.Boolean
+})
 type RemoteHeadResult = typeof RemoteHeadResult.Type
+
+const ReindexPlanSummary = Schema.Struct({ ...PlanSummary.fields, committedAt: Schema.optional(Schema.DateTimeUtcFromMillis) })
+type ReindexPlanSummary = typeof ReindexPlanSummary.Type
 
 const SyncPlanSummary = Schema.Struct({ ...PlanSummary.fields, fullScan: Schema.Boolean })
 type SyncPlanSummary = typeof SyncPlanSummary.Type

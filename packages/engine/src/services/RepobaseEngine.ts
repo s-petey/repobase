@@ -230,7 +230,11 @@ export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.
       // Clean up forwarder
       yield* Fiber.interrupt(forwarderFiber)
 
-      const synced = { lastSyncedCommit: Option.some(currentCommit), lastSyncedAt: Option.some(yield* DateTime.now) }
+      const synced = {
+        lastSyncedCommit: Option.some(currentCommit),
+        lastSyncedAt: Option.some(yield* DateTime.now),
+        lastSyncedCommitAt: yield* git.getCommitTime(localPath, currentCommit)
+      }
       yield* store.updateRepo(id, synced)
 
       yield* updateProgress({
@@ -351,6 +355,7 @@ export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.
       yield* store.updateRepo(id, {
         lastSyncedCommit: Option.some(remoteHead),
         lastSyncedAt: Option.some(yield* DateTime.now),
+        lastSyncedCommitAt: yield* git.getCommitTime(repo.localPath, remoteHead),
         indexFormat: CURRENT_INDEX_FORMAT
       })
       if (outdated) yield* dropLegacyIndexIfUnused
@@ -417,7 +422,8 @@ export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.
       const repo = yield* requireRepo(id)
       yield* Effect.log(`Re-indexing every file of ${id} in the current index format...`)
       const summary = yield* indexer.indexRepo(id, repo.localPath, { force: true })
-      yield* store.updateRepo(id, { indexFormat: CURRENT_INDEX_FORMAT })
+      const lastSyncedCommitAt = yield* git.getCommitTime(repo.localPath, "HEAD")
+      yield* store.updateRepo(id, { indexFormat: CURRENT_INDEX_FORMAT, lastSyncedCommitAt })
       yield* dropLegacyIndexIfUnused
       return { ...summary, id }
     })

@@ -83,6 +83,9 @@ describe("RepobaseEngine on a repo in an old index format", () => {
 
       expect(summary.filesIndexed).toBe(3)
       expect(yield* indexFormat).toBe(CURRENT_INDEX_FORMAT)
+      // Recorded from the clone, for repos synced before commit dates were
+      const repo = Option.getOrThrow(yield* engine.getRepo(REPO))
+      expect(repo.lastSyncedCommitAt && DateTime.toEpochMillis(repo.lastSyncedCommitAt)).toBe(source.commitTime())
     }).pipe(Effect.provide(env.layer))
   }, 60_000)
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Cause, Effect, Layer, PlatformError, Sink, Stream } from "effect"
+import { Cause, DateTime, Effect, Layer, PlatformError, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitClient, GitError } from "../src/index.js"
 import { layer as GitClientLayer } from "../src/services/GitClient.js"
@@ -24,6 +24,7 @@ const mockCommands: Record<string, MockCommand> = {
   "git -C /tmp/repo fetch origin": { exitCode: 0 },
   "git -C /tmp/repo rev-parse HEAD": { stdout: "abc123def456\n" },
   "git -C /tmp/repo rev-parse --abbrev-ref HEAD": { stdout: "master\n" },
+  "git -C /tmp/repo show -s --format=%ct abc123": { stdout: "1767323045\n" },
   "git -C /tmp/repo rev-parse origin/main": { stdout: "xyz789abc\n" },
   "git -C /tmp/repo reset --hard abc123": { exitCode: 0 },
   "git -C /tmp/repo checkout v1.0.0": { exitCode: 0 },
@@ -201,6 +202,16 @@ describe("GitClient", () => {
         const error = yield* expectGitError(git.getCurrentCommit("/tmp/missing"))
         expect(error.command).toBe("rev-parse")
         expect(error.message).toContain("cannot change to '/tmp/missing'")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+  })
+
+  describe("getCommitTime", () => {
+    it.effect("returns the committer date", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const time = yield* git.getCommitTime("/tmp/repo", "abc123")
+        expect(DateTime.formatIso(time)).toBe("2026-01-02T03:04:05.000Z")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
   })
