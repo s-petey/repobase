@@ -26,7 +26,7 @@ const runTraced = async (env: Record<string, string>) => {
     Effect.withSpan("indexBatch", { attributes: { files: 50 } }),
     Effect.provide(
       telemetryLayer("repobase-test").pipe(
-        Layer.provideMerge(fileLoggerLayer(logFile, { batchWindow: 10 })),
+        Layer.provideMerge(fileLoggerLayer(logFile)),
         Layer.provide(BunServices.layer),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))
       )
@@ -53,6 +53,17 @@ describe("telemetryLayer", () => {
     } finally {
       receiver.stop()
     }
+  })
+
+  it("warns once and exports nothing when nothing is listening", async () => {
+    const receiver = startReceiver()
+    receiver.stop()
+
+    const log = await runTraced({ OTEL_EXPORTER_OTLP_ENDPOINT: receiver.url })
+
+    expect(log.match(/Nothing is listening/g)).toHaveLength(1)
+    expect(log).toContain("indexed a batch")
+    expect(receiver.received).toEqual([])
   })
 
   it("exports nothing without an endpoint, or when disabled", async () => {

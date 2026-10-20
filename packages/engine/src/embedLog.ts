@@ -1,4 +1,4 @@
-import { Config, Effect, Option } from "effect"
+import { Config, Effect, Option, Schema } from "effect"
 import type { LogLevel } from "effect"
 
 /**
@@ -10,7 +10,8 @@ export const EMBED_LOG_ENV = "REPOBASE_EMBED_LOG"
 // onnxruntime's severity numbers
 const SEVERITIES = { verbose: 0, info: 1, warning: 2, error: 3, fatal: 4 } as const
 
-export type EmbedLogLevel = keyof typeof SEVERITIES
+export const EmbedLogLevel = Schema.Literals(["verbose", "info", "warning", "error", "fatal"])
+export type EmbedLogLevel = typeof EmbedLogLevel.Type
 
 export interface EmbedLog {
   readonly level: EmbedLogLevel
@@ -18,22 +19,21 @@ export interface EmbedLog {
   readonly warning?: string
 }
 
+export const embedLogOf = (level: EmbedLogLevel): EmbedLog => ({ level, severity: SEVERITIES[level] })
+
 /**
  * Resolve the embedding stack's log level. It defaults to fatal because
  * onnxruntime writes straight to stderr, over the TUI, and a model run cut off
  * at shutdown fails with errors that say nothing new.
  */
 export const resolveEmbedLog = (raw: string | undefined): EmbedLog => {
-  const fallback: EmbedLog = { level: "fatal", severity: SEVERITIES.fatal }
+  const fallback = embedLogOf("fatal")
   const value = raw?.trim().toLowerCase() ?? ""
   if (value === "") return fallback
-  if (Object.hasOwn(SEVERITIES, value)) {
-    const level = value as EmbedLogLevel
-    return { level, severity: SEVERITIES[level] }
-  }
+  if (Schema.is(EmbedLogLevel)(value)) return embedLogOf(value)
   return {
     ...fallback,
-    warning: `Ignoring ${EMBED_LOG_ENV}=${raw}: expected one of ${Object.keys(SEVERITIES).join(", ")}`
+    warning: `Ignoring ${EMBED_LOG_ENV}=${raw}: expected one of ${EmbedLogLevel.literals.join(", ")}`
   }
 }
 

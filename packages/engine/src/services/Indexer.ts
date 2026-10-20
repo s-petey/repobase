@@ -15,7 +15,7 @@ import * as crypto from "crypto"
 import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
 import { chunkLines, splitLines } from "../chunk.js"
-import { EMBED_LOG_ENV, hostEmbedLog } from "../embedLog.js"
+import { EMBED_LOG_ENV, type EmbedLog, hostEmbedLog } from "../embedLog.js"
 import { Connection, Table } from "@lancedb/lancedb"
 
 // Configuration
@@ -148,6 +148,8 @@ export interface IndexerConfig {
   readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
   /** ONNX Runtime threads the model embeds with, including the caller's; defaults to its own pool */
   readonly threads?: number
+  /** Defaults to reading EMBED_LOG_ENV */
+  readonly embedLog?: EmbedLog
   /**
    * Counts a line's tokens when chunking. Defaults to the model's tokenizer, or
    * to a word count when `embed` replaces the model.
@@ -654,10 +656,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to import transformers: ${e}` })
     })
 
-    const embedLog = yield* hostEmbedLog.pipe(
-      Effect.mapError((e) => new IndexError({ operation: "loadEmbedder", message: `Failed to read ${EMBED_LOG_ENV}: ${e}` }))
-    )
-    if (embedLog.warning) yield* Effect.logWarning(embedLog.warning)
+    const embedLog = config.embedLog ?? (yield* hostEmbedLog.pipe(
+      Effect.mapError((e) => new IndexError({ operation: "loadEmbedder", message: `Failed to read ${EMBED_LOG_ENV}: ${e}` })),
+      Effect.tap((resolved) => (resolved.warning ? Effect.logWarning(resolved.warning) : Effect.void))
+    ))
 
     embedder = yield* Effect.tryPromise({
       try: () =>

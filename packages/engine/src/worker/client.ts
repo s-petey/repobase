@@ -1,8 +1,9 @@
 import { BunWorker } from "@effect/platform-bun"
 import { Context, Effect, Layer } from "effect"
-import { RpcClient, type RpcClientError, type RpcGroup } from "effect/unstable/rpc"
+import { RpcClient, type RpcClientError, type RpcGroup, RpcWorker } from "effect/unstable/rpc"
 import { hostWorkerCount, splitPools } from "./limits.js"
 import { StepRpcs } from "./rpcs.js"
+import { WorkerSettings } from "./settings.js"
 
 /**
  * RPC client for the worker pool that runs job steps, except for embedding
@@ -19,6 +20,22 @@ export class WorkerClient extends Context.Service<
 const WORKER_TIME_TO_LIVE = "60 seconds"
 
 /**
+ * Spawns `workerUrl` and sends each worker the WorkerSettings before anything
+ * else. A worker waits for them before it serves requests, so every pool has
+ * to spawn its workers through this.
+ */
+const layerWorkers = (options: { readonly workerUrl: URL }) =>
+  Layer.merge(
+    BunWorker.layer(() => new Worker(options.workerUrl)),
+    RpcWorker.layerInitialMessage(
+      WorkerSettings.schema,
+      Effect.gen(function* () {
+        return yield* WorkerSettings
+      })
+    )
+  )
+
+/**
  * A pool of worker threads serving StepRpcs.
  *
  * Workers are spawned on demand up to `size` (by default the job share of
@@ -28,10 +45,7 @@ const WORKER_TIME_TO_LIVE = "60 seconds"
  * @param workerUrl - Module that calls runWorker(); it must resolve both from
  *   source and from the bundled dist output
  */
-export const layerWorkerPool = (options: {
-  readonly workerUrl: URL
-  readonly size?: number
-}) =>
+export const layerWorkerPool = (options: { readonly workerUrl: URL; readonly size?: number }) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const size = options.size ?? (yield* hostJobPoolSize)
@@ -46,7 +60,7 @@ export const layerWorkerPool = (options: {
             timeToLive: WORKER_TIME_TO_LIVE
           })
         ),
-        Layer.provide(BunWorker.layer(() => new Worker(options.workerUrl)))
+        Layer.provide(layerWorkers(options))
       )
     })
   )
@@ -66,7 +80,7 @@ export class QueryClient extends Context.Service<QueryClient, WorkerClient["Serv
 export const layerQueryPool = (options: { readonly workerUrl: URL }) =>
   Layer.effect(QueryClient)(RpcClient.make(StepRpcs)).pipe(
     Layer.provide(RpcClient.layerProtocolWorker({ size: 1, concurrency: 1 })),
-    Layer.provide(BunWorker.layer(() => new Worker(options.workerUrl)))
+    Layer.provide(layerWorkers(options))
   )
 
 /**
@@ -85,7 +99,7 @@ export class IndexingClient extends Context.Service<IndexingClient, WorkerClient
 export const layerIndexingPool = (options: { readonly workerUrl: URL; readonly size: number }) =>
   Layer.effect(IndexingClient)(RpcClient.make(StepRpcs)).pipe(
     Layer.provide(RpcClient.layerProtocolWorker({ size: options.size, concurrency: 1 })),
-    Layer.provide(BunWorker.layer(() => new Worker(options.workerUrl)))
+    Layer.provide(layerWorkers(options))
   )
 
 /**

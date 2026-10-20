@@ -1,68 +1,67 @@
-import { describe, expect, it, vi } from "vitest"
-import { Effect, FileSystem, Layer, Path } from "effect"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { BunServices } from "@effect/platform-bun"
+import { Effect, Layer } from "effect"
+import * as fs from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
 import { fileLoggerLayer } from "../src/file-logger.js"
 
-/**
- * In-memory FileSystem: records directories created and everything the
- * file logger writes, so nothing touches disk.
- */
-const makeMemoryFileSystem = () => {
-  const writes: string[] = []
-  const directories: string[] = []
-  const file = {
-    writeAll: (buffer: Uint8Array) =>
-      Effect.sync(() => {
-        writes.push(new TextDecoder().decode(buffer))
-      })
-  } as unknown as FileSystem.File
-
-  const layer = FileSystem.layerNoop({
-    exists: () => Effect.succeed(false),
-    makeDirectory: (path) => Effect.sync(() => directories.push(path)),
-    open: () => Effect.succeed(file)
-  })
-
-  return { writes, directories, layer, output: () => writes.join("") }
-}
-
 // Same composition as main.tsx: the logger must be part of the layer's output
-const appLayer = (fileLogger: ReturnType<typeof fileLoggerLayer>, fs: Layer.Layer<FileSystem.FileSystem>) =>
-  Layer.empty.pipe(Layer.provideMerge(fileLogger), Layer.provide(Layer.merge(fs, Path.layer)))
+const appLayer = (fileLogger: ReturnType<typeof fileLoggerLayer>) =>
+  Layer.empty.pipe(Layer.provideMerge(fileLogger), Layer.provide(BunServices.layer))
+
+let dir: string
+beforeEach(async () => {
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "repobase-file-logger-"))
+})
+afterEach(async () => {
+  await fs.rm(dir, { recursive: true, force: true })
+})
 
 describe("fileLoggerLayer", () => {
   it("writes logs to the log file and not the console", async () => {
-    const fs = makeMemoryFileSystem()
+    const logFile = path.join(dir, "logs", "tui.log")
     const consoleSpies = (["log", "info", "warn", "error", "debug"] as const).map((m) =>
       vi.spyOn(console, m).mockImplementation(() => {})
     )
 
     try {
-      await Effect.runPromise(
-        Effect.log("TUI starting").pipe(
-          Effect.provide(appLayer(fileLoggerLayer("/logs/tui.log"), fs.layer))
-        )
-      )
+      await Effect.runPromise(Effect.log("TUI starting").pipe(Effect.provide(appLayer(fileLoggerLayer(logFile)))))
       for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled()
     } finally {
       for (const spy of consoleSpies) spy.mockRestore()
     }
 
-    expect(fs.directories).toEqual(["/logs"])
-    expect(fs.output()).toContain('message="TUI starting"')
-    expect(fs.output()).toContain("level=INFO")
+    const output = await fs.readFile(logFile, "utf8")
+    expect(output).toContain('message="TUI starting"')
+    expect(output).toContain("level=INFO")
+  })
+
+  it("writes each line before the layer is closed", async () => {
+    const logFile = path.join(dir, "worker.log")
+
+    const output = await Effect.runPromise(
+      Effect.logInfo("indexed a batch").pipe(
+        Effect.andThen(Effect.promise(() => fs.readFile(logFile, "utf8"))),
+        Effect.provide(appLayer(fileLoggerLayer(logFile)))
+      )
+    )
+
+    expect(output).toContain("indexed a batch")
   })
 
   it("respects the minimum log level", async () => {
-    const fs = makeMemoryFileSystem()
+    const logFile = path.join(dir, "tui.log")
 
     await Effect.runPromise(
       Effect.logInfo("hidden").pipe(
         Effect.andThen(Effect.logWarning("shown")),
-        Effect.provide(appLayer(fileLoggerLayer("/logs/tui.log", { minLevel: "Warn" }), fs.layer))
+        Effect.provide(appLayer(fileLoggerLayer(logFile, { minLevel: "Warn" })))
       )
     )
 
-    expect(fs.output()).toContain("shown")
-    expect(fs.output()).not.toContain("hidden")
+    const output = await fs.readFile(logFile, "utf8")
+    expect(output).toContain("shown")
+    expect(output).not.toContain("hidden")
   })
 })

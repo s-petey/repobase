@@ -186,7 +186,7 @@ const stepErrorFrom = (repoId: string, stepKey: string, cause: Cause.Cause<StepE
 
 /**
  * @param concurrency - how many fan-out steps of one job run at once
- *   (typically the worker pool size)
+ *   (typically the size of the pool they run on)
  */
 export const make = <R>(definitions: JobDefinitions<R>, options: { readonly concurrency: number }) =>
   Effect.gen(function* () {

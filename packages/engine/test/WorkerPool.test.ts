@@ -12,11 +12,13 @@ import {
   QueryClient,
   WorkerClient
 } from "../src/worker/client.js"
+import { WorkerSettings } from "../src/worker/settings.js"
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..")
 const workerUrl = new URL("./fixtures/worker.ts", import.meta.url)
+const Settings = Layer.succeed(WorkerSettings, { embedLog: "fatal" })
 
-const PoolLayer = layerWorkerPool({ workerUrl, size: 2 })
+const PoolLayer = layerWorkerPool({ workerUrl, size: 2 }).pipe(Layer.provide(Settings))
 
 // These run real worker threads, so they use the real clock (it.live): shutting
 // down an idle worker waits on a timer that the test clock would never advance.
@@ -59,14 +61,14 @@ describe("query pool", () => {
       const query = yield* QueryClient
       const { commit } = yield* query.ResolveHead({ repoId: "repobase", localPath: repoRoot })
       expect(commit).toBe(execSync("git rev-parse HEAD", { cwd: repoRoot }).toString().trim())
-    }).pipe(Effect.provide(layerQueryPool({ workerUrl }))), 30_000)
+    }).pipe(Effect.provide(layerQueryPool({ workerUrl }).pipe(Layer.provide(Settings)))), 30_000)
 
   it.live("shares the indexing workers' client when it has no worker of its own", () =>
     Effect.gen(function* () {
       // Compared as a boolean: printing an RPC client (a proxy) on failure never finishes
       expect(Object.is(yield* QueryClient, yield* IndexingClient)).toBe(true)
     }).pipe(
-      Effect.provide(layerQueryFromIndexingPool.pipe(Layer.provideMerge(layerIndexingPool({ workerUrl, size: 1 }))))
+      Effect.provide(layerQueryFromIndexingPool.pipe(Layer.provideMerge(layerIndexingPool({ workerUrl, size: 1 }).pipe(Layer.provide(Settings)))))
     ), 30_000)
 })
 
@@ -80,5 +82,5 @@ describe("indexing pool", () => {
         { concurrency: "unbounded" }
       )
       expect(new Set(results.map((r) => r.commit)).size).toBe(1)
-    }).pipe(Effect.provide(layerIndexingPool({ workerUrl, size: 2 }))), 30_000)
+    }).pipe(Effect.provide(layerIndexingPool({ workerUrl, size: 2 }).pipe(Layer.provide(Settings)))), 30_000)
 })

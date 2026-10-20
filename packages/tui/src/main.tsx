@@ -4,7 +4,7 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Cause, Config, Deferred, Effect, Exit, Fiber, FiberSet, Layer, Option, Stream } from "effect"
+import { Cause, Config, Context, Deferred, Effect, Exit, Fiber, FiberSet, Layer, Option, Stream } from "effect"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
@@ -30,7 +30,9 @@ import {
   hostWorkerCount,
   hostIndexingConcurrency,
   splitPools,
-  telemetryLayer,
+  otlpLayer,
+  WorkerSettings,
+  type PoolSizes,
   type SearchMode,
   type AddRepoProgress,
   type Job,
@@ -55,32 +57,44 @@ const workerUrl = new URL(
   import.meta.url
 )
 
-// One worker per job step at a time, and one job's batches spread over all of them.
-// Searches get their own warm worker, unless the budget only allows one.
-const hostPools = Effect.map(hostWorkerCount, (workerCount) => ({ workerCount, pools: splitPools(workerCount.count) }))
+/**
+ * How the worker budget is split: one worker per job step at a time, a warm
+ * worker for searches unless the budget only allows one, and the indexing
+ * workers every job's batches share
+ */
+class HostPools extends Context.Service<HostPools, {
+  readonly pools: PoolSizes
+  readonly indexing: number
+}>()("@repobase/tui/HostPools") {
+  static readonly layer = Layer.effect(HostPools)(
+    Effect.gen(function* () {
+      const workerCount = yield* hostWorkerCount
+      const indexing = yield* hostIndexingConcurrency
+      if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
+      if (indexing.warning) yield* Effect.logWarning(indexing.warning)
+      return { pools: splitPools(workerCount.count), indexing: indexing.count }
+    })
+  )
+}
 
+// Unwrapped because the pool sizes, and whether searches get their own worker,
+// come from HostPools. A layer value is built once however many layers it's
+// provided to, so the runner and the search client share IndexingPool's workers,
+// and JobProgressLayer is both offered and used.
 const JobsLive = Layer.unwrap(
   Effect.gen(function* () {
-    const { pools } = yield* hostPools
-    const indexing = yield* hostIndexingConcurrency
-    return JobRunnerLayer(
-      makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: indexing.count }),
-      { concurrency: pools.jobs }
+    const { pools, indexing } = yield* HostPools
+    const IndexingPool = layerIndexingPool({ workerUrl, size: indexing })
+    const QueryPool =
+      pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromIndexingPool.pipe(Layer.provide(IndexingPool))
+    return Layer.mergeAll(
+      JobRunnerLayer(makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: indexing }), {
+        concurrency: indexing
+      }),
+      QueryPool,
+      JobProgressLayer
     ).pipe(
-      Layer.provideMerge(
-        Layer.mergeAll(
-          pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromIndexingPool,
-          JobStoreLayer,
-          JobProgressLayer
-        ).pipe(
-          Layer.provideMerge(
-            Layer.mergeAll(
-              layerWorkerPool({ workerUrl, size: pools.jobs }),
-              layerIndexingPool({ workerUrl, size: indexing.count })
-            )
-          )
-        )
-      )
+      Layer.provide([layerWorkerPool({ workerUrl, size: pools.jobs }), IndexingPool, JobStoreLayer, JobProgressLayer])
     )
   })
 )
@@ -92,12 +106,23 @@ const EngineLive = Layer.mergeAll(
   JobsLive
 ).pipe(Layer.provideMerge(RepoStoreLayer))
 
+// This thread exports to the same endpoint its workers are sent
+const TelemetryLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const { otlpEndpoint } = yield* WorkerSettings
+    return otlpLayer("repobase-tui", Option.fromUndefinedOr(otlpEndpoint))
+  })
+)
+
+// WorkerSettings and HostPools are each built once, and everything above
+// shares them.
 // provideMerge (not provide) so the file logger is also part of MainLayer's
 // output; in Effect v4 loggers are context references, so a merely-provided
 // logger layer would not apply to the programs we run and logs would hit the TUI.
 // BunServices is provided last so both the engine and the logger share it.
 const MainLayer = EngineLive.pipe(
-  Layer.provideMerge(telemetryLayer("repobase-tui")),
+  Layer.provideMerge(TelemetryLive),
+  Layer.provideMerge([WorkerSettings.layer, HostPools.layer]),
   Layer.provideMerge(FileLogger),
   Layer.provide(BunServices.layer)
 )
@@ -107,13 +132,10 @@ const MainLayer = EngineLive.pipe(
 // every finalizer below runs on the way out.
 const program = Effect.gen(function* () {
   yield* Effect.log(`TUI starting - logs written to ${tuiLogPath}`)
-  const { workerCount, pools } = yield* hostPools
-  const indexing = yield* hostIndexingConcurrency
+  const { pools, indexing } = yield* HostPools
   const forceSync = yield* Config.Boolean(FORCE_SYNC_ENV).pipe(Config.withDefault(false))
   const debugLag = yield* Config.Boolean(LAG_ENV).pipe(Config.withDefault(false))
-  if (workerCount.warning) yield* Effect.logWarning(workerCount.warning)
-  if (indexing.warning) yield* Effect.logWarning(indexing.warning)
-  yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search, ${indexing.count} for indexing`)
+  yield* Effect.log(`Workers: ${pools.jobs} for jobs, ${pools.query} for search, ${indexing} for indexing`)
   if (debugLag) yield* Effect.forkScoped(lagSampler)
   if (forceSync) yield* Effect.logWarning(`${FORCE_SYNC_ENV}=1: every sync re-indexes all files`)
 

@@ -214,6 +214,7 @@ export {
   IndexBatchEvent,
   Search
 } from "./worker/rpcs.js"
+export { WorkerSettings } from "./worker/settings.js"
 export {
   WorkerClient,
   layerWorkerPool,
@@ -233,7 +234,8 @@ export {
   silentLoggerLayer
 } from "./file-logger.js"
 
-export { telemetryLayer } from "./telemetry.js"
+export { hostOtlpEndpoint, otlpLayer, telemetryLayer } from "./telemetry.js"
+export { EMBED_LOG_ENV, hostEmbedLog } from "./embedLog.js"
 
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"
