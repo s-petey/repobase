@@ -57,6 +57,24 @@ Tasks use two kinds of worker threads:
 - **Indexing workers** compute the embeddings for search, the CPU-heavy part: one batch of files uses about 5 cores. Each holds its own copy of the embedding model, so there are only a few: as many as fit in about half of your cores, and at least one. They start with repobase and stay for the whole session. To change how many, set `REPOBASE_MAX_INDEXING`, for example `REPOBASE_MAX_INDEXING=2 repobase` to finish a large Sync All sooner at the cost of more CPU and memory.
 - **Workers** run everything else: cloning, fetching and planning. One of them is kept for search. By default there are up to 4, fewer on machines with less CPU or memory, and an idle one stops after a minute. To change the limit, set `REPOBASE_MAX_WORKERS`. With `REPOBASE_MAX_WORKERS=1`, search shares the indexing workers, so `REPOBASE_MAX_WORKERS=1 REPOBASE_MAX_INDEXING=1 repobase` is the smallest setup: two threads.
 
+### Command line
+
+With arguments, `repobase` runs a command instead of opening the TUI:
+
+```bash
+repobase --wizard                              # pick a command and fill in its arguments step by step
+repobase add https://github.com/honojs/hono    # add and index a repository
+repobase list                                  # list repositories
+repobase sync [id]                             # sync one repository, or all of them
+repobase reindex [id]                          # re-index one, or every one in an old index format
+repobase remove <id>                           # remove a repository
+repobase search <query>                        # search (add --semantic or --hybrid)
+repobase grep <pattern>                        # search file contents with a regex
+repobase --help                                # every command and its options
+```
+
+Commands run in the foreground, without the TUI's worker threads.
+
 ### MCP Server (Cursor, Claude, etc.)
 
 Add to your MCP configuration (`~/.cursor/mcp.json` or Claude config):
@@ -130,7 +148,7 @@ bun run build
 
 ### LanceDB log level
 
-The TUI starts with `LANCEDB_LOG=error`: `bun run dev:tui` sets it through the TUI's `start` script, and the published `repobase` command sets it in the shebang of `dist/bin/repobase.js`.
+The TUI and CLI start with `LANCEDB_LOG=error`: `bun run dev:tui` sets it through the TUI's `start` script, and the published `repobase` command sets it in the shebang of `dist/bin/repobase.js`.
 
 LanceDB's Rust core logs warnings to stderr, and anything on stderr draws over the terminal UI. Hybrid search always triggers one: a deprecation warning about `_score`/`_distance` auto-projection that comes from LanceDB's internal sub-queries. LanceDB 0.39 has no JS API to turn that off, so the only fix is the log level. Errors are still logged.
 

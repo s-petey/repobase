@@ -2,7 +2,7 @@
 /**
  * Build script for repobase distribution package.
  * 
- * Bundles TUI and MCP server into dist/ for npm publishing.
+ * Bundles TUI, CLI and MCP server into dist/ for npm publishing.
  */
 
 import { $ } from "bun"
@@ -51,6 +51,31 @@ async function buildTUI() {
   console.log("  ✓ TUI built to dist/tui/main.js and dist/tui/worker.js")
 }
 
+async function buildCLI() {
+  console.log("📦 Building CLI...")
+
+  await Bun.build({
+    entrypoints: [join(ROOT, "packages/cli/src/main.ts")],
+    outdir: join(DIST, "cli"),
+    target: "node",
+    format: "esm",
+    splitting: false,
+    sourcemap: "external",
+    external: [
+      // Keep native modules external
+      "@lancedb/lancedb",
+      "@huggingface/transformers",
+      // Keep effect ecosystem external
+      "effect",
+      "@effect/platform",
+      "@effect/platform-node",
+      "@effect/platform-bun",
+    ],
+  })
+
+  console.log("  ✓ CLI built to dist/cli/main.js")
+}
+
 async function buildMCP() {
   console.log("📦 Building MCP server...")
   
@@ -82,11 +107,17 @@ async function createBinWrappers() {
   
   await mkdir(join(DIST, "bin"), { recursive: true })
   
-  // TUI wrapper - uses bun for @opentui compatibility. LANCEDB_LOG=error keeps
-  // LanceDB's Rust warnings off stderr, where they draw over the TUI; it must be
-  // set at process start (see "LanceDB log level" in the README).
+  // repobase wrapper - runs a CLI command when given arguments (repobase add,
+  // sync, ...) and opens the TUI otherwise. Uses bun for @opentui compatibility.
+  // LANCEDB_LOG=error keeps LanceDB's Rust warnings off stderr, where they draw
+  // over the TUI; it must be set at process start (see "LanceDB log level" in
+  // the README).
   const tuiBin = `#!/usr/bin/env -S LANCEDB_LOG=error bun
-import "../tui/main.js"
+if (process.argv.length > 2) {
+  await import("../cli/main.js")
+} else {
+  await import("../tui/main.js")
+}
 `
   await Bun.write(join(DIST, "bin/repobase.js"), tuiBin)
   
@@ -110,14 +141,16 @@ async function main() {
   
   await clean()
   await buildTUI()
+  await buildCLI()
   await buildMCP()
   await createBinWrappers()
   
   console.log("\n✅ Build complete!")
   console.log("\nTo test locally:")
   console.log("  npm link")
-  console.log("  repobase      # Start TUI")
-  console.log("  repobase-mcp  # Start MCP server")
+  console.log("  repobase            # Start TUI")
+  console.log("  repobase add <url>  # Run a CLI command")
+  console.log("  repobase-mcp        # Start MCP server")
 }
 
 main().catch((err) => {
