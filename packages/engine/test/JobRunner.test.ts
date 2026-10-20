@@ -1,5 +1,7 @@
 import { describe, it, expect } from "@effect/vitest"
 import { DateTime, Deferred, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { TestClock } from "effect/testing"
+import { spawnSync } from "node:child_process"
 import {
   CloneFailedError,
   IndexBatchFailedError,
@@ -257,6 +259,73 @@ describe("JobRunner", () => {
       expect(job.status).toBe("completed")
       expect(job.steps.map((s) => s.key)).toEqual(["loadRepo", "fetch", "resolve", "record"])
       expect(stepOf(job, "record").output).toBe("def456")
+    }).pipe(Effect.scoped, Effect.provide(layerMemory))
+  })
+
+  it.effect("follows a job another process runs, and leaves discarding it to that process", () => {
+    const script = makeScript()
+    const at = DateTime.makeUnsafe(0)
+    const elsewhere: SyncRepoJob = {
+      id: "syncRepo-acme-gadgets-cli",
+      kind: "syncRepo",
+      repoId: "acme-gadgets",
+      payload: {},
+      status: "running",
+      createdAt: at,
+      updatedAt: at,
+      owner: { pid: process.ppid, name: "cli" },
+      steps: [
+        { key: "loadRepo", name: "loadRepo", runsOn: "main", status: "running", attempts: 1 },
+        { key: "fetch", name: "fetch", runsOn: "worker", status: "pending", attempts: 0 }
+      ]
+    }
+    return Effect.gen(function* () {
+      const store = yield* JobStore
+      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: "1 second" })
+      const own = yield* runner.await((yield* runner.start(addRepo())).id)
+      expect(own.owner).toEqual({ pid: process.pid, name: "repobase" })
+
+      yield* store.save(elsewhere)
+      yield* TestClock.adjust("1 second")
+      expect((yield* runner.jobs).map((j) => j.id)).toEqual([own.id, elsewhere.id])
+      expect(yield* Effect.flip(runner.discard(elsewhere.id))).toBeInstanceOf(JobAlreadyRunningError)
+
+      // The other process finishes it
+      yield* store.save({ ...elsewhere, status: "completed", updatedAt: DateTime.makeUnsafe(1000) })
+      yield* TestClock.adjust("1 second")
+      expect((yield* runner.jobs).find((j) => j.id === elsewhere.id)?.status).toBe("completed")
+    }).pipe(Effect.scoped, Effect.provide(layerMemory))
+  })
+
+  it.effect("marks a job whose process died as interrupted, so it can be retried here", () => {
+    const script = makeScript()
+    const at = DateTime.makeUnsafe(0)
+    const orphan: SyncRepoJob = {
+      id: "syncRepo-acme-widgets-cli",
+      kind: "syncRepo",
+      repoId: "acme-widgets",
+      payload: {},
+      status: "running",
+      createdAt: at,
+      updatedAt: at,
+      owner: { pid: spawnSync("true").pid, name: "cli" },
+      steps: [
+        { key: "loadRepo", name: "loadRepo", runsOn: "main", status: "done", attempts: 1, output: { pinned: false } },
+        { key: "fetch", name: "fetch", runsOn: "worker", status: "running", attempts: 1 }
+      ]
+    }
+    return Effect.gen(function* () {
+      const store = yield* JobStore
+      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: "1 second" })
+
+      yield* store.save(orphan)
+      yield* TestClock.adjust("1 second")
+      expect((yield* runner.jobs).find((j) => j.id === orphan.id)?.status).toBe("interrupted")
+
+      yield* runner.retry(orphan.id)
+      const job = yield* runner.await(orphan.id)
+      expect(job.status).toBe("completed")
+      expect(job.owner?.pid).toBe(process.pid)
     }).pipe(Effect.scoped, Effect.provide(layerMemory))
   })
 

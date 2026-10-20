@@ -2,6 +2,7 @@ import {
   Cause,
   Context,
   DateTime,
+  type Duration,
   Effect,
   Exit,
   FiberMap,
@@ -9,6 +10,7 @@ import {
   Option,
   Ref,
   Result,
+  Schedule,
   Schema,
   Semaphore,
   Stream,
@@ -16,8 +18,9 @@ import {
 } from "effect"
 import { isRetryable, type StepError, UnexpectedStepError } from "./errors.js"
 import { type IndexLock, makeIndexLock } from "./IndexLock.js"
-import { type Job, type JobKind, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
+import { type Job, type JobKind, type JobOwner, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
 import { JobStore } from "./JobStore.js"
+import { runningElsewhere } from "./owner.js"
 
 // A generic runner for jobs made of checkpointed steps. The job definitions
 // (what addRepo and syncRepo actually do) live elsewhere; this file only knows
@@ -134,7 +137,7 @@ export type JobRunnerError = JobAlreadyRunningError | JobNotFoundError | JobNotR
 // ---------------------------------------------------------------------------
 // Service
 
-type NewJob = { [K in JobKind]: { readonly kind: K; readonly repoId: string; readonly payload: Extract<Job, { kind: K }>["payload"] } }[JobKind]
+export type NewJob = { [K in JobKind]: { readonly kind: K; readonly repoId: string; readonly payload: Extract<Job, { kind: K }>["payload"] } }[JobKind]
 
 export interface JobRunnerService {
   // Every known job, newest first, updated as steps run
@@ -181,7 +184,6 @@ const withEveryStep = <J extends Job>(job: J, definition: JobDefinition<J, any>)
   })
 })
 
-// Steps a retry should run again
 const unfinished = (step: Step) =>
   step.status === "failed" || step.status === "interrupted" || step.status === "running"
 
@@ -197,16 +199,19 @@ const stepErrorFrom = (repoId: string, stepKey: string, cause: Cause.Cause<StepE
       })
   })
 
-/**
- * @param concurrency - how many fan-out steps of one job run at once
- *   (typically the size of the pool they run on)
- */
-export const make = <R>(definitions: JobDefinitions<R>, options: { readonly concurrency: number }) =>
+export interface JobRunnerOptions {
+  readonly concurrency: number
+  readonly processName?: string
+  readonly followOthers?: Duration.Input
+}
+
+export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOptions) =>
   Effect.gen(function* () {
     const store = yield* JobStore
     const services = yield* Effect.context<R>()
     const indexLock = yield* makeIndexLock
     const fibers = yield* FiberMap.make<string>()
+    const owner: JobOwner = { pid: process.pid, name: options.processName ?? "repobase" }
 
     // Jobs left running by a previous process can't still be running
     yield* store.markInterrupted().pipe(
@@ -223,32 +228,46 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
 
     // Repos with a job in flight; a second job for the same repo is refused. Each
     // claim is its own symbol, so a run that ends late can only release its own
-    // claim, never the next job's for the same repo.
+    // claim, never the next job's for the same repo. The store's claim keeps
+    // other processes from starting one too.
     const activeRepos = yield* Ref.make<ReadonlyMap<string, symbol>>(new Map())
 
-    const claimRepo = (repoId: string) =>
-      Effect.suspend(() => {
-        const claim = Symbol(repoId)
-        return Ref.modify(activeRepos, (active) =>
-          active.has(repoId) ? [undefined, active] : [claim, new Map(active).set(repoId, claim)]
-        )
-      }).pipe(
-        Effect.flatMap((claim) =>
-          claim !== undefined
-            ? Effect.succeed(claim)
-            : Effect.fail(
-                new JobAlreadyRunningError({ repoId, message: `A job for ${repoId} is already running` })
-              )
-        )
-      )
-
-    const releaseRepo = (repoId: string, claim: symbol) =>
-      Ref.update(activeRepos, (active) => {
-        if (active.get(repoId) !== claim) return active
+    const dropClaim = (repoId: string, claim: symbol) =>
+      Ref.modify(activeRepos, (active) => {
+        if (active.get(repoId) !== claim) return [false, active]
         const next = new Map(active)
         next.delete(repoId)
-        return next
+        return [true, next]
       })
+
+    const claimRepo = (repoId: string) =>
+      Effect.gen(function* () {
+        const claim = Symbol(repoId)
+        const claimed = yield* Ref.modify(activeRepos, (active) =>
+          active.has(repoId) ? [false, active] : [true, new Map(active).set(repoId, claim)]
+        )
+        if (!claimed) {
+          return yield* new JobAlreadyRunningError({ repoId, message: `A job for ${repoId} is already running` })
+        }
+        // A lock that can't be written doesn't stop the job: it only guards against another process
+        const held = yield* store.claimRepo(repoId, owner).pipe(
+          Effect.catch((e) =>
+            Effect.logWarning(`Could not claim ${repoId} for this process: ${e.message}`).pipe(Effect.as(Option.none()))
+          )
+        )
+        if (Option.isSome(held)) {
+          yield* dropClaim(repoId, claim)
+          const by = Option.match(held.value.holder, {
+            onNone: () => "another repobase process",
+            onSome: (holder) => `repobase ${holder.name} (pid ${holder.pid})`
+          })
+          return yield* new JobAlreadyRunningError({ repoId, message: `A job for ${repoId} is already running in ${by}` })
+        }
+        return claim
+      })
+
+    const releaseRepo = (repoId: string, claim: symbol) =>
+      dropClaim(repoId, claim).pipe(Effect.flatMap((dropped) => (dropped ? store.releaseRepo(repoId) : Effect.void)))
 
     const sorted = (jobs: ReadonlyMap<string, Job>) =>
       [...jobs.values()].sort((a, b) => DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt))
@@ -561,6 +580,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
           status: "running",
           createdAt: now,
           updatedAt: now,
+          owner,
           steps: initialSteps(definition)
         } as Job
         yield* publish(job)
@@ -604,6 +624,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         const resumed = yield* updateJob(jobId, (j) => ({
           ...j,
           status: "running",
+          owner,
           steps: j.steps.map((s) => (unfinished(s) ? { ...s, status: "pending" as const } : s))
         }))
         yield* launch(resumed, claim)
@@ -613,6 +634,12 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
     const discard: JobRunnerService["discard"] = (jobId) =>
       Effect.gen(function* () {
         const job = yield* findJob(jobId)
+        if (runningElsewhere(job)) {
+          return yield* new JobAlreadyRunningError({
+            repoId: job.repoId,
+            message: `This ${job.kind} is running in another repobase process (${job.owner?.name}); stop it there first`
+          })
+        }
         // Interrupting runs the job's own finalizers (release the repo, mark interrupted)
         yield* FiberMap.remove(fibers, jobId)
         yield* Effect.logInfo(`Discarded ${job.kind} for ${job.repoId} (${jobId})`)
@@ -644,6 +671,30 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
         })
       })
 
+    const refresh = writeLock.withPermit(
+      Effect.gen(function* () {
+        yield* store.markInterrupted()
+        const stored = yield* store.list()
+        const jobs = yield* SubscriptionRef.get(state)
+        const ours = (job: Job | undefined) => job?.owner?.pid === process.pid
+        const next = new Map<string, Job>()
+        for (const job of stored) {
+          const mine = jobs.get(job.id)
+          next.set(job.id, ours(job) && mine ? mine : job)
+        }
+        for (const job of jobs.values()) {
+          if (!next.has(job.id) && ours(job) && job.status === "running") next.set(job.id, job)
+        }
+        const version = (job: Job | undefined) => job && `${job.status}@${DateTime.toEpochMillis(job.updatedAt)}`
+        const changed = next.size !== jobs.size || [...next].some(([id, job]) => version(jobs.get(id)) !== version(job))
+        if (changed) yield* SubscriptionRef.set(state, next)
+      })
+    ).pipe(Effect.catch((e) => Effect.logWarning(`Could not refresh jobs: ${e.message}`)))
+
+    if (options.followOthers !== undefined) {
+      yield* Effect.forkScoped(Effect.repeat(refresh, Schedule.spaced(options.followOthers)))
+    }
+
     yield* prune()
 
     return JobRunner.of({
@@ -661,5 +712,5 @@ export const make = <R>(definitions: JobDefinitions<R>, options: { readonly conc
 /**
  * JobRunner layer - requires a JobStore and whatever the job definitions need
  */
-export const layer = <R>(definitions: JobDefinitions<R>, options: { readonly concurrency: number }) =>
+export const layer = <R>(definitions: JobDefinitions<R>, options: JobRunnerOptions) =>
   Layer.effect(JobRunner, make(definitions, options))

@@ -1,7 +1,7 @@
 import { BunServices, BunWorkerRunner } from "@effect/platform-bun"
 import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Queue, Stream } from "effect"
 import type { Context } from "effect"
-import { RpcServer, RpcWorker } from "effect/unstable/rpc"
+import { RpcServer, RpcTest, RpcWorker } from "effect/unstable/rpc"
 import { format } from "node:util"
 import { consoleLogLevel, type EmbedLog, type EmbedLogLevel, embedLogOf } from "../embedLog.js"
 import {
@@ -24,6 +24,7 @@ import { GitClient, layer as GitClientLayer } from "../services/GitClient.js"
 import { INDEX_BATCH_SIZE, Indexer, layerWith as IndexerLayerWith } from "../services/Indexer.js"
 import { otlpLayer } from "../telemetry.js"
 import { ONNX_THREADS_PER_WORKER } from "./limits.js"
+import { IndexingClient, WorkerClient } from "./client.js"
 import { type IndexBatchEvent, StepRpcs } from "./rpcs.js"
 import { WorkerSettings } from "./settings.js"
 
@@ -201,6 +202,16 @@ export const HandlersLayer = StepRpcs.toLayer(
     })
   })
 )
+
+/**
+ * WorkerClient and IndexingClient served on the calling thread, for a process
+ * with no UI to keep responsive (the CLI). Needs what the handlers need: a
+ * GitClient, Indexer and JobStore.
+ */
+export const layerInProcessWorkers = Layer.mergeAll(
+  Layer.effect(WorkerClient)(RpcTest.makeClient(StepRpcs)),
+  Layer.effect(IndexingClient)(RpcTest.makeClient(StepRpcs))
+).pipe(Layer.provide(HandlersLayer))
 
 /**
  * A console method that writes to the worker log, at the level consoleLogLevel

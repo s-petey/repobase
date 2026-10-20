@@ -200,6 +200,21 @@ export {
   type DefinitionsConfig,
   type JobDefinitionsServices
 } from "./jobs/definitions.js"
+export { runningElsewhere, runningHere } from "./jobs/owner.js"
+export {
+  stepIcon,
+  stepLines,
+  type StepLine,
+  retryState,
+  kindLabel,
+  resumableJob,
+  unfinishedIndexing,
+  resumePoint,
+  jobFailureMessage,
+  syncUpdated,
+  jobFailed
+} from "./jobs/view.js"
+export { startOrResume, runSync } from "./jobs/runs.js"
 
 // Worker pool
 export {
@@ -224,7 +239,7 @@ export {
   layerIndexingPool,
   layerQueryFromIndexingPool
 } from "./worker/client.js"
-export { runWorker } from "./worker/server.js"
+export { runWorker, layerInProcessWorkers } from "./worker/server.js"
 
 // Logging
 export {

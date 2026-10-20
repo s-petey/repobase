@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { DateTime } from "effect"
 import { CloneFailedError, trackingMode, type Job, type Step } from "@repobase/engine"
-import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
+import { addRepoProgress } from "./jobProgress.js"
 
 const now = DateTime.makeUnsafe("2026-09-25T10:00:00Z")
 
@@ -95,41 +95,5 @@ describe("addRepoProgress", () => {
       progress: 0,
       message: "Clone failed: authentication required"
     })
-    expect(jobFailureMessage(failed)).toBe("Clone failed: authentication required")
-  })
-
-  it("explains an interrupted job", () => {
-    expect(jobFailureMessage(jobAt("clone", "interrupted"))).toBe("Stopped before it finished")
-  })
-})
-
-describe("sync outcome", () => {
-  const syncJob = (status: Job["status"], updateStore: Step["status"]): Job => ({
-    id: "syncRepo-acme-widgets-1",
-    kind: "syncRepo",
-    repoId: "acme-widgets",
-    payload: {},
-    status,
-    createdAt: now,
-    updatedAt: now,
-    steps: [
-      { key: "loadRepo", name: "loadRepo", runsOn: "main", status: "done", attempts: 1 },
-      { key: "updateStore", name: "updateStore", runsOn: "main", status: updateStore, attempts: 1 }
-    ]
-  })
-
-  it("counts a sync as updated only when it recorded a new commit", () => {
-    expect(syncUpdated(syncJob("completed", "done"))).toBe(true)
-    // Up to date: the job ended early and skipped the rest
-    expect(syncUpdated(syncJob("completed", "skipped"))).toBe(false)
-    // Pinned
-    expect(syncUpdated(syncJob("skipped", "skipped"))).toBe(false)
-  })
-
-  it("treats failed and interrupted jobs as failures", () => {
-    expect(jobFailed(syncJob("failed", "pending"))).toBe(true)
-    expect(jobFailed(syncJob("interrupted", "pending"))).toBe(true)
-    expect(jobFailed(syncJob("skipped", "skipped"))).toBe(false)
-    expect(jobFailed(syncJob("completed", "done"))).toBe(false)
   })
 })

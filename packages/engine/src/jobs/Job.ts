@@ -58,12 +58,21 @@ export const SyncRepoPayload = Schema.Struct({
 })
 export type SyncRepoPayload = typeof SyncRepoPayload.Type
 
+/**
+ * The process that last ran a job (e.g. "tui" or "cli"), so another process
+ * can tell a job that's still running from one left behind by a process that
+ * exited
+ */
+export const JobOwner = Schema.Struct({ pid: Schema.Number, name: Schema.String })
+export type JobOwner = typeof JobOwner.Type
+
 const jobFields = {
   id: Schema.String,
   repoId: Schema.String,
   status: JobStatus,
   createdAt: Schema.DateTimeUtcFromMillis,
   updatedAt: Schema.DateTimeUtcFromMillis,
+  owner: Schema.optional(JobOwner),
   steps: Schema.Array(Step)
 }
 

@@ -2,9 +2,11 @@ import { describe, it, expect } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { DateTime, Effect, FileSystem, Layer, Option, Path } from "effect"
 import { TestClock } from "effect/testing"
+import { spawnSync } from "node:child_process"
 import * as nodeFs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { StoreError } from "../src/errors.js"
 import { CloneFailedError } from "../src/jobs/errors.js"
 import { type Job, makeJobId } from "../src/jobs/Job.js"
 import { JobStore, layerMemory, layerWith } from "../src/jobs/JobStore.js"
@@ -85,6 +87,20 @@ const syncJob = (overrides: Partial<Job> = {}): Job =>
 
 const plan = { toIndex: [{ path: "src/a.ts", hash: "aaa" }], toDelete: ["old.ts"], skipped: 2 }
 
+const deadPid = () => spawnSync("true").pid
+
+const tui = { pid: process.pid, name: "tui" }
+
+// A file store with its locks directory already made
+const lockedStore = () =>
+  Effect.gen(function* () {
+    const dir = tempDir()
+    const locks = path.join(dir, "locks")
+    nodeFs.mkdirSync(locks)
+    const store = yield* JobStore.pipe(Effect.provide(layerWith({ dir }).pipe(Layer.provide(BunServices.layer))))
+    return { locks, store }
+  })
+
 const fileLayer = () => layerWith({ dir: tempDir() }).pipe(Layer.provide(BunServices.layer))
 
 describe.each([
@@ -155,6 +171,34 @@ describe.each([
       expect(reloaded.updatedAt).toEqual(at("2026-09-25T12:00:00Z"))
       expect(reloaded.steps[1].finishedAt).toEqual(at("2026-09-25T12:00:00Z"))
       expect(Option.getOrThrow(yield* store.get(failed.id))).toEqual(failed)
+    }).pipe(Effect.provide(makeLayer()))
+  )
+
+  it.effect("leaves a running job alone while the process that owns it is alive", () =>
+    Effect.gen(function* () {
+      const store = yield* JobStore
+      const live = syncJob({ owner: { pid: process.ppid, name: "cli" } })
+      const dead = syncJob({ id: "syncRepo-acme-gadgets-3", repoId: "acme-gadgets", owner: { pid: deadPid(), name: "cli" } })
+      yield* store.save(live)
+      yield* store.save(dead)
+
+      const changed = yield* store.markInterrupted()
+
+      expect(changed.map((j) => j.id)).toEqual([dead.id])
+      expect(Option.getOrThrow(yield* store.get(live.id)).status).toBe("running")
+    }).pipe(Effect.provide(makeLayer()))
+  )
+
+  it.effect("claims a repo once until the claim is released, and says who holds it", () =>
+    Effect.gen(function* () {
+      const store = yield* JobStore
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.none())
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.some({ holder: Option.some(tui) }))
+      expect(yield* store.claimRepo("acme/gadgets", tui)).toEqual(Option.none())
+
+      yield* store.releaseRepo("acme/widgets")
+
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.none())
     }).pipe(Effect.provide(makeLayer()))
   )
 
@@ -248,6 +292,68 @@ describe("JobStore (file) on disk", () => {
         Effect.provide(layerWith({ dir }).pipe(Layer.provide(BunServices.layer)))
       )
       expect(listed.map((j) => j.status)).toEqual(["failed"])
+    })
+  )
+
+  it.effect("refuses a repo another live process claimed, and takes over a dead one's claim", () =>
+    Effect.gen(function* () {
+      const { locks, store } = yield* lockedStore()
+      const cli = { pid: process.ppid, name: "cli" }
+      nodeFs.writeFileSync(path.join(locks, "acme__widgets.lock"), JSON.stringify(cli))
+      nodeFs.writeFileSync(path.join(locks, "acme__gadgets.lock"), JSON.stringify({ pid: deadPid(), name: "cli" }))
+
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.some({ holder: Option.some(cli) }))
+      expect(yield* store.claimRepo("acme/gadgets", tui)).toEqual(Option.none())
+      expect(JSON.parse(nodeFs.readFileSync(path.join(locks, "acme__gadgets.lock"), "utf8"))).toEqual(tui)
+
+      // Only this process's own claim is released
+      yield* store.releaseRepo("acme/widgets")
+      expect(nodeFs.existsSync(path.join(locks, "acme__widgets.lock"))).toBe(true)
+      yield* store.releaseRepo("acme/gadgets")
+      expect(nodeFs.existsSync(path.join(locks, "acme__gadgets.lock"))).toBe(false)
+    })
+  )
+
+  it.effect("treats a lock still being written as held, and one left empty as free", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.now())
+      const { locks, store } = yield* lockedStore()
+      nodeFs.writeFileSync(path.join(locks, "acme__widgets.lock"), "")
+      const stale = path.join(locks, "acme__gadgets.lock")
+      nodeFs.writeFileSync(stale, "")
+      const aMinuteAgo = Date.now() / 1000 - 60
+      nodeFs.utimesSync(stale, aMinuteAgo, aMinuteAgo)
+
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.some({ holder: Option.none() }))
+      expect(yield* store.claimRepo("acme/gadgets", tui)).toEqual(Option.none())
+    })
+  )
+
+  it.effect("fails rather than reporting the repo held when the lock can't be written", () =>
+    Effect.gen(function* () {
+      const { locks, store } = yield* lockedStore()
+      nodeFs.chmodSync(locks, 0o500)
+
+      const error = yield* Effect.flip(store.claimRepo("acme/widgets", tui))
+
+      expect(error).toBeInstanceOf(StoreError)
+      nodeFs.chmodSync(locks, 0o700)
+    })
+  )
+
+  it.effect("deletes temp files only of processes that are gone", () =>
+    Effect.gen(function* () {
+      const dir = tempDir()
+      const live = `a.json.tmp-${process.ppid}-x`
+      const gone = `b.json.tmp-${deadPid()}-x`
+      nodeFs.writeFileSync(path.join(dir, live), "{}")
+      nodeFs.writeFileSync(path.join(dir, gone), "{}")
+
+      yield* JobStore.use((store) => store.markInterrupted()).pipe(
+        Effect.provide(layerWith({ dir }).pipe(Layer.provide(BunServices.layer)))
+      )
+
+      expect(nodeFs.readdirSync(dir)).toEqual([live])
     })
   )
 

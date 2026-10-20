@@ -1,28 +1,44 @@
-import { Context, DateTime, Effect, FileSystem, Layer, Option, Order, Path, Random, Ref, Schema } from "effect"
+import {
+  Context,
+  DateTime,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Order,
+  Path,
+  type PlatformError,
+  Random,
+  Ref,
+  Schema
+} from "effect"
 import * as os from "os"
 import * as nodePath from "path"
 import { StoreError } from "../errors.js"
 import { IndexPlan } from "../schemas.js"
-import { Job } from "./Job.js"
+import { Job, JobOwner } from "./Job.js"
+import { isProcessAlive } from "./owner.js"
 
 /**
  * Persists jobs so they survive restarts. Only the main thread writes here.
  */
 export interface JobStoreService {
-  // All jobs, newest first. Unreadable files are skipped with a warning.
   readonly list: () => Effect.Effect<ReadonlyArray<Job>, StoreError>
   readonly get: (id: string) => Effect.Effect<Option.Option<Job>, StoreError>
-  // Replace the stored job; the write is atomic
   readonly save: (job: Job) => Effect.Effect<void, StoreError>
-  // Delete a job and its plan
   readonly remove: (id: string) => Effect.Effect<void, StoreError>
-  // Mark jobs left `running` by a previous process as interrupted, along with
-  // their running steps, and delete the temp files its writes left. Returns the
-  // jobs that changed.
   readonly markInterrupted: () => Effect.Effect<ReadonlyArray<Job>, StoreError>
-  // A job's index plan is kept apart from the job: it can list every file in the repo
+  readonly claimRepo: (repoId: string, owner: JobOwner) => Effect.Effect<Option.Option<RepoHeld>, StoreError>
+  readonly releaseRepo: (repoId: string) => Effect.Effect<void>
   readonly writePlan: (jobId: string, plan: IndexPlan) => Effect.Effect<void, StoreError>
   readonly readPlan: (jobId: string) => Effect.Effect<Option.Option<IndexPlan>, StoreError>
+}
+
+// A repo another process has claimed. Its holder is unknown while that process
+// is still writing itself into the lock file.
+export interface RepoHeld {
+  readonly holder: Option.Option<JobOwner>
 }
 
 export class JobStore extends Context.Service<JobStore, JobStoreService>()(
@@ -51,6 +67,18 @@ const IndexPlanJson = Schema.fromJsonString(IndexPlan)
 const newestFirst: Order.Order<Job> = Order.flip(
   Order.mapInput(DateTime.Order, (job: Job) => job.createdAt)
 )
+
+const LOCKS_DIR = "locks"
+const LOCK_EXTENSION = ".lock"
+const CREATE_ONLY = "wx" satisfies FileSystem.OpenFlag
+const ALREADY_EXISTS = "AlreadyExists" satisfies PlatformError.SystemErrorTag
+// How long a lock file may stay empty while its process writes its owner into it
+const LOCK_WRITE_GRACE = Duration.seconds(5)
+const LockJson = Schema.fromJsonString(JobOwner)
+// The pid in a temp file name written by writeAtomic: <file>.json.tmp-<pid>-<random>
+const TEMP_FILE_PID = /\.json\.tmp-(\d+)-/
+
+const abandoned = (job: Job) => job.status === "running" && !(job.owner && isProcessAlive(job.owner.pid))
 
 // Jobs left running by a process that is no longer around
 const interruptJob = (job: Job, now: DateTime.Utc): Job => ({
@@ -133,14 +161,17 @@ export const makeWith = (config: { readonly dir: string }) =>
     const markInterrupted: JobStoreService["markInterrupted"] = () =>
       Effect.gen(function* () {
         const now = yield* DateTime.now
-        const stale = (yield* list()).filter((job) => job.status === "running")
+        const stale = (yield* list()).filter(abandoned)
         const interrupted = stale.map((job) => interruptJob(job, now))
         yield* Effect.forEach(interrupted, save, { discard: true })
 
         if (yield* fs.exists(config.dir).pipe(Effect.mapError(toStoreError("markInterrupted")))) {
-          const ours = `.tmp-${process.pid}-`
+          // Only a process that's gone: a live one may be about to rename its temp file
           const leftovers = (yield* fs.readDirectory(config.dir).pipe(Effect.mapError(toStoreError("markInterrupted"))))
-            .filter((entry) => entry.includes(".json.tmp-") && !entry.includes(ours))
+            .filter((entry) => {
+              const pid = Number(TEMP_FILE_PID.exec(entry)?.[1])
+              return Number.isInteger(pid) && pid !== process.pid && !isProcessAlive(pid)
+            })
           yield* Effect.forEach(leftovers, (entry) => fs.remove(path.join(config.dir, entry)).pipe(Effect.ignore), {
             discard: true
           })
@@ -162,7 +193,52 @@ export const makeWith = (config: { readonly dir: string }) =>
         return Option.some(yield* Schema.decodeUnknownEffect(IndexPlanJson)(contents))
       }).pipe(Effect.mapError(toStoreError("readPlan")))
 
-    return JobStore.of({ list, get, save, remove, markInterrupted, writePlan, readPlan })
+    // A lock file per repo holding its owner, created only if it doesn't exist
+    const lockFile = (repoId: string) =>
+      path.join(config.dir, LOCKS_DIR, `${repoId.replaceAll("/", "__")}${LOCK_EXTENSION}`)
+    const lockHolder = (file: string) =>
+      fs.readFileString(file).pipe(Effect.flatMap(Schema.decodeUnknownEffect(LockJson)), Effect.option)
+
+    // An empty or unreadable lock file older than the grace period: its process
+    // stopped before writing itself into it
+    const leftUnwritten = (file: string) =>
+      Effect.gen(function* () {
+        const info = yield* fs.stat(file).pipe(Effect.option)
+        const modified = Option.flatMap(info, (i) => i.mtime)
+        if (Option.isNone(modified)) return true
+        const age = DateTime.distance(DateTime.fromDateUnsafe(modified.value), yield* DateTime.now)
+        return Duration.isGreaterThan(age, LOCK_WRITE_GRACE)
+      })
+
+    const claimRepo: JobStoreService["claimRepo"] = (repoId, owner) =>
+      Effect.gen(function* () {
+        const file = lockFile(repoId)
+        const contents = yield* Schema.encodeEffect(LockJson)(owner)
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true })
+        // Twice: once more after removing a claim its process left behind
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const created = yield* fs.writeFileString(file, contents, { flag: CREATE_ONLY }).pipe(
+            Effect.as(true),
+            Effect.catch((e) => (e.reason._tag === ALREADY_EXISTS ? Effect.succeed(false) : Effect.fail(e)))
+          )
+          if (created) return Option.none()
+          const holder = yield* lockHolder(file)
+          if (Option.isSome(holder) ? isProcessAlive(holder.value.pid) : !(yield* leftUnwritten(file))) {
+            return Option.some({ holder })
+          }
+          yield* fs.remove(file, { force: true })
+        }
+        return Option.some({ holder: Option.none() })
+      }).pipe(Effect.mapError(toStoreError("claimRepo")))
+
+    const releaseRepo: JobStoreService["releaseRepo"] = (repoId) =>
+      Effect.gen(function* () {
+        const file = lockFile(repoId)
+        const holder = yield* lockHolder(file)
+        if (Option.isSome(holder) && holder.value.pid === process.pid) yield* fs.remove(file, { force: true })
+      }).pipe(Effect.ignore)
+
+    return JobStore.of({ list, get, save, remove, markInterrupted, claimRepo, releaseRepo, writePlan, readPlan })
   })
 
 /**
@@ -183,6 +259,7 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
   Effect.gen(function* () {
     const jobs = yield* Ref.make(new Map<string, Job>())
     const plans = yield* Ref.make(new Map<string, IndexPlan>())
+    const claims = yield* Ref.make<ReadonlyMap<string, JobOwner>>(new Map())
 
     const list: JobStoreService["list"] = () =>
       Ref.get(jobs).pipe(Effect.map((m) => [...m.values()].sort(newestFirst)))
@@ -208,7 +285,7 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
         Effect.gen(function* () {
           const now = yield* DateTime.now
           const interrupted = (yield* list())
-            .filter((job) => job.status === "running")
+            .filter(abandoned)
             .map((job) => interruptJob(job, now))
           yield* Ref.update(jobs, (m) => {
             const next = new Map(m)
@@ -216,6 +293,17 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
             return next
           })
           return interrupted
+        }),
+      claimRepo: (repoId, owner) =>
+        Ref.modify(claims, (held): [Option.Option<RepoHeld>, ReadonlyMap<string, JobOwner>] => {
+          const holder = Option.fromUndefinedOr(held.get(repoId))
+          return Option.isSome(holder) ? [Option.some({ holder }), held] : [Option.none(), new Map(held).set(repoId, owner)]
+        }),
+      releaseRepo: (repoId) =>
+        Ref.update(claims, (held) => {
+          const next = new Map(held)
+          next.delete(repoId)
+          return next
         }),
       writePlan: (jobId, plan) => Ref.update(plans, (m) => new Map(m).set(jobId, plan)),
       readPlan: (jobId) => Ref.get(plans).pipe(Effect.map((m) => Option.fromNullishOr(m.get(jobId))))

@@ -32,15 +32,19 @@ import {
   splitPools,
   otlpLayer,
   WorkerSettings,
+  jobFailed,
+  jobFailureMessage,
+  runningHere,
+  runSync as syncRepo,
+  startOrResume,
+  syncUpdated,
   type PoolSizes,
   type SearchMode,
   type AddRepoProgress,
-  type Job,
 } from "@repobase/engine"
 import { App } from "./App.js"
 import { featureFlags } from "./config.js"
-import { addRepoProgress, jobFailed, jobFailureMessage, syncUpdated } from "./jobProgress.js"
-import { kindLabel, resumableJob, resumePoint, unfinishedIndexing } from "./jobView.js"
+import { addRepoProgress } from "./jobProgress.js"
 import { LAG_ENV, lagSampler } from "./lagSampler.js"
 import { filterToGlob, type SearchFilter } from "./searchView.js"
 import { shutdown } from "./shutdown.js"
@@ -89,7 +93,9 @@ const JobsLive = Layer.unwrap(
       pools.query > 0 ? layerQueryPool({ workerUrl }) : layerQueryFromIndexingPool.pipe(Layer.provide(IndexingPool))
     return Layer.mergeAll(
       JobRunnerLayer(makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: indexing }), {
-        concurrency: indexing
+        concurrency: indexing,
+        processName: "tui",
+        followOthers: "1 second"
       }),
       QueryPool,
       JobProgressLayer
@@ -157,7 +163,7 @@ const program = Effect.gen(function* () {
     if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) return Effect.void
     return Effect.gen(function* () {
       process.once("SIGINT", () => process.exit(130))
-      const running = (yield* runner.jobs).filter((job) => job.status === "running").length
+      const running = (yield* runner.jobs).filter(runningHere).length
       yield* shutdown({
         running,
         interruptJobs: runner.interruptAll,
@@ -195,31 +201,7 @@ const program = Effect.gen(function* () {
     Deferred.doneUnsafe(quit, Effect.void)
   }
 
-  const runSync = (repoId: string) =>
-    Effect.gen(function* () {
-      const jobs = yield* runner.jobs
-
-      const indexing = unfinishedIndexing(jobs, repoId)
-      if (indexing) {
-        const finished = yield* runner.retry(indexing.id).pipe(Effect.flatMap((job) => runner.await(job.id)))
-        const resumedFrom = `${resumePoint(indexing) ?? "where it stopped"} of the unfinished ${kindLabel[indexing.kind]}`
-        if (finished.status !== "completed") return { job: finished, resumedFrom }
-        return { ...(yield* sync(repoId, jobs)), resumedFrom }
-      }
-      return yield* sync(repoId, jobs)
-    })
-
-  const sync = (repoId: string, jobs: ReadonlyArray<Job>) =>
-    Effect.gen(function* () {
-      const unfinished = resumableJob(jobs, repoId)
-      const job = unfinished
-        ? yield* runner.retry(unfinished.id)
-        : yield* runner.start({ kind: "syncRepo", repoId, payload: { force: forceSync } })
-      return {
-        job: yield* runner.await(job.id),
-        resumedFrom: unfinished ? (resumePoint(unfinished) ?? "where it stopped") : undefined
-      }
-    })
+  const runSync = (repoId: string) => syncRepo(repoId, { force: forceSync }).pipe(Effect.provideService(JobRunner, runner))
 
   // Re-index in the background, picking up an unfinished re-index where it
   // stopped; false when the repo already has a job running. A repo with an id
@@ -233,8 +215,7 @@ const program = Effect.gen(function* () {
         const stale = (yield* runner.jobs).filter((j) => j.repoId === oldId)
         yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
       }
-      const unfinished = resumableJob(yield* runner.jobs, repoId, "reindexRepo")
-      yield* unfinished ? runner.retry(unfinished.id) : runner.start({ kind: "reindexRepo", repoId, payload: {} })
+      yield* startOrResume({ kind: "reindexRepo", repoId, payload: {} }).pipe(Effect.provideService(JobRunner, runner))
       return true
     }).pipe(Effect.catchTag("JobAlreadyRunningError", () => Effect.succeed(false)))
 

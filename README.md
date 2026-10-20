@@ -73,7 +73,7 @@ repobase grep <pattern>                        # search file contents with a reg
 repobase --help                                # every command and its options
 ```
 
-Commands run in the foreground, without the TUI's worker threads.
+Commands run in the foreground, without the TUI's worker threads, and print each step as it finishes. `add`, `sync` and `reindex` run as tasks, so a TUI that's open shows them in its Tasks view. If one stops partway (Ctrl-C, or a failed step that can be retried), running the same command again picks up where it stopped.
 
 ### MCP Server (Cursor, Claude, etc.)
 
@@ -103,6 +103,7 @@ Add to your MCP configuration (`~/.cursor/mcp.json` or Claude config):
 repobase keeps its state and logs in `~/.repobase`:
 
 - `tui.log` - the terminal UI's log
+- `cli.log` - the command line's log
 - `worker.log` - the worker threads' log, for errors in a task's steps
 - `jobs/` - the saved tasks, with each step's status and error. Use the Tasks view (`t`) to retry or discard them.
 - `config.json` - the repositories you've added

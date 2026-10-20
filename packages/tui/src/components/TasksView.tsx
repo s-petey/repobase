@@ -1,9 +1,20 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/react"
-import type { FileProgress, Job, StepErrorDisplay, StepStatus } from "@repobase/engine"
+import {
+  kindLabel,
+  retryState,
+  runningElsewhere,
+  stepIcon,
+  stepLines,
+  type FileProgress,
+  type Job,
+  type StepErrorDisplay,
+  type StepLine,
+  type StepStatus
+} from "@repobase/engine"
 import { DateTime } from "effect"
 import { useEffect, useRef, useState } from "react"
-import { formatAge, kindLabel, retryState, stepIcon, stepLines, type StepLine } from "../jobView.js"
+import { formatAge } from "../jobView.js"
 import { colors } from "../theme/index.js"
 
 interface TasksViewProps {
@@ -301,7 +312,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
               }}
             >
               <text
-                content={`${kindLabel[selected.kind]} ${selected.repoId} · ${selected.status}`}
+                content={`${kindLabel[selected.kind]} ${selected.repoId} · ${selected.status}${runningElsewhere(selected) ? ` in ${selected.owner?.name}` : ""}`}
                 style={{ fg: statusColor(selected.status), attributes: TextAttributes.BOLD, marginBottom: 1 }}
               />
               {live && (
