@@ -32,6 +32,13 @@ export const failureReport = (job: Job): string => {
   }`
 }
 
+export const jobHeading = (job: Job, since: DateTime.Utc): string => {
+  const resumed = job.steps.some(
+    (s) => s.status === "done" && s.finishedAt !== undefined && DateTime.isLessThan(s.finishedAt, since)
+  )
+  return `${kindLabel[job.kind]} ${job.repoId}${resumed ? ` (resuming at ${resumePoint(job) ?? "where it stopped"})` : ""}`
+}
+
 const batchCounts = (job: Job) => {
   const batches = job.steps.filter((s) => s.name === "indexBatch" && s.key !== "indexBatch")
   return { done: batches.filter((s) => s.status === "done").length, total: batches.length }
@@ -42,7 +49,7 @@ export const followJobs = (repoId: string) =>
     const runner = yield* JobRunner
     const progress = yield* JobProgress
     const files = yield* Ref.make<ReadonlyMap<string, FileProgress>>(new Map())
-    const since = DateTime.toEpochMillis(yield* DateTime.now)
+    const since = yield* DateTime.now
     const tty = process.stdout.isTTY === true
 
     const printed = new Map<string, Set<string>>()
@@ -83,8 +90,7 @@ export const followJobs = (repoId: string) =>
         if (!shown) {
           shown = new Set()
           printed.set(job.id, shown)
-          const resumed = DateTime.toEpochMillis(job.createdAt) < since
-          print(`${kindLabel[job.kind]} ${repoId}${resumed ? ` (resuming at ${resumePoint(job) ?? "where it stopped"})` : ""}`)
+          print(jobHeading(job, since))
         }
 
         for (const line of stepLines(job)) {

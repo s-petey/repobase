@@ -109,9 +109,10 @@ export type JobKind = Job["kind"]
 export const superseded = (job: Job): boolean => job.supersededBy !== undefined
 
 /**
- * A new job id: kind, repo, then the current time and a random suffix (so ids
- * sort by creation time); safe as a file name. Uses the Clock and Random
- * services, so tests can control both.
+ * A new job id: kind, repo, then the current time and a random suffix; safe as
+ * a file name. The time is when the job was first started: a retry moves its
+ * createdAt, not its id. Uses the Clock and Random services, so tests can
+ * control both.
  */
 export const makeJobId = (kind: JobKind, repoId: string): Effect.Effect<string> =>
   Effect.gen(function* () {

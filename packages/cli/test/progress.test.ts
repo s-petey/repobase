@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { CloneFailedError, formatStepError, stepLines, type AddRepoJob } from "@repobase/engine"
 import { DateTime } from "effect"
-import { failureReport, stepReport } from "../src/progress.js"
+import { failureReport, jobHeading, stepReport } from "../src/progress.js"
 
 const at = DateTime.makeUnsafe(0)
 const error = new CloneFailedError({
@@ -42,5 +42,29 @@ describe("CLI progress output", () => {
       steps: failedAdd.steps.map((s) => (s.key === "clone" ? { ...s, status: "interrupted", error: undefined } : s))
     }
     expect(failureReport(interrupted)).toContain("Stopped before it finished")
+  })
+
+  describe("job heading", () => {
+    const since = DateTime.makeUnsafe(1000)
+    const running = (checkAbsentFinishedAt: DateTime.Utc): AddRepoJob => ({
+      ...failedAdd,
+      status: "running",
+      createdAt: DateTime.add(since, { milliseconds: 1 }),
+      steps: [
+        { ...failedAdd.steps[0], finishedAt: checkAbsentFinishedAt },
+        { ...failedAdd.steps[1], status: "pending", error: undefined },
+        failedAdd.steps[2]
+      ]
+    })
+
+    it("says where a resumed job picks up", () => {
+      expect(jobHeading(running(DateTime.subtract(since, { seconds: 30 })), since)).toBe(
+        "add acme/widgets (resuming at clone)"
+      )
+    })
+
+    it("is just the kind and repo for a job this run started", () => {
+      expect(jobHeading(running(DateTime.add(since, { milliseconds: 5 })), since)).toBe("add acme/widgets")
+    })
   })
 })

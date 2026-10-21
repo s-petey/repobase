@@ -635,8 +635,9 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
             items.length > 0 ? ` (${itemsDone}/${items.length} ${items[0].name} done)` : ""
           }`
         )
-        const resumed = yield* updateJob(jobId, (j) => ({
+        const resumed = yield* updateJob(jobId, (j, now) => ({
           ...j,
+          createdAt: now,
           status: "running",
           owner,
           steps: j.steps.map((s) => (unfinished(s) ? { ...s, status: "pending" as const } : s))

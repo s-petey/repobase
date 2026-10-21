@@ -217,6 +217,26 @@ describe("JobRunner", () => {
     }).pipe(Effect.provide(runnerLayer(script.definitions)))
   })
 
+  it.effect("lists a retried job as the newest, above jobs started since it stopped", () => {
+    const script = makeScript()
+    script.failing.set("clone", cloneFailure)
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      const failed = yield* runner.await((yield* runner.start(addRepo())).id)
+      yield* TestClock.adjust("1 minute")
+      const other = yield* runner.await((yield* runner.start(syncRepo("other-repo"))).id)
+
+      script.failing.delete("clone")
+      yield* TestClock.adjust("1 minute")
+      const retried = yield* runner.retry(failed.id)
+
+      expect(DateTime.isGreaterThan(retried.createdAt, other.createdAt)).toBe(true)
+      expect((yield* runner.jobs).map((j) => j.id)).toEqual([failed.id, other.id])
+      const stored = Option.getOrThrow(yield* JobStore.use((store) => store.get(failed.id)))
+      expect(stored.createdAt).toEqual(retried.createdAt)
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
   it.effect("resumes a job saved before its definition gained steps", () => {
     const script = makeScript()
     const resolve = step<SyncRepoJob, { commit: string }, never>({
