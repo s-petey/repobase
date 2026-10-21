@@ -31,6 +31,7 @@ export interface JobStoreService {
   readonly markInterrupted: () => Effect.Effect<ReadonlyArray<Job>, StoreError>
   readonly claimRepo: (repoId: string, owner: JobOwner) => Effect.Effect<Option.Option<RepoHeld>, StoreError>
   readonly releaseRepo: (repoId: string) => Effect.Effect<void>
+  readonly heldElsewhere: () => Effect.Effect<ReadonlyArray<RepoHeld>, StoreError>
   readonly writePlan: (jobId: string, plan: IndexPlan) => Effect.Effect<void, StoreError>
   readonly readPlan: (jobId: string) => Effect.Effect<Option.Option<IndexPlan>, StoreError>
 }
@@ -40,6 +41,12 @@ export interface JobStoreService {
 export interface RepoHeld {
   readonly holder: Option.Option<JobOwner>
 }
+
+export const heldBy = (held: RepoHeld): string =>
+  Option.match(held.holder, {
+    onNone: () => "another repobase process",
+    onSome: (holder) => `repobase ${holder.name} (pid ${holder.pid})`
+  })
 
 export class JobStore extends Context.Service<JobStore, JobStoreService>()(
   "@repobase/engine/JobStore"
@@ -210,6 +217,26 @@ export const makeWith = (config: { readonly dir: string }) =>
         return Duration.isGreaterThan(age, LOCK_WRITE_GRACE)
       })
 
+    const liveClaim = (file: string) =>
+      Effect.gen(function* () {
+        const holder = yield* lockHolder(file)
+        const live = Option.isSome(holder) ? isProcessAlive(holder.value.pid) : !(yield* leftUnwritten(file))
+        return live ? Option.some<RepoHeld>({ holder }) : Option.none<RepoHeld>()
+      })
+
+    const heldElsewhere: JobStoreService["heldElsewhere"] = () =>
+      Effect.gen(function* () {
+        const dir = path.join(config.dir, LOCKS_DIR)
+        if (!(yield* fs.exists(dir))) return []
+        const files = (yield* fs.readDirectory(dir)).filter((entry) => entry.endsWith(LOCK_EXTENSION))
+        const claims = yield* Effect.forEach(files, (entry) => liveClaim(path.join(dir, entry)))
+        return claims.flatMap((claim) =>
+          Option.isSome(claim) && !Option.exists(claim.value.holder, (holder) => holder.pid === process.pid)
+            ? [claim.value]
+            : []
+        )
+      }).pipe(Effect.mapError(toStoreError("heldElsewhere")))
+
     const claimRepo: JobStoreService["claimRepo"] = (repoId, owner) =>
       Effect.gen(function* () {
         const file = lockFile(repoId)
@@ -222,10 +249,8 @@ export const makeWith = (config: { readonly dir: string }) =>
             Effect.catch((e) => (e.reason._tag === ALREADY_EXISTS ? Effect.succeed(false) : Effect.fail(e)))
           )
           if (created) return Option.none()
-          const holder = yield* lockHolder(file)
-          if (Option.isSome(holder) ? isProcessAlive(holder.value.pid) : !(yield* leftUnwritten(file))) {
-            return Option.some({ holder })
-          }
+          const held = yield* liveClaim(file)
+          if (Option.isSome(held)) return held
           yield* fs.remove(file, { force: true })
         }
         return Option.some({ holder: Option.none() })
@@ -238,7 +263,18 @@ export const makeWith = (config: { readonly dir: string }) =>
         if (Option.isSome(holder) && holder.value.pid === process.pid) yield* fs.remove(file, { force: true })
       }).pipe(Effect.ignore)
 
-    return JobStore.of({ list, get, save, remove, markInterrupted, claimRepo, releaseRepo, writePlan, readPlan })
+    return JobStore.of({
+      list,
+      get,
+      save,
+      remove,
+      markInterrupted,
+      claimRepo,
+      releaseRepo,
+      heldElsewhere,
+      writePlan,
+      readPlan
+    })
   })
 
 /**
@@ -305,6 +341,12 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
           next.delete(repoId)
           return next
         }),
+      heldElsewhere: () =>
+        Ref.get(claims).pipe(
+          Effect.map((held) =>
+            [...held.values()].filter((owner) => owner.pid !== process.pid).map((owner) => ({ holder: Option.some(owner) }))
+          )
+        ),
       writePlan: (jobId, plan) => Ref.update(plans, (m) => new Map(m).set(jobId, plan)),
       readPlan: (jobId) => Ref.get(plans).pipe(Effect.map((m) => Option.fromNullishOr(m.get(jobId))))
     })

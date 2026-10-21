@@ -14,6 +14,7 @@ import {
   IndexerLayer,
   JobRunner,
   JobRunnerLayer,
+  JobStore,
   JobStoreLayer,
   JobProgress,
   JobProgressLayer,
@@ -32,6 +33,7 @@ import {
   splitPools,
   otlpLayer,
   WorkerSettings,
+  heldBy,
   jobFailed,
   jobFailureMessage,
   runningHere,
@@ -100,7 +102,8 @@ const JobsLive = Layer.unwrap(
       QueryPool,
       JobProgressLayer
     ).pipe(
-      Layer.provide([layerWorkerPool({ workerUrl, size: pools.jobs }), IndexingPool, JobStoreLayer, JobProgressLayer])
+      Layer.provide([layerWorkerPool({ workerUrl, size: pools.jobs }), IndexingPool, JobProgressLayer]),
+      Layer.provideMerge(JobStoreLayer)
     )
   })
 )
@@ -149,6 +152,7 @@ const program = Effect.gen(function* () {
   const runner = yield* JobRunner
   const progress = yield* JobProgress
   const repoStore = yield* RepoStore
+  const jobStore = yield* JobStore
   const query = yield* QueryClient
 
   // Runs effects from React callbacks as fibers owned by this program's scope,
@@ -203,6 +207,14 @@ const program = Effect.gen(function* () {
 
   const runSync = (repoId: string) => syncRepo(repoId, { force: forceSync }).pipe(Effect.provideService(JobRunner, runner))
 
+  const busyElsewhere = jobStore.heldElsewhere().pipe(
+    Effect.flatMap(([held]) =>
+      held === undefined
+        ? Effect.void
+        : Effect.fail(new Error(`${heldBy(held)} is running a task; try again once it's done`))
+    )
+  )
+
   // Re-index in the background, picking up an unfinished re-index where it
   // stopped; false when the repo already has a job running. A repo with an id
   // from before owner/name ids gets its new id first, and its jobs under the
@@ -226,6 +238,7 @@ const program = Effect.gen(function* () {
       onAddRepo={(url: string, onProgress: (p: AddRepoProgress) => void) =>
         runPromise(
           Effect.gen(function* () {
+            yield* busyElsewhere
             const repoId = yield* Effect.try({
               try: () => deriveRepoId(url),
               catch: () => new Error(`Not a GitHub repository URL: ${url}`)
@@ -254,10 +267,11 @@ const program = Effect.gen(function* () {
           })
         )
       }
-      onRemoveRepo={(id: string) => runPromise(engine.removeRepo(id))}
+      onRemoveRepo={(id: string) => runPromise(busyElsewhere.pipe(Effect.andThen(engine.removeRepo(id))))}
       onSyncRepo={(id: string) =>
         runPromise(
-          runSync(id).pipe(
+          busyElsewhere.pipe(
+            Effect.andThen(runSync(id)),
             Effect.flatMap(({ job, resumedFrom }) =>
               jobFailed(job)
                 ? Effect.fail(new Error(jobFailureMessage(job)))
@@ -269,6 +283,7 @@ const program = Effect.gen(function* () {
       onSyncAll={() =>
         runPromise(
           Effect.gen(function* () {
+            yield* busyElsewhere
             const { repos } = yield* repoStore.load()
             // One job per repo, all at once; their batches share the worker pool.
             // A repo that already has a job running is left to that job.
@@ -301,7 +316,10 @@ const program = Effect.gen(function* () {
       onRefreshRepos={() => runPromise(engine.listRepos())}
       onReindexRepos={(repoIds) =>
         runPromise(
-          Effect.forEach(repoIds, startReindex).pipe(Effect.map((started) => started.filter(Boolean).length))
+          busyElsewhere.pipe(
+            Effect.andThen(Effect.forEach(repoIds, startReindex)),
+            Effect.map((started) => started.filter(Boolean).length)
+          )
         )
       }
       onSearch={(text: string, mode: SearchMode, filter: SearchFilter | undefined, repos) =>
@@ -323,7 +341,7 @@ const program = Effect.gen(function* () {
           runFork(Fiber.interrupt(fiber))
         }
       }}
-      onRetryJob={(jobId) => runPromise(runner.retry(jobId).pipe(Effect.asVoid))}
+      onRetryJob={(jobId) => runPromise(busyElsewhere.pipe(Effect.andThen(runner.retry(jobId)), Effect.asVoid))}
       onDiscardJob={(jobId) => runPromise(runner.discard(jobId))}
       onQuit={onQuit}
       cloudConfigured={cloudConfigured}

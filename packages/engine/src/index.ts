@@ -166,6 +166,7 @@ export {
   JobStore,
   type JobStoreService,
   defaultJobsDir,
+  heldBy,
   layer as JobStoreLayer,
   layerWith as JobStoreLayerWith,
   layerMemory as JobStoreLayerMemory

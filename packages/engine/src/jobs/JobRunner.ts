@@ -19,7 +19,7 @@ import {
 import { isRetryable, type StepError, UnexpectedStepError } from "./errors.js"
 import { type IndexLock, makeIndexLock } from "./IndexLock.js"
 import { type Job, type JobKind, type JobOwner, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
-import { JobStore } from "./JobStore.js"
+import { heldBy, JobStore } from "./JobStore.js"
 import { runningElsewhere } from "./owner.js"
 
 // A generic runner for jobs made of checkpointed steps. The job definitions
@@ -257,11 +257,10 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         )
         if (Option.isSome(held)) {
           yield* dropClaim(repoId, claim)
-          const by = Option.match(held.value.holder, {
-            onNone: () => "another repobase process",
-            onSome: (holder) => `repobase ${holder.name} (pid ${holder.pid})`
+          return yield* new JobAlreadyRunningError({
+            repoId,
+            message: `A job for ${repoId} is already running in ${heldBy(held.value)}`
           })
-          return yield* new JobAlreadyRunningError({ repoId, message: `A job for ${repoId} is already running in ${by}` })
         }
         return claim
       })

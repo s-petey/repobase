@@ -15,10 +15,12 @@ import {
   JobProgressLayer,
   JobRunner,
   JobRunnerLayer,
+  JobStore,
   JobStoreLayer,
   defaultDefinitionsConfig,
   deriveRepoId,
   fileLoggerLayer,
+  heldBy,
   jobFailed,
   layerInProcessWorkers,
   logPath,
@@ -98,6 +100,13 @@ const withProgress = <A, E, R>(repoId: string, effect: Effect.Effect<A, E, R>) =
     Effect.onInterrupt(() => Console.error("Stopped. Run the same command again to pick up where it left off."))
   )
 
+const busyElsewhere = Effect.gen(function* () {
+  const [held] = yield* JobStore.use((store) => store.heldElsewhere())
+  if (held === undefined) return false
+  yield* printError(`${heldBy(held)} is running a task; run this again once it's done`)
+  return true
+})
+
 const notAdded = (repoId: string) =>
   printError(`${repoId} isn't one of your repositories; 'repobase list' shows them`)
 
@@ -154,6 +163,7 @@ const addCommand = Command.make(
   { url: urlArg, branch: branchOption, pin: pinOption },
   ({ url, branch, pin }) =>
     Effect.gen(function* () {
+      if (yield* busyElsewhere) return
       const engine = yield* RepobaseEngine
       const repoId = yield* Effect.try({
         try: () => deriveRepoId(url),
@@ -217,6 +227,7 @@ const repoIdArg = Argument.String("id").pipe(
 
 const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) =>
   Effect.gen(function* () {
+    if (yield* busyElsewhere) return
     const engine = yield* RepobaseEngine
     const ids = Option.isSome(id) ? [id.value] : (yield* engine.listRepos()).map((r) => r.id)
     if (ids.length === 0) {
@@ -250,6 +261,7 @@ const reindexIdArg = Argument.String("id").pipe(
 
 const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
   Effect.gen(function* () {
+    if (yield* busyElsewhere) return
     const engine = yield* RepobaseEngine
     const ids = Option.isSome(id) ? [id.value] : yield* outdatedRepoIds
     if (ids.length === 0) {
@@ -296,6 +308,7 @@ const removeIdArg = Argument.String("id").pipe(
 
 const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) =>
   Effect.gen(function* () {
+    if (yield* busyElsewhere) return
     const engine = yield* RepobaseEngine
     yield* engine.removeRepo(id)
     yield* Console.log(`✓ Removed repository: ${id}`)

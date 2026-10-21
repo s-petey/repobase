@@ -9,7 +9,7 @@ import * as path from "node:path"
 import { StoreError } from "../src/errors.js"
 import { CloneFailedError } from "../src/jobs/errors.js"
 import { type Job, makeJobId } from "../src/jobs/Job.js"
-import { JobStore, layerMemory, layerWith } from "../src/jobs/JobStore.js"
+import { heldBy, JobStore, layerMemory, layerWith } from "../src/jobs/JobStore.js"
 import { trackingMode } from "../src/utils.js"
 
 const tempDir = () => nodeFs.mkdtempSync(path.join(os.tmpdir(), "repobase-jobs-"))
@@ -202,6 +202,19 @@ describe.each([
     }).pipe(Effect.provide(makeLayer()))
   )
 
+  it.effect("lists the claims other processes hold, leaving out this one's", () =>
+    Effect.gen(function* () {
+      const store = yield* JobStore
+      const cli = { pid: process.ppid, name: "cli" }
+      expect(yield* store.heldElsewhere()).toEqual([])
+
+      yield* store.claimRepo("acme/widgets", tui)
+      yield* store.claimRepo("acme/gadgets", cli)
+
+      expect(yield* store.heldElsewhere()).toEqual([{ holder: Option.some(cli) }])
+    }).pipe(Effect.provide(makeLayer()))
+  )
+
   it.effect("stores plans apart from jobs and removes both", () =>
     Effect.gen(function* () {
       const store = yield* JobStore
@@ -329,6 +342,17 @@ describe("JobStore (file) on disk", () => {
     })
   )
 
+  it.effect("leaves dead processes' claims out of the claims held elsewhere, but not one still being written", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.now())
+      const { locks, store } = yield* lockedStore()
+      nodeFs.writeFileSync(path.join(locks, "acme__widgets.lock"), JSON.stringify({ pid: deadPid(), name: "cli" }))
+      nodeFs.writeFileSync(path.join(locks, "acme__gadgets.lock"), "")
+
+      expect(yield* store.heldElsewhere()).toEqual([{ holder: Option.none() }])
+    })
+  )
+
   it.effect("fails rather than reporting the repo held when the lock can't be written", () =>
     Effect.gen(function* () {
       const { locks, store } = yield* lockedStore()
@@ -372,6 +396,13 @@ describe("JobStore (file) on disk", () => {
       expect(nodeFs.readdirSync(dir).filter((f) => f.includes(".tmp-"))).toEqual([])
     })
   )
+})
+
+describe("heldBy", () => {
+  it("names the process holding a claim, or says it's unknown", () => {
+    expect(heldBy({ holder: Option.some({ pid: 4242, name: "tui" }) })).toBe("repobase tui (pid 4242)")
+    expect(heldBy({ holder: Option.none() })).toBe("another repobase process")
+  })
 })
 
 describe("makeJobId", () => {
