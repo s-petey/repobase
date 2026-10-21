@@ -13,8 +13,9 @@ export const startOrResume = (job: NewJob) =>
 export const runSync = (repoId: string, options: { readonly force?: boolean } = {}) =>
   Effect.gen(function* () {
     const runner = yield* JobRunner
-    const sync = startOrResume({ kind: "syncRepo", repoId, payload: { force: options.force ?? false } }).pipe(
-      Effect.flatMap(({ job, resumedFrom }) => runner.await(job.id).pipe(Effect.map((done) => ({ job: done, resumedFrom }))))
+    const sync = runner.start({ kind: "syncRepo", repoId, payload: { force: options.force ?? false } }).pipe(
+      Effect.flatMap((job) => runner.await(job.id)),
+      Effect.map((job) => ({ job, resumedFrom: undefined }))
     )
 
     const indexing = unfinishedIndexing(yield* runner.jobs, repoId)

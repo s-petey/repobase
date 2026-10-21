@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@effect/vitest"
 import { DateTime, Effect, Option } from "effect"
+import { TestClock } from "effect/testing"
 import {
   formatStepError,
   IndexBatchFailedError,
@@ -8,6 +9,7 @@ import {
   RepoMissingError
 } from "../src/jobs/errors.js"
 import { JobRunner } from "../src/jobs/JobRunner.js"
+import { runSync } from "../src/jobs/runs.js"
 import { Indexer } from "../src/services/Indexer.js"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { pinnedMode, trackingMode } from "../src/utils.js"
@@ -225,6 +227,38 @@ describe("syncRepo job", () => {
     }).pipe(
       Effect.provide(env.layer),
       Effect.ensuring(Effect.sync(() => (embedFailures.explode = false)))
+    )
+  }, 60_000)
+
+  it.effect("syncing again after a failed sync starts a new task, listed first", () => {
+    const MARKER = "FAIL_THEN_SYNC_AGAIN"
+    const source = makeSourceRepo(5)
+    const other = makeSourceRepo(2)
+    const env = testEnv()
+    return Effect.gen(function* () {
+      yield* addRepo(source.dir)
+      source.write("bang.ts", `${MARKER}\n`)
+      source.commit()
+
+      embedFailures.markers.add(MARKER)
+      const failed = yield* syncRepo()
+      expect(failed.status).toBe("failed")
+      embedFailures.markers.delete(MARKER)
+
+      // A task created after the failed one, so a reused task would sit below it
+      yield* TestClock.adjust("1 second")
+      yield* addRepo(other.dir, "acme-other")
+
+      yield* TestClock.adjust("1 second")
+      const { job } = yield* runSync(REPO)
+      const runner = yield* JobRunner
+      const [latest] = yield* runner.jobs
+
+      expect(job.id).not.toBe(failed.id)
+      expect(latest?.id).toBe(job.id)
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
     )
   }, 60_000)
 })

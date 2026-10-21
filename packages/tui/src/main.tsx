@@ -38,7 +38,6 @@ import {
   jobFailureMessage,
   runningHere,
   runSync as syncRepo,
-  startOrResume,
   syncUpdated,
   type PoolSizes,
   type SearchMode,
@@ -227,7 +226,7 @@ const program = Effect.gen(function* () {
         const stale = (yield* runner.jobs).filter((j) => j.repoId === oldId)
         yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
       }
-      yield* startOrResume({ kind: "reindexRepo", repoId, payload: {} }).pipe(Effect.provideService(JobRunner, runner))
+      yield* runner.start({ kind: "reindexRepo", repoId, payload: {} })
       return true
     }).pipe(Effect.catchTag("JobAlreadyRunningError", () => Effect.succeed(false)))
 

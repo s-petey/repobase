@@ -279,7 +279,10 @@ const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
           yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
         }
 
-        const job = yield* withProgress(repoId, runJob(startOrResume({ kind: "reindexRepo", repoId, payload: {} })))
+        const job = yield* withProgress(
+          repoId,
+          runner.start({ kind: "reindexRepo", repoId, payload: {} }).pipe(Effect.flatMap((started) => runner.await(started.id)))
+        )
         if (job.status !== "completed") return yield* reportFailedJob(job)
         const planned = job.steps.find((s) => s.key === "planFullIndex")?.output
         const files = Predicate.hasProperty(planned, "toIndex") ? `${planned.toIndex} files ` : ""
