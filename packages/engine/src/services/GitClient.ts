@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, Layer, type PlatformError, Stream } from "effect"
+import { Context, DateTime, Effect, Layer, Option, type PlatformError, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitError } from "../errors.js"
 import type { FileChange, RepoMode } from "../schemas.js"
@@ -19,6 +19,7 @@ export interface GitClientService {
   readonly getCommitTime: (path: string, ref: string) => Effect.Effect<DateTime.Utc, GitError>
   readonly getCurrentBranch: (path: string) => Effect.Effect<string, GitError>
   readonly getRemoteHead: (path: string, branch: string) => Effect.Effect<string, GitError>
+  readonly lsRemote: (remote: string, ref: string) => Effect.Effect<Option.Option<string>, GitError>
   readonly diffNameStatus: (
     path: string,
     fromCommit: string,
@@ -125,6 +126,14 @@ export const make = Effect.gen(function* () {
     getRemoteHead: (path, branch) =>
       run("rev-parse", "-C", path, "rev-parse", `origin/${branch}`).pipe(
         Effect.map((s) => s.trim())
+      ),
+
+    lsRemote: (remote, ref) =>
+      run("ls-remote", "ls-remote", remote, ref).pipe(
+        Effect.map((stdout) => {
+          const commit = stdout.split("\t")[0].trim()
+          return commit === "" ? Option.none() : Option.some(commit)
+        })
       ),
 
     resetHard: (path, ref) => run("reset", "-C", path, "reset", "--hard", ref).pipe(Effect.asVoid),

@@ -122,6 +122,15 @@ export class RemoteHead extends Rpc.make("RemoteHead", {
 }) {}
 
 /**
+ * The commit a remote's branch points at, or its default branch without one, read without fetching
+ */
+export class RemoteBranchHead extends Rpc.make("RemoteBranchHead", {
+  payload: { repoId: Schema.String, url: Schema.String, branch: Schema.optional(Schema.String) },
+  success: Schema.Struct({ commit: Schema.String }),
+  error: Schema.Union([RemoteBranchMissingError, FetchFailedError])
+}) {}
+
+/**
  * Point the working tree at `ref`
  */
 export class ResetHard extends Rpc.make("ResetHard", {
@@ -185,6 +194,7 @@ export class StepRpcs extends RpcGroup.make(
   FinalizeIndex,
   Fetch,
   RemoteHead,
+  RemoteBranchHead,
   ResetHard,
   PlanChanges,
   Search,

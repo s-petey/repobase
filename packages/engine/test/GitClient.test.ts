@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Cause, DateTime, Effect, Layer, PlatformError, Sink, Stream } from "effect"
+import { Cause, DateTime, Effect, Layer, Option, PlatformError, Sink, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { GitClient, GitError } from "../src/index.js"
 import { layer as GitClientLayer } from "../src/services/GitClient.js"
@@ -26,6 +26,8 @@ const mockCommands: Record<string, MockCommand> = {
   "git -C /tmp/repo rev-parse --abbrev-ref HEAD": { stdout: "master\n" },
   "git -C /tmp/repo show -s --format=%ct abc123": { stdout: "1767323045\n" },
   "git -C /tmp/repo rev-parse origin/main": { stdout: "xyz789abc\n" },
+  "git ls-remote https://github.com/test/repo refs/heads/main": { stdout: "xyz789abc\trefs/heads/main\n" },
+  "git ls-remote https://github.com/test/repo refs/heads/gone": { stdout: "" },
   "git -C /tmp/repo reset --hard abc123": { exitCode: 0 },
   "git -C /tmp/repo checkout v1.0.0": { exitCode: 0 },
   "git -C /tmp/repo diff --name-status --no-renames -z abc..xyz": {
@@ -239,6 +241,22 @@ describe("GitClient", () => {
         const git = yield* GitClient
         const error = yield* expectGitError(git.getRemoteHead("/tmp/repo", "gone"))
         expect(error.message).toContain("unknown revision")
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+  })
+
+  describe("lsRemote", () => {
+    it.effect("returns the commit a remote ref points at", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        expect(yield* git.lsRemote("https://github.com/test/repo", "refs/heads/main")).toEqual(Option.some("xyz789abc"))
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("returns nothing for a ref the remote doesn't have", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        expect(yield* git.lsRemote("https://github.com/test/repo", "refs/heads/gone")).toEqual(Option.none())
       }).pipe(Effect.provide(TestGitClientLayer))
     )
   })

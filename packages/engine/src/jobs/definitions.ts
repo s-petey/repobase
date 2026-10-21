@@ -387,10 +387,10 @@ export const makeJobDefinitions = (config: DefinitionsConfig): JobDefinitions<Jo
       Effect.gen(function* () {
         const repoPath = yield* reindexPath(ctx)
         // Repos synced before commit dates were recorded get theirs here
-        const { committedAt } = yield* client.ResolveHead({ repoId: ctx.job.repoId, localPath: repoPath })
+        const { commit, committedAt } = yield* client.ResolveHead({ repoId: ctx.job.repoId, localPath: repoPath })
         // Every file: what's indexed was written in an older format
         const plan = yield* client.PlanFullIndex({ jobId: ctx.job.id, repoId: ctx.job.repoId, localPath: repoPath, force: true })
-        return { ...plan, committedAt }
+        return { ...plan, commit, committedAt }
       })
   })
 
@@ -484,7 +484,11 @@ const RemoteHeadResult = Schema.Struct({
 })
 type RemoteHeadResult = typeof RemoteHeadResult.Type
 
-const ReindexPlanSummary = Schema.Struct({ ...PlanSummary.fields, committedAt: Schema.optional(Schema.DateTimeUtcFromMillis) })
+const ReindexPlanSummary = Schema.Struct({
+  ...PlanSummary.fields,
+  commit: Schema.optional(Schema.String),
+  committedAt: Schema.optional(Schema.DateTimeUtcFromMillis)
+})
 type ReindexPlanSummary = typeof ReindexPlanSummary.Type
 
 const SyncPlanSummary = Schema.Struct({ ...PlanSummary.fields, fullScan: Schema.Boolean })

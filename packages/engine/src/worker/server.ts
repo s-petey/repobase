@@ -15,6 +15,7 @@ import {
   indexBatchFailed,
   PlanIndexFailedError,
   planIndexFailed,
+  RemoteBranchMissingError,
   remoteHeadFailed,
   ResetFailedError,
   ResolveHeadFailedError
@@ -27,6 +28,8 @@ import { ONNX_THREADS_PER_WORKER } from "./limits.js"
 import { IndexingClient, WorkerClient } from "./client.js"
 import { type IndexBatchEvent, StepRpcs } from "./rpcs.js"
 import { WorkerSettings } from "./settings.js"
+
+const DEFAULT_BRANCH = "HEAD"
 
 /**
  * Handlers for StepRpcs, run inside the worker thread. Exported so tests can
@@ -140,6 +143,24 @@ export const HandlersLayer = StepRpcs.toLayer(
             git.getCommitTime(localPath, commit).pipe(Effect.map((committedAt) => ({ commit, committedAt })))
           ),
           Effect.mapError(remoteHeadFailed({ repoId, branch }))
+        ),
+
+      RemoteBranchHead: ({ repoId, url, branch }) =>
+        git.lsRemote(url, branch === undefined ? DEFAULT_BRANCH : `refs/heads/${branch}`).pipe(
+          Effect.mapError(fetchFailed({ repoId })),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new RemoteBranchMissingError({
+                    repoId,
+                    branch: branch ?? DEFAULT_BRANCH,
+                    message: `${url} has no ${branch ?? DEFAULT_BRANCH}`
+                  })
+                ),
+              onSome: (commit) => Effect.succeed({ commit })
+            })
+          )
         ),
 
       ResetHard: ({ repoId, localPath, ref }) =>
