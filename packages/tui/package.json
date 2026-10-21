@@ -5,7 +5,8 @@
   "main": "src/main.tsx",
   "types": "src/main.tsx",
   "scripts": {
-    "start": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.tsx"
+    "start": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.tsx",
+    "check": "tsc"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "tsx src/main.ts",
-    "build": "tsc"
+    "check": "tsc"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",

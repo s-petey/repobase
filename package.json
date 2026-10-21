@@ -38,6 +38,7 @@
     "dev:mcp": "bun run --cwd packages/mcp-server start",
     "test": "bun --bun vitest run",
     "test:watch": "bun --bun vitest",
+    "check": "bun run --filter './packages/*' check",
     "prepublishOnly": "bun run build"
   },
   "keywords": [

@@ -9,7 +9,8 @@
   "types": "src/main.ts",
   "scripts": {
     "start": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts",
-    "repobase": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts"
+    "repobase": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts",
+    "check": "tsc"
   },
   "dependencies": {
     "@repobase/engine": "workspace:*",
