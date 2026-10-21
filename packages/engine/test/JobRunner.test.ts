@@ -586,6 +586,10 @@ describe("JobRunner", () => {
       yield* runner.supersede(failed.id, next.id)
       yield* gate.release
       yield* runner.await(next.id)
+      yield* runner.changes.pipe(
+        Stream.filter((jobs) => jobs.length === 1),
+        Stream.runHead
+      )
 
       expect((yield* runner.jobs).map((j) => j.id)).toEqual([next.id])
       expect(yield* JobStore.use((store) => store.get(failed.id))).toEqual(Option.none())

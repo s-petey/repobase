@@ -2,7 +2,8 @@ import { Effect, Option, Schema } from "effect"
 import { RepoStore } from "../services/RepoStore.js"
 import { WorkerClient } from "../worker/client.js"
 import type { Job, JobKind } from "./Job.js"
-import type { NewJob } from "./JobRunner.js"
+import { JobRunner, type NewJob } from "./JobRunner.js"
+import { resumableJob, resumePoint } from "./view.js"
 
 const PLANNED_COMMIT_STEP: Record<JobKind, string> = {
   addRepo: "resolveHead",
@@ -51,7 +52,7 @@ const currentCommit = (request: NewJob) =>
  * that can't be told (nothing planned yet, a pinned ref, the remote unreachable),
  * it is.
  */
-export const isCurrent = (job: Job, request: NewJob) =>
+export const isCurrent = (job: Job, request: NewJob = job) =>
   Effect.gen(function* () {
     if (
       job.kind === "syncRepo" &&
@@ -64,4 +65,16 @@ export const isCurrent = (job: Job, request: NewJob) =>
     if (Option.isNone(planned)) return true
     const current = yield* currentCommit(request)
     return Option.match(current, { onNone: () => true, onSome: (commit) => commit === planned.value })
+  })
+
+export const reuseOrStart = (request: NewJob) =>
+  Effect.gen(function* () {
+    const runner = yield* JobRunner
+    const unfinished = resumableJob(yield* runner.jobs, request.repoId, request.kind)
+    if (unfinished && (yield* isCurrent(unfinished, request))) {
+      return { job: yield* runner.retry(unfinished.id), resumedFrom: resumePoint(unfinished) ?? "where it stopped" }
+    }
+    const job = yield* runner.start(request)
+    if (unfinished) yield* runner.supersede(unfinished.id, job.id)
+    return { job, resumedFrom: undefined }
   })

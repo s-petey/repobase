@@ -26,6 +26,7 @@ import {
   logPath,
   makeJobDefinitions,
   resumableJob,
+  reuseOrStart,
   runSync,
   startOrResume,
   syncUpdated,
@@ -110,7 +111,7 @@ const busyElsewhere = Effect.gen(function* () {
 const notAdded = (repoId: string) =>
   printError(`${repoId} isn't one of your repositories; 'repobase list' shows them`)
 
-const runJob = (start: ReturnType<typeof startOrResume>) =>
+const runJob = <E, R>(start: Effect.Effect<{ readonly job: Job }, E, R>) =>
   start.pipe(Effect.flatMap(({ job }) => JobRunner.use((runner) => runner.await(job.id))))
 
 const reportFailedJob = (job: Job) => printError(failureReport(job))
@@ -279,10 +280,7 @@ const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
           yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
         }
 
-        const job = yield* withProgress(
-          repoId,
-          runner.start({ kind: "reindexRepo", repoId, payload: {} }).pipe(Effect.flatMap((started) => runner.await(started.id)))
-        )
+        const job = yield* withProgress(repoId, runJob(reuseOrStart({ kind: "reindexRepo", repoId, payload: {} })))
         if (job.status !== "completed") return yield* reportFailedJob(job)
         const planned = job.steps.find((s) => s.key === "planFullIndex")?.output
         const files = Predicate.hasProperty(planned, "toIndex") ? `${planned.toIndex} files ` : ""
@@ -973,8 +971,8 @@ const JobsLive = JobRunnerLayer(makeJobDefinitions({ ...defaultDefinitionsConfig
   processName: "cli"
 }).pipe(
   Layer.provideMerge(Layer.mergeAll(layerInProcessWorkers, JobProgressLayer)),
-  Layer.provideMerge(JobStoreLayer),
-  Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayer, RepoStoreLayer))
+  Layer.provideMerge(Layer.mergeAll(JobStoreLayer, RepoStoreLayer)),
+  Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayer))
 )
 
 const AppLayer = Layer.mergeAll(EngineLive, CloudSyncLive, IndexerLayer, JobsLive).pipe(

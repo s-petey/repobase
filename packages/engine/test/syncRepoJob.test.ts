@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { DateTime, Effect, Option } from "effect"
+import { DateTime, Effect, Fiber, Option, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import {
   formatStepError,
@@ -33,6 +33,14 @@ const lastSyncedCommit = RepoStore.use((store) => store.getRepo(REPO)).pipe(
 const lastSyncedCommitAt = RepoStore.use((store) => store.getRepo(REPO)).pipe(
   Effect.map((repo) => Option.getOrThrow(repo).lastSyncedCommitAt)
 )
+
+const pruned = (jobId: string) =>
+  JobRunner.use((runner) =>
+    runner.changes.pipe(
+      Stream.filter((jobs) => !jobs.some((j) => j.id === jobId)),
+      Stream.runHead
+    )
+  )
 
 describe("syncRepo job", () => {
   it.effect("stops after resolving the remote head when nothing changed", () => {
@@ -230,8 +238,8 @@ describe("syncRepo job", () => {
     )
   }, 60_000)
 
-  it.effect("syncing again after a failed sync starts a new task, listed first", () => {
-    const MARKER = "FAIL_THEN_SYNC_AGAIN"
+  it.effect("syncing again after a failed sync resumes it when the remote hasn't moved, listed first", () => {
+    const MARKER = "FAIL_THEN_RESUME"
     const source = makeSourceRepo(5)
     const other = makeSourceRepo(2)
     const env = testEnv()
@@ -250,15 +258,110 @@ describe("syncRepo job", () => {
       yield* addRepo(other.dir, "acme-other")
 
       yield* TestClock.adjust("1 second")
-      const { job } = yield* runSync(REPO)
+      const { job, resumedFrom } = yield* runSync(REPO)
       const runner = yield* JobRunner
       const [latest] = yield* runner.jobs
 
-      expect(job.id).not.toBe(failed.id)
+      expect(job.id).toBe(failed.id)
+      expect(job.status).toBe("completed")
+      expect(resumedFrom).toBe("indexBatch")
+      expect(stepOf(job, "fetch").attempts).toBe(1)
       expect(latest?.id).toBe(job.id)
+      expect(yield* lastSyncedCommit).toBe(source.head())
     }).pipe(
       Effect.provide(env.layer),
       Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
     )
-  }, 60_000)
+  })
+
+  it.effect("syncing again after a failed sync starts a new one when the remote moved, superseding it", () => {
+    const MARKER = "FAIL_THEN_SUPERSEDE"
+    const source = makeSourceRepo(5)
+    const env = testEnv()
+    return Effect.gen(function* () {
+      yield* addRepo(source.dir)
+      source.write("bang.ts", `${MARKER}\n`)
+      source.commit()
+
+      embedFailures.markers.add(MARKER)
+      const failed = yield* syncRepo()
+      expect(failed.status).toBe("failed")
+      embedFailures.markers.delete(MARKER)
+      source.write("later.ts", "export const later = true\n")
+      source.commit()
+
+      const runner = yield* JobRunner
+      const superseded = yield* runner.changes.pipe(
+        Stream.map((jobs) => jobs.find((j) => j.id === failed.id)?.supersededBy),
+        Stream.filter((by) => by !== undefined),
+        Stream.runHead,
+        Effect.forkChild
+      )
+      const { job, resumedFrom } = yield* runSync(REPO)
+
+      expect(job.id).not.toBe(failed.id)
+      expect(job.status).toBe("completed")
+      expect(resumedFrom).toBeUndefined()
+      expect(yield* Fiber.join(superseded)).toEqual(Option.some(job.id))
+      yield* pruned(failed.id)
+      expect(yield* lastSyncedCommit).toBe(source.head())
+      expect(yield* indexedPaths(REPO)).toEqual(expect.arrayContaining(["bang.ts", "later.ts"]))
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
+    )
+  })
+
+  it.effect("finishes an unfinished add first when the remote hasn't moved", () => {
+    const MARKER = "ADD_THEN_SYNC"
+    const source = makeSourceRepo(5)
+    source.write("bang.ts", `${MARKER}\n`)
+    source.commit()
+    const env = testEnv()
+    return Effect.gen(function* () {
+      embedFailures.markers.add(MARKER)
+      const failed = yield* addRepo(source.dir)
+      expect(failed.status).toBe("failed")
+      embedFailures.markers.delete(MARKER)
+
+      const { job, resumedFrom } = yield* runSync(REPO)
+
+      expect(resumedFrom).toBe("indexBatch of the unfinished add")
+      expect(job.kind).toBe("syncRepo")
+      expect(job.status).toBe("completed")
+      const runner = yield* JobRunner
+      expect((yield* runner.jobs).find((j) => j.id === failed.id)?.status).toBe("completed")
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
+    )
+  })
+
+  it.effect("supersedes an unfinished add when the remote moved, and the sync indexes everything", () => {
+    const MARKER = "ADD_THEN_MOVE"
+    const source = makeSourceRepo(5)
+    source.write("bang.ts", `${MARKER}\n`)
+    source.commit()
+    const env = testEnv()
+    return Effect.gen(function* () {
+      embedFailures.markers.add(MARKER)
+      const failed = yield* addRepo(source.dir)
+      expect(failed.status).toBe("failed")
+      embedFailures.markers.delete(MARKER)
+      source.write("later.ts", "export const later = true\n")
+      source.commit()
+
+      const { job, resumedFrom } = yield* runSync(REPO)
+
+      expect(resumedFrom).toBeUndefined()
+      expect(job.status).toBe("completed")
+      expect(stepOf(job, "planChanges").output).toMatchObject({ fullScan: true })
+      yield* pruned(failed.id)
+      expect(yield* lastSyncedCommit).toBe(source.head())
+      expect(yield* indexedPaths(REPO)).toHaveLength(7)
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
+    )
+  })
 })

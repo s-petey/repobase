@@ -217,6 +217,7 @@ export {
   jobFailed
 } from "./jobs/view.js"
 export { startOrResume, runSync } from "./jobs/runs.js"
+export { reuseOrStart } from "./jobs/reuse.js"
 
 // Worker pool
 export {

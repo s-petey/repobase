@@ -36,9 +36,11 @@ import {
   heldBy,
   jobFailed,
   jobFailureMessage,
+  reuseOrStart,
   runningHere,
   runSync as syncRepo,
   syncUpdated,
+  WorkerClient,
   type PoolSizes,
   type SearchMode,
   type AddRepoProgress,
@@ -101,7 +103,8 @@ const JobsLive = Layer.unwrap(
       QueryPool,
       JobProgressLayer
     ).pipe(
-      Layer.provide([layerWorkerPool({ workerUrl, size: pools.jobs }), IndexingPool, JobProgressLayer]),
+      Layer.provide([IndexingPool, JobProgressLayer]),
+      Layer.provideMerge(layerWorkerPool({ workerUrl, size: pools.jobs })),
       Layer.provideMerge(JobStoreLayer)
     )
   })
@@ -153,6 +156,7 @@ const program = Effect.gen(function* () {
   const repoStore = yield* RepoStore
   const jobStore = yield* JobStore
   const query = yield* QueryClient
+  const jobServices = yield* Effect.context<JobRunner | RepoStore | WorkerClient>()
 
   // Runs effects from React callbacks as fibers owned by this program's scope,
   // so anything still in flight is interrupted on shutdown
@@ -204,7 +208,7 @@ const program = Effect.gen(function* () {
     Deferred.doneUnsafe(quit, Effect.void)
   }
 
-  const runSync = (repoId: string) => syncRepo(repoId, { force: forceSync }).pipe(Effect.provideService(JobRunner, runner))
+  const runSync = (repoId: string) => syncRepo(repoId, { force: forceSync }).pipe(Effect.provide(jobServices))
 
   const busyElsewhere = jobStore.heldElsewhere().pipe(
     Effect.flatMap(([held]) =>
@@ -214,10 +218,9 @@ const program = Effect.gen(function* () {
     )
   )
 
-  // Re-index in the background, picking up an unfinished re-index where it
-  // stopped; false when the repo already has a job running. A repo with an id
-  // from before owner/name ids gets its new id first, and its jobs under the
-  // old id go: they can't resume under a name the repo no longer has.
+  // Re-index in the background; false when the repo already has a job running.
+  // A repo with an id from before owner/name ids gets its new id first, and its
+  // jobs under the old id go: they can't resume under a name the repo no longer has.
   const startReindex = (oldId: string) =>
     Effect.gen(function* () {
       if ((yield* runner.jobs).some((j) => j.repoId === oldId && j.status === "running")) return false
@@ -226,7 +229,7 @@ const program = Effect.gen(function* () {
         const stale = (yield* runner.jobs).filter((j) => j.repoId === oldId)
         yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
       }
-      yield* runner.start({ kind: "reindexRepo", repoId, payload: {} })
+      yield* reuseOrStart({ kind: "reindexRepo", repoId, payload: {} }).pipe(Effect.provide(jobServices))
       return true
     }).pipe(Effect.catchTag("JobAlreadyRunningError", () => Effect.succeed(false)))
 
