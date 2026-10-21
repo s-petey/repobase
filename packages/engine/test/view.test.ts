@@ -2,7 +2,15 @@ import { describe, expect, it } from "@effect/vitest"
 import { DateTime } from "effect"
 import { CloneFailedError, RemoteBranchMissingError } from "../src/jobs/errors.js"
 import type { Job, Step, StepStatus } from "../src/jobs/Job.js"
-import { jobFailed, jobFailureMessage, resumableJob, resumePoint, syncUpdated, unfinishedIndexing } from "../src/jobs/view.js"
+import {
+  jobFailed,
+  jobFailureMessage,
+  resumableJob,
+  resumePoint,
+  retryState,
+  syncUpdated,
+  unfinishedIndexing
+} from "../src/jobs/view.js"
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 
@@ -96,6 +104,13 @@ describe("resumableJob", () => {
 
     expect(resumableJob([job], "a", "reindexRepo")).toBe(job)
     expect(resumableJob([job], "a")).toBeUndefined()
+  })
+
+  it("doesn't resume a superseded job", () => {
+    const job = { ...sync("interrupted", [step("indexBatch:1", "interrupted")]), supersededBy: "a-1" }
+
+    expect(resumableJob([job], "a")).toBeUndefined()
+    expect(retryState(job)).toEqual({ canRetry: false, reason: "A newer task replaced this one" })
   })
 })
 

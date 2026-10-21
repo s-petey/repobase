@@ -72,6 +72,13 @@ describe("jobCounts", () => {
     expect(jobCounts([job("completed", "a", 0), job("failed", "a", 1)])).toEqual({ running: 0, failed: 1 })
   })
 
+  it("doesn't count a superseded job as failed", () => {
+    expect(jobCounts([{ ...job("interrupted", "a"), supersededBy: "syncRepo-a-newer" }])).toEqual({
+      running: 0,
+      failed: 0
+    })
+  })
+
   it("doesn't count a failed add once a newer sync of that repo completed", () => {
     expect(jobCounts([job("failed", "a", 0, "addRepo"), job("completed", "a", 1, "syncRepo")])).toEqual({
       running: 0,

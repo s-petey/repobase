@@ -6,6 +6,7 @@ import {
   runningElsewhere,
   stepIcon,
   stepLines,
+  superseded,
   type FileProgress,
   type Job,
   type StepErrorDisplay,
@@ -26,7 +27,11 @@ interface TasksViewProps {
   onClose: () => void
 }
 
-const statusColor = (status: StepStatus | Job["status"]): string => {
+type JobStatusShown = Job["status"] | "superseded"
+
+const shownStatus = (job: Job): JobStatusShown => (superseded(job) ? "superseded" : job.status)
+
+const statusColor = (status: StepStatus | JobStatusShown): string => {
   switch (status) {
     case "done":
     case "completed":
@@ -292,7 +297,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
                       attributes: isSelected ? TextAttributes.BOLD : undefined,
                     }}
                   />
-                  <text content={`${fit(job.status, STATUS_WIDTH)} `} style={{ fg: statusColor(job.status) }} />
+                  <text content={`${fit(shownStatus(job), STATUS_WIDTH)} `} style={{ fg: statusColor(shownStatus(job)) }} />
                   <text content={formatAge(job.updatedAt, now).padStart(AGE_WIDTH)} style={{ fg: colors.text.tertiary }} />
                 </box>
               )
@@ -312,8 +317,8 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
               }}
             >
               <text
-                content={`${kindLabel[selected.kind]} ${selected.repoId} · ${selected.status}${runningElsewhere(selected) ? ` in ${selected.owner?.name}` : ""}`}
-                style={{ fg: statusColor(selected.status), attributes: TextAttributes.BOLD, marginBottom: 1 }}
+                content={`${kindLabel[selected.kind]} ${selected.repoId} · ${shownStatus(selected)}${runningElsewhere(selected) ? ` in ${selected.owner?.name}` : ""}`}
+                style={{ fg: statusColor(shownStatus(selected)), attributes: TextAttributes.BOLD, marginBottom: 1 }}
               />
               {live && (
                 <box style={{ flexDirection: "column", marginBottom: 1, flexShrink: 0 }}>

@@ -1,4 +1,4 @@
-import { type Job } from "@repobase/engine";
+import { superseded, type Job } from "@repobase/engine";
 import { DateTime, Duration } from "effect";
 
 const relativeTime = new Intl.RelativeTimeFormat("en", {
@@ -46,7 +46,7 @@ export const latestJobs = (jobs: ReadonlyArray<Job>): ReadonlyArray<Job> => {
 /**
  * Counts for the status bar, over each repo's latest job, so a failure that a
  * newer run fixed isn't counted. Interrupted jobs count as failed since both
- * need a retry.
+ * need a retry; superseded ones don't, since they can't be retried.
  */
 export const jobCounts = (
   jobs: ReadonlyArray<Job>,
@@ -55,6 +55,7 @@ export const jobCounts = (
   let failed = 0;
 
   for (const job of latestJobs(jobs)) {
+    if (superseded(job)) continue;
     switch (job.status) {
       case "running":
         running++;

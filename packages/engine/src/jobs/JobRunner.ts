@@ -18,7 +18,16 @@ import {
 } from "effect"
 import { isRetryable, type StepError, UnexpectedStepError } from "./errors.js"
 import { type IndexLock, makeIndexLock } from "./IndexLock.js"
-import { type Job, type JobKind, type JobOwner, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
+import {
+  type Job,
+  type JobKind,
+  type JobOwner,
+  type JobStatus,
+  makeJobId,
+  type Step,
+  type StepRunsOn,
+  superseded
+} from "./Job.js"
 import { heldBy, JobStore } from "./JobStore.js"
 import { abandoned, runningElsewhere, runningHere } from "./owner.js"
 
@@ -149,6 +158,7 @@ export interface JobRunnerService {
   readonly start: (job: NewJob) => Effect.Effect<Job, JobRunnerError>
   // Re-run a failed or interrupted job from the steps that didn't finish
   readonly retry: (jobId: string) => Effect.Effect<Job, JobRunnerError>
+  readonly supersede: (jobId: string, by: string) => Effect.Effect<Job, JobRunnerError>
   // Stop the job if it is running, and delete it
   readonly discard: (jobId: string) => Effect.Effect<void, JobRunnerError>
   // Wait until a job is no longer running
@@ -385,13 +395,13 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       })
 
     // Finished jobs that nothing will look at again: for each repo only its
-    // latest job is kept, plus failed and interrupted ones until they're retried
-    // or discarded. Their plans can list every file of a repo. A job that just
-    // finished is its repo's latest, even when it's a retry of an older job.
+    // latest job is kept, plus failed and interrupted ones until they're retried,
+    // superseded or discarded. Their plans can list every file of a repo. A job
+    // that just finished is its repo's latest, even when it's a retry of an older job.
     const prune = (justFinished?: Job) =>
       writeLock.withPermit(
         Effect.gen(function* () {
-          const done = (job: Job) => job.status === "completed" || job.status === "skipped"
+          const done = (job: Job) => job.status === "completed" || job.status === "skipped" || superseded(job)
           const jobs = [...(yield* SubscriptionRef.get(state)).values()]
           const stale = justFinished
             ? jobs.filter((job) => job.repoId === justFinished.repoId && job.id !== justFinished.id && done(job))
@@ -606,6 +616,9 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         if (job.status !== "failed" && job.status !== "interrupted") {
           return yield* new JobNotRetryableError({ jobId, message: `Job ${jobId} is ${job.status}` })
         }
+        if (superseded(job)) {
+          return yield* new JobNotRetryableError({ jobId, message: `Job ${jobId} was replaced by ${job.supersededBy}` })
+        }
         const permanent = job.steps.find((s) => s.status === "failed" && s.error && !isRetryable(s.error))
         if (permanent?.error) {
           return yield* new JobNotRetryableError({
@@ -630,6 +643,25 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         }))
         yield* launch(resumed, claim)
         return resumed
+      })
+
+    const supersede: JobRunnerService["supersede"] = (jobId, by) =>
+      Effect.gen(function* () {
+        const job = yield* findJob(jobId)
+        if (runningElsewhere(job)) {
+          return yield* new JobAlreadyRunningError({
+            repoId: job.repoId,
+            message: `This ${job.kind} is running in another repobase process (${job.owner?.name})`
+          })
+        }
+        if (job.status !== "failed" && job.status !== "interrupted") {
+          return yield* new JobNotRetryableError({
+            jobId,
+            message: `Only a failed or interrupted job can be superseded (${jobId} is ${job.status})`
+          })
+        }
+        yield* Effect.logInfo(`${job.kind} for ${job.repoId} (${jobId}) superseded by ${by}`)
+        return yield* updateJob(jobId, (j) => ({ ...j, supersededBy: by }))
       })
 
     const discard: JobRunnerService["discard"] = (jobId) =>
@@ -715,6 +747,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       changes: SubscriptionRef.changes(state).pipe(Stream.map(sorted)),
       start,
       retry,
+      supersede,
       discard,
       await: awaitJob,
       // Waits for each job's onInterrupt, which saves it as interrupted

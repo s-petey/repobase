@@ -1,6 +1,6 @@
 import { DateTime } from "effect"
 import { formatStepError, isRetryable, type StepErrorDisplay } from "./errors.js"
-import type { Job, Step, StepStatus } from "./Job.js"
+import { type Job, type Step, type StepStatus, superseded } from "./Job.js"
 import { runningElsewhere } from "./owner.js"
 
 export interface StepLine {
@@ -71,6 +71,9 @@ export const retryState = (job: Job): { readonly canRetry: boolean; readonly rea
   if (job.status !== "failed" && job.status !== "interrupted") {
     return { canRetry: false, reason: `Only failed or interrupted tasks can be retried (this one is ${job.status})` }
   }
+  if (superseded(job)) {
+    return { canRetry: false, reason: "A newer task replaced this one" }
+  }
 
   const permanent = job.steps.find((s) => s.status === "failed" && s.error && !isRetryable(s.error))
   if (permanent?.error) {
@@ -106,7 +109,7 @@ export const resumableJob = (
       latest = job
     }
   }
-  if (!latest) return undefined
+  if (!latest || superseded(latest)) return undefined
 
   if (latest.status === "interrupted") return latest
   if (latest.status !== "failed" || !retryState(latest).canRetry) return undefined

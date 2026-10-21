@@ -531,6 +531,60 @@ describe("JobRunner", () => {
     }).pipe(Effect.provide(runnerLayer(script.definitions)))
   })
 
+  it.effect("supersedes an unfinished job: it can't be retried and goes once the newer job finishes", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      script.failing.set("fetch", cloneFailure)
+      const failed = yield* runner.await((yield* runner.start(syncRepo())).id)
+      script.failing.delete("fetch")
+
+      yield* script.block("fetch")
+      const next = yield* runner.start(syncRepo())
+      const marked = yield* runner.supersede(failed.id, next.id)
+      expect(marked.supersededBy).toBe(next.id)
+      expect(marked.status).toBe("failed")
+      const stored = Option.getOrThrow(yield* JobStore.use((store) => store.get(failed.id)))
+      expect(stored.supersededBy).toBe(next.id)
+
+      const refused = yield* Effect.flip(runner.retry(failed.id))
+      expect(refused).toBeInstanceOf(JobNotRetryableError)
+      expect(refused.message).toContain(next.id)
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
+  it.effect("prunes a superseded job once the job that replaced it finishes", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      script.failing.set("fetch", cloneFailure)
+      const failed = yield* runner.await((yield* runner.start(syncRepo())).id)
+      script.failing.delete("fetch")
+
+      const gate = yield* script.block("fetch")
+      const next = yield* runner.start(syncRepo())
+      yield* runner.supersede(failed.id, next.id)
+      yield* gate.release
+      yield* runner.await(next.id)
+
+      expect((yield* runner.jobs).map((j) => j.id)).toEqual([next.id])
+      expect(yield* JobStore.use((store) => store.get(failed.id))).toEqual(Option.none())
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
+  it.effect("only supersedes a failed or interrupted job", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      const done = yield* runner.await((yield* runner.start(syncRepo())).id)
+
+      const refused = yield* Effect.flip(runner.supersede(done.id, "syncRepo-acme-widgets-newer"))
+
+      expect(refused).toBeInstanceOf(JobNotRetryableError)
+      expect((yield* runner.jobs)[0].supersededBy).toBeUndefined()
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
   it.effect("a resumed job finishing late doesn't free the repo for the next job's claim", () => {
     const script = makeScript()
     return Effect.gen(function* () {

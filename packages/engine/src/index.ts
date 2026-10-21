@@ -160,6 +160,7 @@ export {
   StepStatus,
   StepRunsOn,
   makeJobId,
+  superseded,
   type JobKind
 } from "./jobs/Job.js"
 export {

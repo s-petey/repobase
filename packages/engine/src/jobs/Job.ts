@@ -73,6 +73,7 @@ const jobFields = {
   createdAt: Schema.DateTimeUtcFromMillis,
   updatedAt: Schema.DateTimeUtcFromMillis,
   owner: Schema.optional(JobOwner),
+  supersededBy: Schema.optional(Schema.String),
   steps: Schema.Array(Step)
 }
 
@@ -104,6 +105,8 @@ export type ReindexRepoJob = typeof ReindexRepoJob.Type
 export const Job = Schema.Union([AddRepoJob, SyncRepoJob, ReindexRepoJob])
 export type Job = typeof Job.Type
 export type JobKind = Job["kind"]
+
+export const superseded = (job: Job): boolean => job.supersededBy !== undefined
 
 /**
  * A new job id: kind, repo, then the current time and a random suffix (so ids

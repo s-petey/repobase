@@ -272,6 +272,24 @@ describe("TasksView", () => {
     expect(setup.captureCharFrame()).toContain("Discard this job and track a different branch")
   })
 
+  it("shows a superseded task as superseded, and doesn't retry it", async () => {
+    const onRetry = vi.fn(async () => {})
+    setup = await renderModal(
+      [{ ...syncJob([step("fetch", "interrupted")], "interrupted"), supersededBy: "syncRepo-Effect-TS-effect-2" }],
+      { onRetry }
+    )
+    await interact(setup, () => {})
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toMatch(/> Effect-TS-effect\s+superseded\s+5m ago/)
+    expect(frame).toContain("sync Effect-TS-effect · superseded")
+    expect(frame).toContain("[r] Retry (unavailable)")
+
+    await interact(setup, () => setup!.mockInput.pressKey("r"))
+    expect(onRetry).not.toHaveBeenCalled()
+    expect(setup.captureCharFrame()).toContain("A newer task replaced this one")
+  })
+
   describe("levels", () => {
     const longError = (lines: number) =>
       syncJob([
