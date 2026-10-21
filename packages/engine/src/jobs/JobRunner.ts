@@ -2,6 +2,7 @@ import {
   Cause,
   Context,
   DateTime,
+  Duration,
   Effect,
   Exit,
   FiberMap,
@@ -9,6 +10,7 @@ import {
   Option,
   Ref,
   Result,
+  Schedule,
   Schema,
   Semaphore,
   Stream,
@@ -18,7 +20,9 @@ import { isRetryable, type StepError, UnexpectedStepError } from "./errors.js"
 import { type IndexLock, makeIndexLock } from "./IndexLock.js"
 import { type Job, type JobKind, type JobOwner, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
 import { heldBy, JobStore } from "./JobStore.js"
-import { runningElsewhere, runningHere } from "./owner.js"
+import { abandoned, runningElsewhere, runningHere } from "./owner.js"
+
+const OWNER_CHECK_INTERVAL = Duration.seconds(15)
 
 // A generic runner for jobs made of checkpointed steps. The job definitions
 // (what addRepo and syncRepo actually do) live elsewhere; this file only knows
@@ -686,6 +690,13 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         })
       ).pipe(Effect.catch((e) => Effect.logWarning(`Could not reload job ${jobId}: ${e.message}`)))
 
+    const interruptAbandoned = Effect.gen(function* () {
+      const ids = [...(yield* SubscriptionRef.get(state)).values()].filter(abandoned).map((job) => job.id)
+      if (ids.length === 0) return
+      yield* store.markInterrupted()
+      yield* Effect.forEach(ids, follow, { discard: true })
+    }).pipe(Effect.catch((e) => Effect.logWarning(`Could not check other processes' jobs: ${e.message}`)))
+
     if (options.followOthers) {
       // Started now, so it's subscribed before anything is saved
       yield* Effect.forkScoped(
@@ -694,6 +705,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         ),
         { startImmediately: true }
       )
+      yield* Effect.forkScoped(Effect.repeat(interruptAbandoned, Schedule.spaced(OWNER_CHECK_INTERVAL)))
     }
 
     yield* prune()

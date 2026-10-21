@@ -20,7 +20,7 @@ import * as nodePath from "path"
 import { StoreError } from "../errors.js"
 import { IndexPlan } from "../schemas.js"
 import { Job, JobOwner } from "./Job.js"
-import { isProcessAlive } from "./owner.js"
+import { abandoned, isProcessAlive } from "./owner.js"
 
 /**
  * Persists jobs so they survive restarts. Only the main thread writes here.
@@ -88,8 +88,6 @@ const LOCK_WRITE_GRACE = Duration.seconds(5)
 const LockJson = Schema.fromJsonString(JobOwner)
 // The pid in a temp file name written by writeAtomic: <file>.json.tmp-<pid>-<random>
 const TEMP_FILE_PID = /\.json\.tmp-(\d+)-/
-
-const abandoned = (job: Job) => job.status === "running" && !(job.owner && isProcessAlive(job.owner.pid))
 
 // Jobs left running by a process that is no longer around
 const interruptJob = (job: Job, now: DateTime.Utc): Job => ({

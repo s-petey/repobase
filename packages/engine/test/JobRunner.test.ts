@@ -319,7 +319,7 @@ describe("JobRunner", () => {
       const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: true })
 
       yield* store.save(orphan)
-      yield* TestClock.adjust("1 second")
+      yield* TestClock.adjust("15 seconds")
       expect((yield* runner.jobs).find((j) => j.id === orphan.id)?.status).toBe("interrupted")
 
       yield* runner.retry(orphan.id)

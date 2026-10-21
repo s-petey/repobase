@@ -29,6 +29,11 @@ export const makeMemoryFs = Effect.gen(function* () {
         files.set(to, contents)
       }).pipe(Effect.andThen(emit("Remove", from)), Effect.andThen(emit("Create", to)))
     },
+    remove: (path) =>
+      Effect.sync(() => {
+        files.delete(path)
+        for (const child of under(path)) files.delete(child)
+      }).pipe(Effect.andThen(emit("Remove", path))),
     watch: () => Stream.fromPubSub(events)
   })
 

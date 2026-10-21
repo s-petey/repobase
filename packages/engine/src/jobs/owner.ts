@@ -23,3 +23,6 @@ export const runningElsewhere = (job: Job): boolean =>
   isProcessAlive(job.owner.pid)
 
 export const runningHere = (job: Job): boolean => job.status === "running" && job.owner?.pid === process.pid
+
+export const abandoned = (job: Job): boolean =>
+  job.status === "running" && !(job.owner && isProcessAlive(job.owner.pid))
