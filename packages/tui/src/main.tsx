@@ -97,7 +97,7 @@ const JobsLive = Layer.unwrap(
       JobRunnerLayer(makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: indexing }), {
         concurrency: indexing,
         processName: "tui",
-        followOthers: "1 second"
+        followOthers: true
       }),
       QueryPool,
       JobProgressLayer

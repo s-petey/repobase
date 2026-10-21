@@ -9,9 +9,11 @@ import {
   Order,
   Path,
   type PlatformError,
+  PubSub,
   Random,
   Ref,
-  Schema
+  Schema,
+  Stream
 } from "effect"
 import * as os from "os"
 import * as nodePath from "path"
@@ -32,6 +34,7 @@ export interface JobStoreService {
   readonly claimRepo: (repoId: string, owner: JobOwner) => Effect.Effect<Option.Option<RepoHeld>, StoreError>
   readonly releaseRepo: (repoId: string) => Effect.Effect<void>
   readonly heldElsewhere: () => Effect.Effect<ReadonlyArray<RepoHeld>, StoreError>
+  readonly changes: Stream.Stream<string, StoreError>
   readonly writePlan: (jobId: string, plan: IndexPlan) => Effect.Effect<void, StoreError>
   readonly readPlan: (jobId: string) => Effect.Effect<Option.Option<IndexPlan>, StoreError>
 }
@@ -75,6 +78,7 @@ const newestFirst: Order.Order<Job> = Order.flip(
   Order.mapInput(DateTime.Order, (job: Job) => job.createdAt)
 )
 
+const JOB_EXTENSION = ".json"
 const LOCKS_DIR = "locks"
 const LOCK_EXTENSION = ".lock"
 const CREATE_ONLY = "wx" satisfies FileSystem.OpenFlag
@@ -263,6 +267,14 @@ export const makeWith = (config: { readonly dir: string }) =>
         if (Option.isSome(holder) && holder.value.pid === process.pid) yield* fs.remove(file, { force: true })
       }).pipe(Effect.ignore)
 
+    const changes: JobStoreService["changes"] = fs.makeDirectory(config.dir, { recursive: true }).pipe(
+      Effect.as(fs.watch(config.dir)),
+      Stream.unwrap,
+      Stream.filter((event) => event.path.endsWith(JOB_EXTENSION)),
+      Stream.map((event) => event.path.slice(0, -JOB_EXTENSION.length)),
+      Stream.mapError(toStoreError("watchJobs"))
+    )
+
     return JobStore.of({
       list,
       get,
@@ -272,6 +284,7 @@ export const makeWith = (config: { readonly dir: string }) =>
       claimRepo,
       releaseRepo,
       heldElsewhere,
+      changes,
       writePlan,
       readPlan
     })
@@ -296,6 +309,7 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
     const jobs = yield* Ref.make(new Map<string, Job>())
     const plans = yield* Ref.make(new Map<string, IndexPlan>())
     const claims = yield* Ref.make<ReadonlyMap<string, JobOwner>>(new Map())
+    const changed = yield* PubSub.unbounded<string>()
 
     const list: JobStoreService["list"] = () =>
       Ref.get(jobs).pipe(Effect.map((m) => [...m.values()].sort(newestFirst)))
@@ -303,7 +317,9 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
     return JobStore.of({
       list,
       get: (id) => Ref.get(jobs).pipe(Effect.map((m) => Option.fromNullishOr(m.get(id)))),
-      save: (job) => Ref.update(jobs, (m) => new Map(m).set(job.id, job)),
+      save: (job) =>
+        Ref.update(jobs, (m) => new Map(m).set(job.id, job)).pipe(Effect.andThen(PubSub.publish(changed, job.id)), Effect.asVoid),
+      changes: Stream.fromPubSub(changed),
       remove: (id) =>
         Effect.all([
           Ref.update(jobs, (m) => {
@@ -316,7 +332,7 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
             next.delete(id)
             return next
           })
-        ]).pipe(Effect.asVoid),
+        ]).pipe(Effect.andThen(PubSub.publish(changed, id)), Effect.asVoid),
       markInterrupted: () =>
         Effect.gen(function* () {
           const now = yield* DateTime.now

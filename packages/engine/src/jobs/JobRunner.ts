@@ -2,7 +2,6 @@ import {
   Cause,
   Context,
   DateTime,
-  type Duration,
   Effect,
   Exit,
   FiberMap,
@@ -10,7 +9,6 @@ import {
   Option,
   Ref,
   Result,
-  Schedule,
   Schema,
   Semaphore,
   Stream,
@@ -20,7 +18,7 @@ import { isRetryable, type StepError, UnexpectedStepError } from "./errors.js"
 import { type IndexLock, makeIndexLock } from "./IndexLock.js"
 import { type Job, type JobKind, type JobOwner, type JobStatus, makeJobId, type Step, type StepRunsOn } from "./Job.js"
 import { heldBy, JobStore } from "./JobStore.js"
-import { runningElsewhere } from "./owner.js"
+import { runningElsewhere, runningHere } from "./owner.js"
 
 // A generic runner for jobs made of checkpointed steps. The job definitions
 // (what addRepo and syncRepo actually do) live elsewhere; this file only knows
@@ -202,7 +200,7 @@ const stepErrorFrom = (repoId: string, stepKey: string, cause: Cause.Cause<StepE
 export interface JobRunnerOptions {
   readonly concurrency: number
   readonly processName?: string
-  readonly followOthers?: Duration.Input
+  readonly followOthers?: boolean
 }
 
 export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOptions) =>
@@ -670,28 +668,32 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         })
       })
 
-    const refresh = writeLock.withPermit(
-      Effect.gen(function* () {
-        yield* store.markInterrupted()
-        const stored = yield* store.list()
-        const jobs = yield* SubscriptionRef.get(state)
-        const ours = (job: Job | undefined) => job?.owner?.pid === process.pid
-        const next = new Map<string, Job>()
-        for (const job of stored) {
-          const mine = jobs.get(job.id)
-          next.set(job.id, ours(job) && mine ? mine : job)
-        }
-        for (const job of jobs.values()) {
-          if (!next.has(job.id) && ours(job) && job.status === "running") next.set(job.id, job)
-        }
-        const version = (job: Job | undefined) => job && `${job.status}@${DateTime.toEpochMillis(job.updatedAt)}`
-        const changed = next.size !== jobs.size || [...next].some(([id, job]) => version(jobs.get(id)) !== version(job))
-        if (changed) yield* SubscriptionRef.set(state, next)
-      })
-    ).pipe(Effect.catch((e) => Effect.logWarning(`Could not refresh jobs: ${e.message}`)))
+    const follow = (jobId: string) =>
+      writeLock.withPermit(
+        Effect.gen(function* () {
+          const mine = (yield* SubscriptionRef.get(state)).get(jobId)
+          if (mine && runningHere(mine)) return
+          const stored = yield* store.get(jobId)
+          yield* SubscriptionRef.update(state, (jobs) => {
+            const next = new Map(jobs)
+            if (Option.isSome(stored)) {
+              next.set(jobId, stored.value)
+            } else {
+              next.delete(jobId)
+            }
+            return next
+          })
+        })
+      ).pipe(Effect.catch((e) => Effect.logWarning(`Could not reload job ${jobId}: ${e.message}`)))
 
-    if (options.followOthers !== undefined) {
-      yield* Effect.forkScoped(Effect.repeat(refresh, Schedule.spaced(options.followOthers)))
+    if (options.followOthers) {
+      // Started now, so it's subscribed before anything is saved
+      yield* Effect.forkScoped(
+        Stream.runForEach(store.changes, follow).pipe(
+          Effect.catch((e) => Effect.logWarning(`Stopped following other processes' jobs: ${e.message}`))
+        ),
+        { startImmediately: true }
+      )
     }
 
     yield* prune()

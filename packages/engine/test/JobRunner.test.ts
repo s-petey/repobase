@@ -281,7 +281,7 @@ describe("JobRunner", () => {
     }
     return Effect.gen(function* () {
       const store = yield* JobStore
-      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: "1 second" })
+      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: true })
       const own = yield* runner.await((yield* runner.start(addRepo())).id)
       expect(own.owner).toEqual({ pid: process.pid, name: "repobase" })
 
@@ -316,7 +316,7 @@ describe("JobRunner", () => {
     }
     return Effect.gen(function* () {
       const store = yield* JobStore
-      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: "1 second" })
+      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: true })
 
       yield* store.save(orphan)
       yield* TestClock.adjust("1 second")
