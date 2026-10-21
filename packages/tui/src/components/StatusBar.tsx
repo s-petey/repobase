@@ -77,60 +77,41 @@ export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloud
         borderColor: colors.border.default,
         border: true,
         flexDirection: "column",
-        height: 4,
         flexShrink: 0,
       }}
     >
-      <box style={{ flexDirection: "row", gap: 2, height: 1 }}>
-        <text
-          content={message || ""}
-          style={{
-            fg: getMessageColor(),
-            attributes: message ? TextAttributes.BOLD : undefined,
-          }}
-        />
-        {outdated > 0 && (
-          <text
-            content={`${outdated === 1 ? "1 repo isn't" : `${outdated} repos aren't`} searchable until re-indexed · [r] Re-index  [R] All`}
-            style={{ fg: colors.status.warning.default }}
-          />
-        )}
-        {activity && <text content={activity} style={{ fg: colors.status.info.default }} />}
-        {jobParts.length > 0 && (
-          <box style={{ flexDirection: "row" }}>
-            <text content="Tasks: " style={{ fg: colors.text.secondary }} />
-            {jobParts.map((part, index) => (
-              <box key={part.text} style={{ flexDirection: "row" }}>
-                {index > 0 && <text content=", " style={{ fg: colors.text.secondary }} />}
-                <text content={part.text} style={{ fg: part.color }} />
-              </box>
-            ))}
-          </box>
-        )}
-        {featureFlags.mcpServerToggle && (
-          <text
-            content={mcpStatus}
-            style={{
-              fg: mcpColor,
-            }}
-          />
-        )}
-        {featureFlags.cloudSync && (
-          <text
-            content={cloudStatus}
-            style={{
-              fg: cloudColor,
-            }}
-          />
-        )}
-      </box>
       <text
-        content={helpText}
+        content={message || ""}
         style={{
-          fg: colors.text.secondary,
-          height: 1,
+          fg: getMessageColor(),
+          attributes: message ? TextAttributes.BOLD : undefined,
         }}
       />
+      {outdated > 0 && (
+        <text
+          content={`${outdated === 1 ? "1 repo isn't" : `${outdated} repos aren't`} searchable until re-indexed · [r] Re-index  [R] All`}
+          style={{ fg: colors.status.warning.default }}
+        />
+      )}
+      {activity && <text content={activity} style={{ fg: colors.status.info.default }} />}
+      {jobParts.length > 0 && (
+        <box style={{ flexDirection: "row" }}>
+          <text content="Tasks: " style={{ fg: colors.text.secondary }} />
+          {jobParts.map((part, index) => (
+            <box key={part.text} style={{ flexDirection: "row" }}>
+              {index > 0 && <text content=", " style={{ fg: colors.text.secondary }} />}
+              <text content={part.text} style={{ fg: part.color }} />
+            </box>
+          ))}
+        </box>
+      )}
+      {(featureFlags.mcpServerToggle || featureFlags.cloudSync) && (
+        <box style={{ flexDirection: "row", gap: 2 }}>
+          {featureFlags.mcpServerToggle && <text content={mcpStatus} style={{ fg: mcpColor }} />}
+          {featureFlags.cloudSync && <text content={cloudStatus} style={{ fg: cloudColor }} />}
+        </box>
+      )}
+      <text content={helpText} style={{ fg: colors.text.secondary }} />
     </box>
   )
 }

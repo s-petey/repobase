@@ -30,25 +30,29 @@ describe("StatusBar", () => {
     expect(colorOf(setup, "Tasks:")).not.toBe(failed)
   })
 
-  it("puts the status and the key help on separate lines, so they never overlap", async () => {
-    // Narrow enough that the status and the key help couldn't share one line
+  it("gives each status its own line and wraps the key help, so nothing overlaps", async () => {
     setup = await testRender(
       <StatusBar
         mode="list"
+        grouped
         message="[OK] Effect-TS-effect updated"
-        activity="Syncing Effect-TS-language-service · up to 3 workers"
-        jobCounts={{ running: 6, failed: 1 }}
+        outdated={3}
+        activity="Syncing hi-rasmus/hirasmus · up to 3 workers"
+        jobCounts={{ running: 1, failed: 6 }}
       />,
-      { width: 120, height: 6 }
+      { width: 100, height: 12 }
     )
     await interact(setup, () => {})
-    const lines = setup.captureCharFrame().split("\n")
+    const frame = setup.captureCharFrame()
+    const lines = frame.split("\n")
     const lineOf = (text: string) => lines.findIndex((l) => l.includes(text))
 
-    const status = lineOf("Syncing Effect-TS-language-service · up to 3 workers")
-    expect(status).toBeGreaterThan(-1)
-    expect(lineOf("[OK] Effect-TS-effect updated")).toBe(status)
-    expect(lineOf("Tasks: 6 running, 1 failed")).toBe(status)
-    expect(lineOf("[a] Add  [d] Delete  [s] Sync")).toBe(status + 1)
+    const message = lineOf("[OK] Effect-TS-effect updated")
+    expect(message).toBeGreaterThan(-1)
+    expect(lineOf("3 repos aren't searchable until re-indexed")).toBe(message + 1)
+    expect(lineOf("Syncing hi-rasmus/hirasmus · up to 3 workers")).toBe(message + 2)
+    expect(lineOf("Tasks: 1 running, 6 failed")).toBe(message + 3)
+    expect(lineOf("[Enter] Toggle group")).toBe(message + 4)
+    expect(frame).toContain("[q] Quit")
   })
 })
