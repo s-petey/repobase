@@ -80,6 +80,8 @@ function buildFlatRows(repos: RepoConfig[], collapsed: Set<string>): FlatRow[] {
   })
 }
 
+const rowKey = (row: FlatRow) => `${row.kind}:${row.kind === "header" ? row.owner : row.repo.id}`
+
 export const App = ({
   initialRepos,
   onAddRepo,
@@ -98,7 +100,7 @@ export const App = ({
   workerLimit,
 }: AppProps) => {
   const [repos, setRepos] = useState<RepoConfig[]>(initialRepos)
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [selection, setSelection] = useState<{ readonly key?: string; readonly index: number }>({ index: 0 })
   const [mode, setMode] = useState<AppMode>(() => (initialRepos.some(needsReindex) ? "confirmReindex" : "list"))
   const [message, setMessage] = useState<string | undefined>()
   const [inputValue, setInputValue] = useState("")
@@ -112,7 +114,6 @@ export const App = ({
   const [repoToDelete, setRepoToDelete] = useState<RepoConfig | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
   const [jobs, setJobs] = useState<ReadonlyArray<Job>>([])
-  const completedJobIds = useRef<ReadonlySet<string> | undefined>(undefined)
   const [syncActivity, setSyncActivity] = useState<SyncActivity | undefined>()
   const [exitStage, setExitStage] = useState<ExitStage>("idle")
 
@@ -121,18 +122,29 @@ export const App = ({
 
   useEffect(() => () => clearTimeout(exitTimer.current), [])
 
-  useEffect(() => onJobsChange(setJobs), [onJobsChange])
-
   useEffect(() => {
-    const completed = new Set(jobs.filter((j) => j.status === "completed").map((j) => j.id))
-    const previous = completedJobIds.current
-    completedJobIds.current = completed
-    if (previous && [...completed].some((id) => !previous.has(id))) {
-      void onRefreshRepos().then(setRepos)
-    }
-  }, [jobs, onRefreshRepos])
+    let previouslyCompleted: ReadonlySet<string> | undefined
+    return onJobsChange((next) => {
+      setJobs(next)
+      const completed = new Set(next.filter((j) => j.status === "completed").map((j) => j.id))
+      const previous = previouslyCompleted
+      previouslyCompleted = completed
+      if (previous && [...completed].some((id) => !previous.has(id))) void onRefreshRepos().then(setRepos)
+    })
+  }, [onJobsChange, onRefreshRepos])
 
   const flatRows = useMemo(() => buildFlatRows(repos, collapsedGroups), [repos, collapsedGroups])
+  const lastRow = Math.max(0, flatRows.length - 1)
+  const foundRow = flatRows.findIndex((row) => rowKey(row) === selection.key)
+  const selectedIndex = foundRow >= 0 ? foundRow : Math.min(selection.index, lastRow)
+  const selectedRow = flatRows[selectedIndex]
+  if (selectedRow && (rowKey(selectedRow) !== selection.key || selectedIndex !== selection.index)) {
+    setSelection({ key: rowKey(selectedRow), index: selectedIndex })
+  }
+  const selectRow = (index: number) => {
+    const row = flatRows[index]
+    setSelection({ key: row ? rowKey(row) : undefined, index })
+  }
 
   const highlightedScope = useMemo((): SearchScope | undefined => {
     const row = flatRows[selectedIndex]
@@ -147,14 +159,6 @@ export const App = ({
     () => new Set(jobs.filter((j) => j.status === "running" && outdated.includes(j.repoId)).map((j) => j.repoId)),
     [jobs, outdated]
   )
-
-  // Clamp selectedIndex when flatRows shrinks (deletion, collapsing)
-  useEffect(() => {
-    const max = Math.max(0, flatRows.length - 1)
-    if (selectedIndex > max) {
-      setSelectedIndex(max)
-    }
-  }, [flatRows.length, selectedIndex])
 
   const showMessage = useCallback((msg: string, duration = 3000) => {
     setMessage(msg)
@@ -442,11 +446,11 @@ export const App = ({
     switch (key.name) {
       case "up":
       case "k":
-        setSelectedIndex(Math.max(0, selectedIndex - 1))
+        selectRow(Math.max(0, selectedIndex - 1))
         break
       case "down":
       case "j":
-        setSelectedIndex(Math.min(flatRows.length - 1, selectedIndex + 1))
+        selectRow(Math.min(lastRow, selectedIndex + 1))
         break
       case "enter":
       case "return":

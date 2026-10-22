@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react"
+import { type ComponentProps, Profiler } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { testRender } from "@opentui/react/test-utils"
 import type { TestRendererSetup } from "@opentui/core/testing"
@@ -382,6 +382,92 @@ describe("App owner grouping", () => {
     setup = await renderApp([{ ...repo("local", "thing"), id: "local-thing", url: "file:///srv/thing" }])
     await interact(setup, () => {})
     expect(setup.captureCharFrame()).toContain("local-thing")
+  })
+})
+
+describe("App repo list selection and refresh", () => {
+  const completed = (id: string, repoId: string): Job => ({
+    id,
+    repoId,
+    kind: "syncRepo",
+    payload: {},
+    status: "completed",
+    createdAt: DateTime.makeUnsafe(0),
+    updatedAt: DateTime.makeUnsafe(0),
+    steps: []
+  })
+
+  const withJobs = () => {
+    let emit: (jobs: ReadonlyArray<Job>) => void = () => {}
+    const onJobsChange = (listener: (jobs: ReadonlyArray<Job>) => void) => {
+      emit = listener
+      return () => {}
+    }
+    return { onJobsChange, emit: (jobs: ReadonlyArray<Job>) => emit(jobs) }
+  }
+
+  it("refreshes the repo list once when a job completes", async () => {
+    const jobs = withJobs()
+    const onRefreshRepos = vi.fn(async () => [repo("m", "one")])
+    setup = await renderApp([repo("m", "one")], () => {}, { onJobsChange: jobs.onJobsChange, onRefreshRepos })
+    await interact(setup, () => jobs.emit([]))
+
+    await interact(setup, () => jobs.emit([completed("j1", "m/one")]))
+    await interact(setup, () => jobs.emit([completed("j1", "m/one")]))
+
+    expect(onRefreshRepos).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the selected repo when a refresh lists another repo above it", async () => {
+    const jobs = withJobs()
+    const before = [repo("m", "one"), repo("p", "two")]
+    const after = [repo("a", "zero"), ...before]
+    setup = await renderApp(before, () => {}, { onJobsChange: jobs.onJobsChange, onRefreshRepos: async () => after })
+    await interact(setup, () => jobs.emit([]))
+    await interact(setup, () => setup?.mockInput.pressKey("j"))
+
+    await interact(setup, () => jobs.emit([completed("j1", "a/zero")]))
+    await interact(setup, () => {})
+    await interact(setup, () => setup?.mockInput.pressKey("d"))
+
+    expect(setup.captureCharFrame()).toContain('delete "p/two"')
+  })
+
+  it("moves to the last repo in the same commit when the list shrinks under the cursor", async () => {
+    const jobs = withJobs()
+    const before = [repo("m", "one"), repo("p", "two"), repo("s", "three")]
+    let commits = 0
+    setup = await testRender(
+      <Profiler id="app" onRender={() => commits++}>
+        <App
+          initialRepos={before}
+          onAddRepo={async () => before[0]}
+          onRemoveRepo={async () => {}}
+          onSyncRepo={async () => ({ updated: false })}
+          onSyncAll={async () => []}
+          onRefreshRepos={async () => before.slice(0, 2)}
+          onReindexRepos={async (ids) => ids.length}
+          onSearch={async () => []}
+          onJobsChange={jobs.onJobsChange}
+          onProgressChange={() => () => {}}
+          onRetryJob={async () => {}}
+          onDiscardJob={async () => {}}
+          onQuit={() => {}}
+        />
+      </Profiler>,
+      { width: 160, height: 30, exitOnCtrlC: false }
+    )
+    await interact(setup, () => jobs.emit([]))
+    await interact(setup, () => setup?.mockInput.pressKey("j"))
+    await interact(setup, () => setup?.mockInput.pressKey("j"))
+
+    commits = 0
+    await interact(setup, () => jobs.emit([completed("j1", "s/three")]))
+    await interact(setup, () => {})
+
+    expect(commits).toBe(1)
+    await interact(setup, () => setup?.mockInput.pressKey("d"))
+    expect(setup.captureCharFrame()).toContain('delete "p/two"')
   })
 })
 
