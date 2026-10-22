@@ -1,6 +1,6 @@
 #!/usr/bin/env -S LANCEDB_LOG=error bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Console, DateTime, Duration, Effect, Layer, Option, Predicate } from "effect"
+import { Console, Effect, Layer, Option, Ref } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import {
   RepobaseEngine,
@@ -11,50 +11,37 @@ import {
   CloudSync,
   CloudSyncLayer,
   Indexer,
-  InvalidRepoUrlError,
   JobProgressLayer,
-  JobRunner,
   JobRunnerLayer,
-  JobStore,
   JobStoreLayer,
   defaultDefinitionsConfig,
-  deriveRepoId,
   fileLoggerLayer,
-  heldBy,
-  jobFailed,
   layerInProcessWorkers,
   logPath,
   makeJobDefinitions,
-  removeRepoWithJobs,
-  resumableJob,
-  reuseOrStart,
-  runSync,
-  syncUpdated,
-  trackingMode,
-  pinnedMode,
   needsReindex,
   telemetryLayer,
   splitRepoPath,
-  type Job,
   type RepoConfig,
   type FileInfo,
   type GrepResult
 } from "@repobase/engine"
-import { failureReport, followJobs } from "./progress.js"
+import {
+  CliExit,
+  formatDate,
+  handleAdd,
+  handleReindex,
+  handleRemove,
+  handleSync,
+  outdatedRepoIds,
+  printError,
+  reportError,
+  shortCommit
+} from "./commands.js"
 
 // ============================================================================
 // Formatters
 // ============================================================================
-const formatDate = (date: DateTime.Utc): string =>
-  DateTime.formatLocal(date, {
-    locale: "en-US",
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })
-
 const formatRepo = (repo: RepoConfig): string => {
   const mode =
     repo.mode._tag === "tracking"
@@ -82,49 +69,6 @@ const formatRepo = (repo: RepoConfig): string => {
     Commit: ${commit}
     Cloud: ${cloudStatus}${repo.cloudEnabled ? ` (last push: ${lastPush})` : ""}${index}`
 }
-
-// Commands print their own errors, so they succeed and only set the exit code
-const printError = (message: string) =>
-  Console.error(message).pipe(
-    Effect.andThen(
-      Effect.sync(() => {
-        process.exitCode = 1
-      })
-    )
-  )
-
-const reportError = (error: { readonly _tag: string; readonly message?: string }) =>
-  printError(error.message ? `Error: ${error.message}` : `Error: ${error._tag} - ${JSON.stringify(error)}`)
-
-const withProgress = <A, E, R>(repoId: string, effect: Effect.Effect<A, E, R>) =>
-  Effect.scoped(followJobs(repoId).pipe(Effect.andThen(effect))).pipe(
-    Effect.onInterrupt(() => Console.error("Stopped. Run the same command again to pick up where it left off."))
-  )
-
-const busyElsewhere = Effect.gen(function* () {
-  const [held] = yield* JobStore.use((store) => store.heldElsewhere())
-  if (held === undefined) return false
-  yield* printError(`${heldBy(held)} is running a task; run this again once it's done`)
-  return true
-})
-
-const notAdded = (repoId: string) =>
-  printError(`${repoId} isn't one of your repositories; 'repobase list' shows them`)
-
-const runJob = <E, R>(start: Effect.Effect<{ readonly job: Job }, E, R>) =>
-  start.pipe(Effect.flatMap(({ job }) => JobRunner.use((runner) => runner.await(job.id))))
-
-const reportFailedJob = (job: Job) => printError(failureReport(job))
-
-const shortCommit = (repo: RepoConfig) =>
-  Option.match(repo.lastSyncedCommit, {
-    onNone: () => "none",
-    onSome: (c) => (repo.lastSyncedCommitAt ? `${c.slice(0, 8)} (${formatDate(repo.lastSyncedCommitAt)})` : c.slice(0, 8))
-  })
-
-const outdatedRepoIds = RepobaseEngine.use((engine) => engine.listRepos()).pipe(
-  Effect.map((repos) => repos.filter(needsReindex).map((r) => r.id))
-)
 
 const noteUnavailable = (repo?: string) =>
   outdatedRepoIds.pipe(
@@ -162,40 +106,7 @@ const pinOption = Flag.String("pin").pipe(
 const addCommand = Command.make(
   "add",
   { url: urlArg, branch: branchOption, pin: pinOption },
-  ({ url, branch, pin }) =>
-    Effect.gen(function* () {
-      if (yield* busyElsewhere) return
-      const engine = yield* RepobaseEngine
-      const repoId = yield* Effect.try({
-        try: () => deriveRepoId(url),
-        catch: () => new InvalidRepoUrlError({ url, message: `${url} isn't a GitHub repository URL` })
-      })
-
-      // An add that stopped partway has saved the repo already; it resumes
-      const runner = yield* JobRunner
-      if (Option.isSome(yield* engine.getRepo(repoId)) && !resumableJob(yield* runner.jobs, repoId, "addRepo")) {
-        return yield* printError(`${repoId} is already added; 'repobase sync ${repoId}' updates it`)
-      }
-
-      // Without --pin or --branch the job tracks the remote's default branch
-      const mode = Option.isSome(pin)
-        ? pinnedMode(pin.value)
-        : Option.getOrUndefined(Option.map(branch, trackingMode))
-
-      const job = yield* withProgress(
-        repoId,
-        runJob(reuseOrStart({ kind: "addRepo", repoId, payload: mode ? { url, mode } : { url } }))
-      )
-      if (job.status !== "completed") return yield* reportFailedJob(job)
-
-      const repo = yield* engine.getRepo(repoId)
-      yield* Console.log(`✓ Added repository: ${repoId}`)
-      if (Option.isSome(repo)) yield* Console.log(`  Path: ${repo.value.localPath}`)
-    }).pipe(
-      Effect.catch((error) =>
-        reportError(error)
-      )
-    )
+  handleAdd
 ).pipe(Command.withDescription("Add a GitHub repository"))
 
 // --- LIST COMMAND ---
@@ -226,33 +137,9 @@ const repoIdArg = Argument.String("id").pipe(
   Argument.optional
 )
 
-const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) =>
-  Effect.gen(function* () {
-    if (yield* busyElsewhere) return
-    const engine = yield* RepobaseEngine
-    const ids = Option.isSome(id) ? [id.value] : (yield* engine.listRepos()).map((r) => r.id)
-    if (ids.length === 0) {
-      yield* Console.log("No repositories to sync.")
-      return
-    }
-
-    for (const repoId of ids) {
-      yield* Effect.gen(function* () {
-        if (Option.isNone(yield* engine.getRepo(repoId))) return yield* notAdded(repoId)
-        const { job } = yield* withProgress(repoId, runSync(repoId))
-        if (jobFailed(job)) return yield* reportFailedJob(job)
-        if (job.status === "skipped") return yield* Console.log(`  ${repoId}: pinned, not synced`)
-        if (!syncUpdated(job)) return yield* Console.log(`  ${repoId}: already up to date`)
-        const repo = yield* engine.getRepo(repoId)
-        yield* Console.log(`✓ ${repoId}: updated to ${Option.match(repo, { onNone: () => "?", onSome: shortCommit })}`)
-      }).pipe(Effect.catch(reportError))
-    }
-  }).pipe(
-    Effect.catch((error) =>
-      reportError(error)
-    )
-  )
-).pipe(Command.withDescription("Sync repositories (all if no ID specified)"))
+const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) => handleSync(id)).pipe(
+  Command.withDescription("Sync repositories (all if no ID specified)")
+)
 
 // --- REINDEX COMMAND ---
 const reindexIdArg = Argument.String("id").pipe(
@@ -260,45 +147,7 @@ const reindexIdArg = Argument.String("id").pipe(
   Argument.optional
 )
 
-const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) =>
-  Effect.gen(function* () {
-    if (yield* busyElsewhere) return
-    const engine = yield* RepobaseEngine
-    const ids = Option.isSome(id) ? [id.value] : yield* outdatedRepoIds
-    if (ids.length === 0) {
-      yield* Console.log("Every repository is on the current index format; nothing to re-index.")
-      return
-    }
-
-    const runner = yield* JobRunner
-    for (const oldId of ids) {
-      yield* Effect.gen(function* () {
-        if (Option.isNone(yield* engine.getRepo(oldId))) return yield* notAdded(oldId)
-        const repoId = yield* engine.migrateRepoId(oldId)
-        if (repoId !== oldId) {
-          const stale = (yield* runner.jobs).filter((j) => j.repoId === oldId)
-          yield* Effect.forEach(stale, (j) => runner.discard(j.id), { discard: true })
-        }
-
-        const job = yield* withProgress(repoId, runJob(reuseOrStart({ kind: "reindexRepo", repoId, payload: {} })))
-        if (job.status !== "completed") return yield* reportFailedJob(job)
-        const planned = job.steps.find((s) => s.key === "planFullIndex")?.output
-        const files = Predicate.hasProperty(planned, "toIndex") ? `${planned.toIndex} files ` : ""
-        const seconds = Duration.toSeconds(DateTime.distance(job.createdAt, job.updatedAt))
-        yield* Console.log(
-          `✓ ${repoId === oldId ? repoId : `${oldId} (now ${repoId})`}: ${files}re-indexed in ${seconds.toFixed(1)}s`
-        )
-      }).pipe(
-        // One repo failing doesn't stop the rest
-        Effect.catch(reportError)
-      )
-    }
-  }).pipe(
-    Effect.catch((error) =>
-      reportError(error)
-    )
-  )
-).pipe(
+const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) => handleReindex(id)).pipe(
   Command.withDescription("Re-index repositories in the current index format (every outdated one if no ID specified)")
 )
 
@@ -307,17 +156,9 @@ const removeIdArg = Argument.String("id").pipe(
   Argument.withDescription("Repository ID to remove")
 )
 
-const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) =>
-  Effect.gen(function* () {
-    if (yield* busyElsewhere) return
-    yield* removeRepoWithJobs(id)
-    yield* Console.log(`✓ Removed repository: ${id}`)
-  }).pipe(
-    Effect.catch((error) =>
-      reportError(error)
-    )
-  )
-).pipe(Command.withDescription("Remove a repository"))
+const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) => handleRemove(id)).pipe(
+  Command.withDescription("Remove a repository")
+)
 
 // ============================================================================
 // Cloud Commands
@@ -981,6 +822,13 @@ const AppLayer = Layer.mergeAll(EngineLive, CloudSyncLive, IndexerLayer, JobsLiv
 
 // Run the CLI - provide AppLayer then BunServices (platform layer)
 cli(process.argv.slice(2)).pipe(
+  Effect.andThen(CliExit.use(Ref.get)),
+  Effect.tap((code) =>
+    Effect.sync(() => {
+      process.exitCode = code
+    })
+  ),
+  Effect.provide(CliExit.layer),
   Effect.provide(AppLayer),
   Effect.provide(BunServices.layer),
   BunRuntime.runMain
