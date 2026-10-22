@@ -17,6 +17,7 @@ import { layerWith as JobStoreLayerWith } from "../../src/jobs/JobStore.js"
 import type { RepoStoreData } from "../../src/schemas.js"
 import { layer as GitClientLayer } from "../../src/services/GitClient.js"
 import { Indexer, layerWith as IndexerLayerWith } from "../../src/services/Indexer.js"
+import { layerWith as RepobaseEngineLayerWith } from "../../src/services/RepobaseEngine.js"
 import { RepoStore } from "../../src/services/RepoStore.js"
 import { IndexingClient, WorkerClient } from "../../src/worker/client.js"
 import { StepRpcs } from "../../src/worker/rpcs.js"
@@ -116,10 +117,12 @@ export const testEnv = (options: { readonly indexingConcurrency?: number } = {})
     Layer.effect(WorkerClient)(onlyRpcs("job", (rpc) => rpc !== "IndexBatch")),
     Layer.effect(IndexingClient)(onlyRpcs("indexing", (rpc) => rpc === "IndexBatch"))
   ).pipe(Layer.provide(HandlersLayer), Layer.provideMerge(WorkerSide))
+  const Engine = RepobaseEngineLayerWith({ reposDir }).pipe(Layer.provide(WorkerSide))
   const layer = JobRunnerLayer(
     makeJobDefinitions({ reposDir, indexingConcurrency: options.indexingConcurrency ?? 1_000 }),
     { concurrency: 2 }
   ).pipe(
+    Layer.provideMerge(Engine),
     Layer.provideMerge(Layer.mergeAll(Workers, MemoryRepoStore, JobProgressLayer)),
     Layer.provideMerge(JobStoreLayerWith({ dir: tempDir("jobs") })),
     Layer.provide(BunServices.layer)

@@ -156,7 +156,7 @@ const program = Effect.gen(function* () {
   const repoStore = yield* RepoStore
   const jobStore = yield* JobStore
   const query = yield* QueryClient
-  const jobServices = yield* Effect.context<JobRunner | RepoStore | WorkerClient>()
+  const jobServices = yield* Effect.context<JobRunner | RepoStore | WorkerClient | RepobaseEngine>()
 
   // Runs effects from React callbacks as fibers owned by this program's scope,
   // so anything still in flight is interrupted on shutdown
@@ -245,7 +245,9 @@ const program = Effect.gen(function* () {
               try: () => deriveRepoId(url),
               catch: () => new Error(`Not a GitHub repository URL: ${url}`)
             })
-            const job = yield* runner.start({ kind: "addRepo", repoId, payload: { url } })
+            const { job } = yield* reuseOrStart({ kind: "addRepo", repoId, payload: { url } }).pipe(
+              Effect.provide(jobServices)
+            )
 
             // Show the job's steps and per-file indexing progress in the modal
             const reporter = yield* Stream.zipLatest(runner.changes, progress.changes).pipe(

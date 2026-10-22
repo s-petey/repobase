@@ -216,7 +216,7 @@ export {
   syncUpdated,
   jobFailed
 } from "./jobs/view.js"
-export { startOrResume, runSync } from "./jobs/runs.js"
+export { runSync } from "./jobs/runs.js"
 export { reuseOrStart } from "./jobs/reuse.js"
 
 // Worker pool

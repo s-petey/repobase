@@ -1,4 +1,5 @@
 import { Effect, Option, Schema } from "effect"
+import { RepobaseEngine } from "../services/RepobaseEngine.js"
 import { RepoStore } from "../services/RepoStore.js"
 import { WorkerClient } from "../worker/client.js"
 import type { Job, JobKind } from "./Job.js"
@@ -12,6 +13,11 @@ const PLANNED_COMMIT_STEP: Record<JobKind, string> = {
 }
 
 const PlannedCommit = Schema.Struct({ commit: Schema.String })
+
+const ADD_SAVES_CONFIG_STEP = "saveConfig"
+
+const savedConfig = (job: Job) =>
+  job.kind === "addRepo" && job.steps.some((s) => s.key === ADD_SAVES_CONFIG_STEP && s.status === "done")
 
 export const plannedCommit = (job: Job): Option.Option<string> =>
   Option.fromNullishOr(job.steps.find((s) => s.key === PLANNED_COMMIT_STEP[job.kind] && s.status === "done")).pipe(
@@ -73,6 +79,9 @@ export const reuseOrStart = (request: NewJob) =>
     const unfinished = resumableJob(yield* runner.jobs, request.repoId, request.kind)
     if (unfinished && (yield* isCurrent(unfinished, request))) {
       return { job: yield* runner.retry(unfinished.id), resumedFrom: resumePoint(unfinished) ?? "where it stopped" }
+    }
+    if (unfinished && savedConfig(unfinished)) {
+      yield* RepobaseEngine.use((engine) => engine.removeRepo(request.repoId))
     }
     const job = yield* runner.start(request)
     if (unfinished) yield* runner.supersede(unfinished.id, job.id)

@@ -1,16 +1,8 @@
 import { Effect } from "effect"
 import type { Job } from "./Job.js"
-import { JobRunner, type NewJob } from "./JobRunner.js"
+import { JobRunner } from "./JobRunner.js"
 import { isCurrent, reuseOrStart } from "./reuse.js"
-import { kindLabel, resumableJob, resumePoint, unfinishedIndexing } from "./view.js"
-
-export const startOrResume = (job: NewJob) =>
-  Effect.gen(function* () {
-    const runner = yield* JobRunner
-    const unfinished = resumableJob(yield* runner.jobs, job.repoId, job.kind)
-    const started = unfinished ? yield* runner.retry(unfinished.id) : yield* runner.start(job)
-    return { job: started, resumedFrom: unfinished ? (resumePoint(unfinished) ?? "where it stopped") : undefined }
-  })
+import { kindLabel, resumePoint, unfinishedIndexing } from "./view.js"
 
 export const runSync = (repoId: string, options: { readonly force?: boolean } = {}) =>
   Effect.gen(function* () {

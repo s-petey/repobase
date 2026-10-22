@@ -28,7 +28,6 @@ import {
   resumableJob,
   reuseOrStart,
   runSync,
-  startOrResume,
   syncUpdated,
   trackingMode,
   pinnedMode,
@@ -184,7 +183,7 @@ const addCommand = Command.make(
 
       const job = yield* withProgress(
         repoId,
-        runJob(startOrResume({ kind: "addRepo", repoId, payload: mode ? { url, mode } : { url } }))
+        runJob(reuseOrStart({ kind: "addRepo", repoId, payload: mode ? { url, mode } : { url } }))
       )
       if (job.status !== "completed") return yield* reportFailedJob(job)
 

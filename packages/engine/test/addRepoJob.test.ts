@@ -11,6 +11,7 @@ import {
 } from "../src/jobs/errors.js"
 import { JobProgress } from "../src/jobs/JobProgress.js"
 import { JobRunner } from "../src/jobs/JobRunner.js"
+import { reuseOrStart } from "../src/jobs/reuse.js"
 import { Indexer } from "../src/services/Indexer.js"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { pinnedMode, trackingMode } from "../src/utils.js"
@@ -271,4 +272,75 @@ describe("addRepo job", () => {
       Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(marker)))
     )
   }, 60_000)
+})
+
+describe("adding again after an add failed partway", () => {
+  const REPO = "acme-widgets"
+
+  const failAdd = (source: ReturnType<typeof makeSourceRepo>, marker: string) =>
+    Effect.gen(function* () {
+      source.write("bang.ts", `${marker}\n`)
+      source.commit()
+      embedFailures.markers.add(marker)
+      const failed = yield* addRepo(source.dir)
+      expect(failed.status).toBe("failed")
+      expect(stepOf(failed, "saveConfig").status).toBe("done")
+      embedFailures.markers.delete(marker)
+      return failed
+    })
+
+  const addAgain = (url: string) =>
+    reuseOrStart({ kind: "addRepo", repoId: REPO, payload: { url } }).pipe(
+      Effect.flatMap(({ job, resumedFrom }) =>
+        JobRunner.use((runner) => runner.await(job.id)).pipe(Effect.map((done) => ({ job: done, resumedFrom })))
+      )
+    )
+
+  it.effect("resumes it while the remote is where it cloned from", () => {
+    const MARKER = "ADD_AGAIN_RESUME"
+    const source = makeSourceRepo(5)
+    const env = testEnv()
+    return Effect.gen(function* () {
+      const failed = yield* failAdd(source, MARKER)
+
+      const { job, resumedFrom } = yield* addAgain(source.dir)
+
+      expect(job.id).toBe(failed.id)
+      expect(job.status).toBe("completed")
+      expect(resumedFrom).toBe("indexBatch")
+      expect(stepOf(job, "clone").attempts).toBe(1)
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
+    )
+  })
+
+  it.effect("removes what it left and adds from scratch once the remote moved", () => {
+    const MARKER = "ADD_AGAIN_MOVED"
+    const source = makeSourceRepo(5)
+    const env = testEnv()
+    return Effect.gen(function* () {
+      const failed = yield* failAdd(source, MARKER)
+      source.write("later.ts", "export const later = true\n")
+      source.commit()
+
+      const { job, resumedFrom } = yield* addAgain(source.dir)
+
+      expect(job.id).not.toBe(failed.id)
+      expect(job.status).toBe("completed")
+      expect(resumedFrom).toBeUndefined()
+      const runner = yield* JobRunner
+      yield* runner.changes.pipe(
+        Stream.filter((jobs) => !jobs.some((j) => j.id === failed.id)),
+        Stream.runHead
+      )
+      const { repos } = yield* RepoStore.use((store) => store.load())
+      expect(repos.filter((r) => r.id === REPO)).toHaveLength(1)
+      expect(Option.getOrThrow(repos[0].lastSyncedCommit)).toBe(source.head())
+      expect(yield* indexedPaths(REPO)).toHaveLength(7)
+    }).pipe(
+      Effect.provide(env.layer),
+      Effect.ensuring(Effect.sync(() => embedFailures.markers.delete(MARKER)))
+    )
+  })
 })
