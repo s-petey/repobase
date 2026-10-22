@@ -224,6 +224,21 @@ describe("Indexer", () => {
         expect(plan.toIndex).toHaveLength(3)
       }).pipe(Effect.provide(indexerLayer()))
     )
+
+    it.effect("drops an indexed file that can no longer be indexed", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        yield* indexer.indexRepo(REPO, repoPath)
+        writeFile(repoPath, "README.md", "x".repeat(MAX_INDEXED_FILE_BYTES + 1))
+
+        const plan = yield* indexer.planFullIndex(REPO, repoPath)
+        expect(plan.toDelete).toEqual(["README.md"])
+
+        yield* indexer.indexRepo(REPO, repoPath)
+        expect([...(yield* indexedPaths(REPO)).keys()].sort()).toEqual(["src/index.ts", "src/utils.ts"])
+      }).pipe(Effect.provide(indexerLayer()))
+    )
   })
 
   describe("planChanges", () => {

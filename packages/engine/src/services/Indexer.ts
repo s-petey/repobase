@@ -767,12 +767,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       let skipped = 0
 
       for (const filePath of files) {
-        seenPaths.add(filePath)
         const buffer = yield* readIndexable(repoPath, filePath)
         if (Option.isNone(buffer)) {
           skipped++
           continue
         }
+        seenPaths.add(filePath)
 
         // Check hash for changes
         const hash = hashBuffer(buffer.value)
@@ -783,7 +783,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         toIndex.push({ path: filePath, hash })
       }
 
-      // Indexed files that are no longer in the repo
+      // Indexed files that are no longer in the repo, or can no longer be indexed
       const toDelete = [...existingByPath.keys()].filter((p) => !seenPaths.has(p))
 
       yield* Effect.annotateCurrentSpan({
