@@ -10,6 +10,7 @@ import {
   type StepStatus
 } from "@repobase/engine"
 import { DateTime } from "effect"
+import { Profiler, useState } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { interact, teardown } from "../test/helpers.js"
 import { colors } from "../theme/index.js"
@@ -147,6 +148,65 @@ describe("TasksView", () => {
     expect(row("acme-old").indexOf("yesterday") + "yesterday".length).toBe(
       row("acme-recent").indexOf("5m ago") + "5m ago".length
     )
+  })
+
+  describe("when the task list changes under the cursor", () => {
+    const task = (id: string) => ({ ...syncJob([step("loadRepo", "done")]), id, repoId: `acme-${id}` })
+    let setJobs: (jobs: ReadonlyArray<Job>) => void = () => {}
+    const Harness = ({ initial, onDiscard }: { initial: ReadonlyArray<Job>; onDiscard: (jobId: string) => Promise<void> }) => {
+      const [jobs, set] = useState(initial)
+      setJobs = set
+      return <TasksView jobs={jobs} now={now} onRetry={async () => {}} onDiscard={onDiscard} onClose={() => {}} />
+    }
+
+    it("keeps the selected task when a newer one is listed above it", async () => {
+      const onDiscard = vi.fn(async () => {})
+      const [a, b, c] = [task("a"), task("b"), task("c")]
+      setup = await testRender(<Harness initial={[a, b, c]} onDiscard={onDiscard} />, { width: 140, height: 50 })
+      await interact(setup, () => setup?.mockInput.pressKey("j"))
+      await interact(setup, () => setup?.mockInput.pressKey("j"))
+
+      await interact(setup, () => setJobs([task("new"), a, b, c]))
+      expect(setup.captureCharFrame()).toContain("> acme-c")
+
+      await interact(setup, () => setup?.mockInput.pressKey("x"))
+      expect(onDiscard).toHaveBeenCalledWith("c")
+    })
+
+    it("follows the selected task in the same commit that changes the list", async () => {
+      const onDiscard = vi.fn(async () => {})
+      const [a, b, c] = [task("a"), task("b"), task("c")]
+      let commits = 0
+      setup = await testRender(
+        <Profiler id="tasks" onRender={() => commits++}>
+          <Harness initial={[a, b, c]} onDiscard={onDiscard} />
+        </Profiler>,
+        { width: 140, height: 50 }
+      )
+      await interact(setup, () => setup?.mockInput.pressKey("j"))
+
+      commits = 0
+      await interact(setup, () => setJobs([task("new"), a, b, c]))
+      expect(commits).toBe(1)
+
+      commits = 0
+      await interact(setup, () => setJobs([task("new"), a, c]))
+      expect(commits).toBe(1)
+    })
+
+    it("moves to the task now in its place when the selected one goes", async () => {
+      const onDiscard = vi.fn(async () => {})
+      const [a, b, c] = [task("a"), task("b"), task("c")]
+      setup = await testRender(<Harness initial={[a, b, c]} onDiscard={onDiscard} />, { width: 140, height: 50 })
+      await interact(setup, () => setup?.mockInput.pressKey("j"))
+
+      await interact(setup, () => setJobs([a, c]))
+      expect(setup.captureCharFrame()).toContain("> acme-c")
+
+      await interact(setup, () => setJobs([task("new"), a, c]))
+      await interact(setup, () => setup?.mockInput.pressKey("x"))
+      expect(onDiscard).toHaveBeenCalledWith("c")
+    })
   })
 
   it("keeps a long error inside the details pane and the key help intact", async () => {

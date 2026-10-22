@@ -123,7 +123,7 @@ function getLevelKeysText(level: number, shownError: boolean, showingBatches: bo
 
 export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onClose }: TasksViewProps) => {
   const { width } = useTerminalDimensions()
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [selection, setSelection] = useState(() => ({ id: jobs[0]?.id, index: 0 }))
   const [levelState, setLevel] = useState(TASKS)
   const [stepKey, setStepKey] = useState<string | undefined>()
   const [batchKey, setBatchKey] = useState<string | undefined>()
@@ -142,12 +142,15 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
     leftWidth - BORDER_WIDTH - MARKER_WIDTH - 1 - STATUS_WIDTH - 1 - ageWidth - SCROLLBAR_WIDTH
   )
 
-  useEffect(() => {
-    const max = Math.max(0, jobs.length - 1)
-    if (selectedIndex > max) setSelectedIndex(max)
-  }, [jobs.length, selectedIndex])
-
+  const lastIndex = Math.max(0, jobs.length - 1)
+  const foundIndex = jobs.findIndex((job) => job.id === selection.id)
+  const selectedIndex = foundIndex >= 0 ? foundIndex : Math.min(selection.index, lastIndex)
   const selected = jobs[selectedIndex]
+
+  if (selected && (selected.id !== selection.id || selectedIndex !== selection.index)) {
+    setSelection({ id: selected.id, index: selectedIndex })
+  }
+
   const retry = selected ? retryState(selected) : undefined
   const live = selected?.status === "running" ? progress.get(selected.id) : undefined
 
@@ -188,10 +191,8 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
     }
   }
 
-  const lastIndex = Math.max(0, jobs.length - 1)
-
   const selectTask = (index: number) => {
-    setSelectedIndex(index)
+    setSelection({ id: jobs[index]?.id, index })
     setStepKey(undefined)
     setBatchKey(undefined)
   }
