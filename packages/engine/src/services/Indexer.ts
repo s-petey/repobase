@@ -1,4 +1,4 @@
-import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, Schedule, Semaphore, Stream, SubscriptionRef } from "effect"
+import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, PlatformError, Schedule, Semaphore, Stream, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
@@ -458,6 +458,11 @@ const GREP_READ_CONCURRENCY = 16
 // Bigger files are mostly data, fixtures or generated code, and slow to embed
 export const MAX_INDEXED_FILE_BYTES = 1024 * 1024
 
+const NOT_FOUND = "NotFound" satisfies PlatformError.SystemErrorTag
+
+const goneAsNone = <A>(effect: Effect.Effect<Option.Option<A>, PlatformError.PlatformError>) =>
+  effect.pipe(Effect.catch((e) => (e.reason._tag === NOT_FOUND ? Effect.succeed(Option.none<A>()) : Effect.fail(e))))
+
 /**
  * Apply the search options' repo and path filters to a LanceDB query
  */
@@ -704,22 +709,28 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   // A file's path inside `root`, if no symlink is on the way to it: a cloned
   // repo can't point indexing, read_file or grep at files outside itself
-  const fileInRepo = (root: string, filePath: string) =>
+  const resolveInRepo = (root: string, filePath: string) =>
     Effect.gen(function* () {
       const expected = `${yield* fs.realPath(root)}/${filePath}`
       return (yield* fs.realPath(expected)) === expected ? Option.some(expected) : Option.none<string>()
-    }).pipe(Effect.orElseSucceed(() => Option.none<string>()))
+    }).pipe(goneAsNone)
 
-  // Read a file for indexing; None if it is gone, unreadable, a symlink, too large, binary or generated
+  const fileInRepo = (root: string, filePath: string) =>
+    resolveInRepo(root, filePath).pipe(Effect.orElseSucceed(() => Option.none<string>()))
+
+  // Read a file for indexing; None if it is gone, a symlink, too large, binary or generated
   const readIndexable = (repoPath: string, filePath: string) =>
     Effect.gen(function* () {
-      const file = yield* fileInRepo(repoPath, filePath)
+      const file = yield* resolveInRepo(repoPath, filePath)
       if (Option.isNone(file)) return Option.none<Uint8Array>()
       const info = yield* fs.stat(file.value)
       if (info.type !== "File" || Number(info.size) > MAX_INDEXED_FILE_BYTES) return Option.none<Uint8Array>()
       const buffer = yield* fs.readFile(file.value)
       return isBinary(buffer) || isGenerated(buffer) ? Option.none<Uint8Array>() : Option.some(buffer)
-    }).pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()))
+    }).pipe(
+      goneAsNone,
+      Effect.mapError((e) => new IndexError({ operation: "readFile", message: e.message, path: filePath }))
+    )
 
   const existingHashes = (repoId: string) =>
     Effect.gen(function* () {

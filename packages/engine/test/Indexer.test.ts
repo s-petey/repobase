@@ -282,6 +282,25 @@ describe("Indexer", () => {
         expect(plan.skipped).toBe(1)
       }).pipe(Effect.provide(indexerLayer()))
     )
+
+    it.effect("fails on a file it can't read rather than planning to delete it", () =>
+      Effect.gen(function* () {
+        const indexer = yield* Indexer
+        const repoPath = makeRepo()
+        yield* indexer.indexRepo(REPO, repoPath)
+        const unreadable = path.join(repoPath, "src/utils.ts")
+        nodeFs.chmodSync(unreadable, 0o000)
+
+        const changes = yield* Effect.flip(indexer.planChanges(REPO, repoPath, [{ status: "M", path: "src/utils.ts" }]))
+        const full = yield* Effect.flip(indexer.planFullIndex(REPO, repoPath))
+
+        nodeFs.chmodSync(unreadable, 0o644)
+        expect(changes).toBeInstanceOf(IndexError)
+        expect(changes.path).toBe("src/utils.ts")
+        expect(full.path).toBe("src/utils.ts")
+        expect([...(yield* indexedPaths(REPO)).keys()]).toContain("src/utils.ts")
+      }).pipe(Effect.provide(indexerLayer()))
+    )
   })
 
   describe("indexChanges", () => {
