@@ -218,6 +218,7 @@ export {
 } from "./jobs/view.js"
 export { runSync } from "./jobs/runs.js"
 export { reuseOrStart } from "./jobs/reuse.js"
+export { removeRepoWithJobs } from "./jobs/remove.js"
 
 // Worker pool
 export {

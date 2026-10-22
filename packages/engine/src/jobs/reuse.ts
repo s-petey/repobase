@@ -1,9 +1,9 @@
 import { Effect, Option, Schema } from "effect"
-import { RepobaseEngine } from "../services/RepobaseEngine.js"
 import { RepoStore } from "../services/RepoStore.js"
 import { WorkerClient } from "../worker/client.js"
 import type { Job, JobKind } from "./Job.js"
 import { JobRunner, type NewJob } from "./JobRunner.js"
+import { removeRepoWithJobs } from "./remove.js"
 import { resumableJob, resumePoint } from "./view.js"
 
 const PLANNED_COMMIT_STEP: Record<JobKind, string> = {
@@ -81,7 +81,8 @@ export const reuseOrStart = (request: NewJob) =>
       return { job: yield* runner.retry(unfinished.id), resumedFrom: resumePoint(unfinished) ?? "where it stopped" }
     }
     if (unfinished && savedConfig(unfinished)) {
-      yield* RepobaseEngine.use((engine) => engine.removeRepo(request.repoId))
+      yield* removeRepoWithJobs(request.repoId)
+      return { job: yield* runner.start(request), resumedFrom: undefined }
     }
     const job = yield* runner.start(request)
     if (unfinished) yield* runner.supersede(unfinished.id, job.id)

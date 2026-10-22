@@ -36,6 +36,7 @@ import {
   heldBy,
   jobFailed,
   jobFailureMessage,
+  removeRepoWithJobs,
   reuseOrStart,
   runningHere,
   runSync as syncRepo,
@@ -271,7 +272,9 @@ const program = Effect.gen(function* () {
           })
         )
       }
-      onRemoveRepo={(id: string) => runPromise(busyElsewhere.pipe(Effect.andThen(engine.removeRepo(id))))}
+      onRemoveRepo={(id: string) =>
+        runPromise(busyElsewhere.pipe(Effect.andThen(removeRepoWithJobs(id).pipe(Effect.provide(jobServices)))))
+      }
       onSyncRepo={(id: string) =>
         runPromise(
           busyElsewhere.pipe(

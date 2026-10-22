@@ -25,6 +25,7 @@ import {
   layerInProcessWorkers,
   logPath,
   makeJobDefinitions,
+  removeRepoWithJobs,
   resumableJob,
   reuseOrStart,
   runSync,
@@ -309,8 +310,7 @@ const removeIdArg = Argument.String("id").pipe(
 const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) =>
   Effect.gen(function* () {
     if (yield* busyElsewhere) return
-    const engine = yield* RepobaseEngine
-    yield* engine.removeRepo(id)
+    yield* removeRepoWithJobs(id)
     yield* Console.log(`✓ Removed repository: ${id}`)
   }).pipe(
     Effect.catch((error) =>
