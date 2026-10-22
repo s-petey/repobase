@@ -29,7 +29,7 @@ import {
   superseded
 } from "./Job.js"
 import { heldBy, JobStore } from "./JobStore.js"
-import { abandoned, runningElsewhere, runningHere } from "./owner.js"
+import { abandoned, runningElsewhere, runningHere, thisProcessStartedAt } from "./owner.js"
 
 const OWNER_CHECK_INTERVAL = Duration.seconds(15)
 
@@ -223,7 +223,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
     const services = yield* Effect.context<R>()
     const indexLock = yield* makeIndexLock
     const fibers = yield* FiberMap.make<string>()
-    const owner: JobOwner = { pid: process.pid, name: options.processName ?? "repobase" }
+    const owner: JobOwner = { pid: process.pid, name: options.processName ?? "repobase", startedAt: thisProcessStartedAt() }
 
     // Jobs left running by a previous process can't still be running
     yield* store.markInterrupted().pipe(

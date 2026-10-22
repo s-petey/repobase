@@ -20,7 +20,7 @@ import * as nodePath from "path"
 import { StoreError } from "../errors.js"
 import { IndexPlan } from "../schemas.js"
 import { Job, JobOwner } from "./Job.js"
-import { abandoned, isProcessAlive } from "./owner.js"
+import { abandoned, isProcessAlive, ownerAlive } from "./owner.js"
 
 /**
  * Persists jobs so they survive restarts. Only the main thread writes here.
@@ -222,7 +222,7 @@ export const makeWith = (config: { readonly dir: string }) =>
     const liveClaim = (file: string) =>
       Effect.gen(function* () {
         const holder = yield* lockHolder(file)
-        const live = Option.isSome(holder) ? isProcessAlive(holder.value.pid) : !(yield* leftUnwritten(file))
+        const live = Option.isSome(holder) ? ownerAlive(holder.value) : !(yield* leftUnwritten(file))
         return live ? Option.some<RepoHeld>({ holder }) : Option.none<RepoHeld>()
       })
 

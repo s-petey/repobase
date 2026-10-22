@@ -21,6 +21,7 @@ import {
   step
 } from "../src/jobs/JobRunner.js"
 import { JobStore, layerMemory } from "../src/jobs/JobStore.js"
+import { thisProcessStartedAt } from "../src/jobs/owner.js"
 import { trackingMode } from "../src/utils.js"
 
 // A scripted set of job definitions. Tests decide which steps fail, crash or
@@ -303,7 +304,7 @@ describe("JobRunner", () => {
       const store = yield* JobStore
       const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: true })
       const own = yield* runner.await((yield* runner.start(addRepo())).id)
-      expect(own.owner).toEqual({ pid: process.pid, name: "repobase" })
+      expect(own.owner).toEqual({ pid: process.pid, name: "repobase", startedAt: thisProcessStartedAt() })
 
       yield* store.save(elsewhere)
       yield* TestClock.adjust("1 second")

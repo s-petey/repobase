@@ -63,7 +63,11 @@ export type SyncRepoPayload = typeof SyncRepoPayload.Type
  * can tell a job that's still running from one left behind by a process that
  * exited
  */
-export const JobOwner = Schema.Struct({ pid: Schema.Number, name: Schema.String })
+export const JobOwner = Schema.Struct({
+  pid: Schema.Number,
+  name: Schema.String,
+  startedAt: Schema.optional(Schema.Number)
+})
 export type JobOwner = typeof JobOwner.Type
 
 const jobFields = {

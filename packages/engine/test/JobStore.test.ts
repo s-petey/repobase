@@ -10,6 +10,7 @@ import { StoreError } from "../src/errors.js"
 import { CloneFailedError } from "../src/jobs/errors.js"
 import { type Job, makeJobId } from "../src/jobs/Job.js"
 import { heldBy, JobStore, layerMemory, layerWith } from "../src/jobs/JobStore.js"
+import { thisProcessStartedAt } from "../src/jobs/owner.js"
 import { trackingMode } from "../src/utils.js"
 
 const tempDir = () => nodeFs.mkdtempSync(path.join(os.tmpdir(), "repobase-jobs-"))
@@ -324,6 +325,18 @@ describe("JobStore (file) on disk", () => {
       expect(nodeFs.existsSync(path.join(locks, "acme__widgets.lock"))).toBe(true)
       yield* store.releaseRepo("acme/gadgets")
       expect(nodeFs.existsSync(path.join(locks, "acme__gadgets.lock"))).toBe(false)
+    })
+  )
+
+  it.effect("takes over a claim whose pid now belongs to a different process", () =>
+    Effect.gen(function* () {
+      const { locks, store } = yield* lockedStore()
+      const later = 60 * 60 * 1000
+      const reused = { pid: process.ppid, name: "cli", startedAt: thisProcessStartedAt() + later }
+      nodeFs.writeFileSync(path.join(locks, "acme__widgets.lock"), JSON.stringify(reused))
+
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.none())
+      expect(yield* store.heldElsewhere()).toEqual([])
     })
   )
 
