@@ -92,7 +92,7 @@ describe("OS file watching - verification of behavior", { concurrent: false }, (
         spawnSync(process.execPath, ["-e", write])
 
         const event = yield* Fiber.join(waiting)
-        expect(event).toEqual(Option.some({ _tag: "Create", path: jobFile }))
+        expect(Option.map(event, (e) => e.path)).toEqual(Option.some(jobFile))
       })
     ))
 

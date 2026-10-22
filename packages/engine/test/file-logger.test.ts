@@ -18,7 +18,7 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-describe("fileLoggerLayer", () => {
+describe("fileLoggerLayer", { concurrent: false }, () => {
   it("writes logs to the log file and not the console", async () => {
     const logFile = path.join(dir, "logs", "tui.log")
     const consoleSpies = (["log", "info", "warn", "error", "debug"] as const).map((m) =>
