@@ -54,7 +54,7 @@ const lineId = (key: string) => `line-${key}`
 const listWidth = (terminalWidth: number) => Math.max(40, Math.floor(terminalWidth * 0.4))
 const MARKER_WIDTH = 2
 const STATUS_WIDTH = 11 // "interrupted"
-const AGE_WIDTH = 7 // "59m ago"
+const MIN_AGE_WIDTH = 7 // "59m ago"
 const SCROLLBAR_WIDTH = 1
 const BORDER_WIDTH = 2
 const DETAIL_PAGE = 10
@@ -134,10 +134,12 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
   const detailRef = useRef<ScrollBoxRenderable | null>(null)
   const errorRef = useRef<ScrollBoxRenderable | null>(null)
 
+  const ages = jobs.map((job) => formatAge(job.updatedAt, now))
+  const ageWidth = Math.max(MIN_AGE_WIDTH, ...ages.map((age) => age.length))
   const leftWidth = listWidth(width)
   const repoWidth = Math.max(
     8,
-    leftWidth - BORDER_WIDTH - MARKER_WIDTH - 1 - STATUS_WIDTH - 1 - AGE_WIDTH - SCROLLBAR_WIDTH
+    leftWidth - BORDER_WIDTH - MARKER_WIDTH - 1 - STATUS_WIDTH - 1 - ageWidth - SCROLLBAR_WIDTH
   )
 
   useEffect(() => {
@@ -298,7 +300,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
                     }}
                   />
                   <text content={`${fit(shownStatus(job), STATUS_WIDTH)} `} style={{ fg: statusColor(shownStatus(job)) }} />
-                  <text content={formatAge(job.updatedAt, now).padStart(AGE_WIDTH)} style={{ fg: colors.text.tertiary }} />
+                  <text content={ages[index].padStart(ageWidth)} style={{ fg: colors.text.tertiary }} />
                 </box>
               )
             })}

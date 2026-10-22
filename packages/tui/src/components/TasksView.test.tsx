@@ -129,6 +129,26 @@ describe("TasksView", () => {
     expect(frame).toContain("sync Effect-TS-effect · failed")
   })
 
+  it("lines up the status and age columns whatever the age reads", async () => {
+    const recent = { ...syncJob([step("loadRepo", "done")]), id: "recent", repoId: "acme-recent" }
+    const old = {
+      ...syncJob([step("loadRepo", "done")], "interrupted"),
+      id: "old",
+      repoId: "acme-old",
+      updatedAt: DateTime.subtract(now, { days: 1 })
+    }
+    setup = await renderModal([recent, old])
+    await interact(setup, () => {})
+    const rows = setup.captureCharFrame().split("\n")
+    const row = (repoId: string) => rows.find((line) => line.includes(repoId))!
+
+    expect(row("acme-old")).toContain("yesterday")
+    expect(row("acme-old").indexOf("interrupted")).toBe(row("acme-recent").indexOf("failed"))
+    expect(row("acme-old").indexOf("yesterday") + "yesterday".length).toBe(
+      row("acme-recent").indexOf("5m ago") + "5m ago".length
+    )
+  })
+
   it("keeps a long error inside the details pane and the key help intact", async () => {
     const detail = Array.from({ length: 40 }, (_, i) => `fatal: line ${i} of a very long git error message`).join("\n")
     setup = await renderModal(
