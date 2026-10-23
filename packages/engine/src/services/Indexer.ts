@@ -1105,10 +1105,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const removeIndex: IndexerService["removeIndex"] = (repoId) =>
     Effect.gen(function* () {
       const tbl = yield* getTable
-      yield* Effect.tryPromise({
-        try: () => tbl.delete(`repo = ${sqlString(repoId)}`),
-        catch: (e) => new IndexError({ operation: "removeIndex", message: `Failed to delete: ${e}` })
-      })
+      yield* retryOnCommitConflict(
+        Effect.tryPromise({
+          try: () => tbl.delete(`repo = ${sqlString(repoId)}`),
+          catch: (e) => new IndexError({ operation: "removeIndex", message: `Failed to delete: ${e}` })
+        })
+      )
     })
 
   const hasFullTextIndex = (tbl: Table) =>
