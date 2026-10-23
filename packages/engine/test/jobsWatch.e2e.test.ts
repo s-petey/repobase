@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
-import { DateTime, Effect, Fiber, FileSystem, Option, Path, Schema, type Scope, Stream } from "effect"
+import { DateTime, Deferred, Effect, Fiber, FileSystem, Option, Path, Schema, type Scope, Stream } from "effect"
 import { spawnSync } from "node:child_process"
 import { Job } from "../src/jobs/Job.js"
 import { type JobDefinitions, type JobRunner, make as makeJobRunner } from "../src/jobs/JobRunner.js"
@@ -19,18 +19,37 @@ const job: Job = {
 
 const jobFile = `${job.id}.json`
 
-const watcherStartup = Effect.sleep("100 millis")
+const PROBE_PREFIX = "watcher-ready-"
+const PROBE_INTERVAL = "20 millis"
+const WATCH_TIMEOUT = "5 seconds"
+
+const untilDone = <A, E1, R1, E2, R2>(probe: Effect.Effect<unknown, E1, R1>, done: Effect.Effect<A, E2, R2>) =>
+  probe.pipe(
+    Effect.andThen(Effect.sleep(PROBE_INTERVAL)),
+    Effect.forever,
+    Effect.race(done),
+    Effect.timeout(WATCH_TIMEOUT)
+  )
 
 const watchFor = (dir: string, matches: (event: FileSystem.WatchEvent) => boolean) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const ready = yield* Deferred.make<void>()
+    const isProbe = (event: FileSystem.WatchEvent) => event.path.startsWith(PROBE_PREFIX)
+    // macOS can deliver changes made just before the watch started; they all come before the first probe's
     const waiting = yield* fs.watch(dir).pipe(
+      Stream.tap((event) => (isProbe(event) ? Deferred.succeed(ready, undefined) : Effect.void)),
+      Stream.dropUntil(isProbe),
       Stream.filter(matches),
       Stream.runHead,
-      Effect.timeout("5 seconds"),
+      Effect.timeout(WATCH_TIMEOUT),
       Effect.forkChild
     )
-    yield* watcherStartup
+    // A new file each time: rewriting one the watcher missed being created makes no event in the folder
+    let probes = 0
+    const createProbe = Effect.suspend(() => fs.writeFileString(path.join(dir, `${PROBE_PREFIX}${++probes}`), ""))
+    yield* untilDone(createProbe, Deferred.await(ready))
     return waiting
   })
 
@@ -117,9 +136,19 @@ const definitions: JobDefinitions<never> = {
 
 const elsewhere: Job = { ...job, owner: { pid: process.ppid, name: "cli" } }
 
-const followingRunner = makeJobRunner(definitions, { concurrency: 1, followOthers: true }).pipe(
-  Effect.tap(() => watcherStartup)
-)
+const probeJob: Job = { ...elsewhere, id: "probe-follower-ready" }
+
+const followingRunner = (dir: string) =>
+  Effect.gen(function* () {
+    const runner = yield* makeJobRunner(definitions, { concurrency: 1, followOthers: true })
+    yield* untilDone(
+      saveFromOtherProcess(dir, probeJob),
+      jobsOnceThey(runner, (all) => all.some((j) => j.id === probeJob.id))
+    )
+    yield* removeFromOtherProcess(dir, probeJob.id)
+    yield* jobsOnceThey(runner, (all) => !all.some((j) => j.id === probeJob.id))
+    return runner
+  })
 
 const runInOtherProcess = (script: string) => Effect.sync(() => spawnSync(process.execPath, ["-e", script]))
 
@@ -140,7 +169,7 @@ const removeFromOtherProcess = (dir: string, id: string) =>
   )
 
 const jobsOnceThey = (runner: JobRunner["Service"], match: (jobs: ReadonlyArray<Job>) => boolean) =>
-  runner.changes.pipe(Stream.filter(match), Stream.runHead, Effect.timeout("5 seconds"))
+  runner.changes.pipe(Stream.filter(match), Stream.runHead, Effect.timeout(WATCH_TIMEOUT))
 
 const statuses = (jobs: Option.Option<ReadonlyArray<Job>>) => Option.map(jobs, (all) => all.map((j) => j.status))
 
@@ -148,7 +177,7 @@ describe("following other processes' jobs - our engine on the real file system",
   it.live("picks up a job another process saves", () =>
     inJobsFolder((dir) =>
       Effect.gen(function* () {
-        const runner = yield* followingRunner
+        const runner = yield* followingRunner(dir)
 
         yield* saveFromOtherProcess(dir, elsewhere)
 
@@ -160,7 +189,7 @@ describe("following other processes' jobs - our engine on the real file system",
   it.live("picks up another process's update to a job", () =>
     inJobsFolder((dir) =>
       Effect.gen(function* () {
-        const runner = yield* followingRunner
+        const runner = yield* followingRunner(dir)
         yield* saveFromOtherProcess(dir, elsewhere)
         yield* jobsOnceThey(runner, (all) => all.length > 0)
 
@@ -174,7 +203,7 @@ describe("following other processes' jobs - our engine on the real file system",
   it.live("drops a job another process removes", () =>
     inJobsFolder((dir) =>
       Effect.gen(function* () {
-        const runner = yield* followingRunner
+        const runner = yield* followingRunner(dir)
         yield* saveFromOtherProcess(dir, elsewhere)
         yield* jobsOnceThey(runner, (all) => all.length > 0)
 
