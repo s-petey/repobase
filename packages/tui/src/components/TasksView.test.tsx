@@ -150,6 +150,54 @@ describe("TasksView", () => {
     )
   })
 
+  describe("in a narrow terminal", () => {
+    const narrow = { width: 60, height: 30 }
+    const longRepo = { ...syncJob([step("loadRepo", "done")]), repoId: "effect-ts/language-service" }
+
+    it("shows the list full width, then the details full width with l, and the list again with h", async () => {
+      setup = await renderModal([longRepo], {}, narrow)
+      await interact(setup, () => {})
+      expect(setup.captureCharFrame()).toContain("> effect-ts/language-service")
+      expect(setup.captureCharFrame()).not.toContain("✓ loadRepo")
+
+      await interact(setup, () => setup?.mockInput.pressKey("l"))
+      expect(setup.captureCharFrame()).toContain("sync effect-ts/language-service · failed")
+      expect(setup.captureCharFrame()).toContain("✓ loadRepo")
+      expect(setup.captureCharFrame()).not.toContain("> effect-ts/language-service")
+
+      await interact(setup, () => setup?.mockInput.pressKey("h"))
+      expect(setup.captureCharFrame()).toContain("> effect-ts/language-service")
+    })
+
+    it("wraps the key hints instead of cutting them off", async () => {
+      setup = await renderModal([longRepo], {}, narrow)
+      await interact(setup, () => {})
+      expect(setup.captureCharFrame()).toContain("[Esc/q] Close")
+    })
+  })
+
+  it("ages tasks as time passes while the view stays open", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] })
+    try {
+      const start = DateTime.makeUnsafe("2026-10-23T10:00:00Z")
+      vi.setSystemTime(DateTime.toEpochMillis(start))
+      const job = { ...syncJob([step("loadRepo", "done")]), updatedAt: DateTime.subtract(start, { seconds: 59 }) }
+      setup = await testRender(
+        <TasksView jobs={[job]} onRetry={async () => {}} onDiscard={async () => {}} onClose={() => {}} />,
+        { width: 140, height: 50 }
+      )
+      await interact(setup, () => {})
+      expect(setup.captureCharFrame()).toMatch(/failed\s+now/)
+
+      await interact(setup, () => {
+        vi.advanceTimersByTime(30_000)
+      })
+      expect(setup.captureCharFrame()).toMatch(/failed\s+1m ago/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   describe("when the task list changes under the cursor", () => {
     const task = (id: string) => ({ ...syncJob([step("loadRepo", "done")]), id, repoId: `acme-${id}` })
     let setJobs: (jobs: ReadonlyArray<Job>) => void = () => {}

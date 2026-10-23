@@ -580,7 +580,6 @@ export const App = ({
         <TasksView
           jobs={jobs}
           onProgressChange={onProgressChange}
-          now={DateTime.nowUnsafe()}
           onRetry={onRetryJob}
           onDiscard={onDiscardJob}
           onClose={() => setMode("list")}

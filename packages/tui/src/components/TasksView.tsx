@@ -17,11 +17,12 @@ import { DateTime } from "effect"
 import { useEffect, useRef, useState } from "react"
 import { formatAge } from "../jobView.js"
 import { colors } from "../theme/index.js"
+import { KeyHints } from "./KeyHints.js"
 
 interface TasksViewProps {
   jobs: ReadonlyArray<Job>
   onProgressChange?: (listener: (progress: ReadonlyMap<string, FileProgress>) => void) => () => void
-  now: DateTime.Utc
+  now?: DateTime.Utc
   onRetry: (jobId: string) => Promise<void>
   onDiscard: (jobId: string) => Promise<void>
   onClose: () => void
@@ -52,6 +53,9 @@ const lineId = (key: string) => `line-${key}`
 // The list takes 40% of the width (at least 40 columns); each row is the
 // selection marker, then the repo, status and age columns
 const listWidth = (terminalWidth: number) => Math.max(40, Math.floor(terminalWidth * 0.4))
+const NARROW_WIDTH = 80
+const PAGE_PADDING = 1
+const AGE_TICK_MS = 30_000
 const MARKER_WIDTH = 2
 const STATUS_WIDTH = 11 // "interrupted"
 const MIN_AGE_WIDTH = 7 // "59m ago"
@@ -66,6 +70,16 @@ const BATCH_ERROR = 3
 
 const fit = (text: string, width: number) =>
   text.length <= width ? text.padEnd(width) : `${text.slice(0, Math.max(0, width - 1))}…`
+
+const useClock = (fixed: DateTime.Utc | undefined) => {
+  const [ticking, setTicking] = useState(() => DateTime.nowUnsafe())
+  useEffect(() => {
+    if (fixed) return
+    const timer = setInterval(() => setTicking(DateTime.nowUnsafe()), AGE_TICK_MS)
+    return () => clearInterval(timer)
+  }, [fixed])
+  return fixed ?? ticking
+}
 
 const cursorIndex = (lines: ReadonlyArray<StepLine>, key: string | undefined) =>
   Math.max(0, lines.findIndex((line) => line.key === key))
@@ -121,8 +135,10 @@ function getLevelKeysText(level: number, shownError: boolean, showingBatches: bo
   return `[j/k] Step  ${canOpen ? "[l] Details  " : ""}[h] Tasks`
 }
 
-export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onClose }: TasksViewProps) => {
+export const TasksView = ({ jobs, onProgressChange, now: fixedNow, onRetry, onDiscard, onClose }: TasksViewProps) => {
   const { width } = useTerminalDimensions()
+  const now = useClock(fixedNow)
+  const narrow = width < NARROW_WIDTH
   const [selection, setSelection] = useState(() => ({ id: jobs[0]?.id, index: 0 }))
   const [levelState, setLevel] = useState(TASKS)
   const [stepKey, setStepKey] = useState<string | undefined>()
@@ -136,7 +152,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
 
   const ages = jobs.map((job) => formatAge(job.updatedAt, now))
   const ageWidth = Math.max(MIN_AGE_WIDTH, ...ages.map((age) => age.length))
-  const leftWidth = listWidth(width)
+  const leftWidth = narrow ? width - 2 * PAGE_PADDING : listWidth(width)
   const repoWidth = Math.max(
     8,
     leftWidth - BORDER_WIDTH - MARKER_WIDTH - 1 - STATUS_WIDTH - 1 - ageWidth - SCROLLBAR_WIDTH
@@ -262,7 +278,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
   )
 
   return (
-    <box style={{ flexGrow: 1, flexDirection: "column", padding: 1 }}>
+    <box style={{ flexGrow: 1, flexDirection: "column", padding: PAGE_PADDING }}>
       <box style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 1 }}>
         <text content="Tasks" style={{ fg: colors.accent.default, attributes: TextAttributes.BOLD }} />
         <text content={`${jobs.length} task${jobs.length !== 1 ? "s" : ""}`} style={{ fg: colors.text.secondary }} />
@@ -277,6 +293,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
         <box style={{ flexGrow: 1, flexDirection: "row", gap: 1 }}>
           <scrollbox
             ref={listRef}
+            visible={!narrow || level === TASKS}
             style={{
               width: leftWidth,
               flexShrink: 0,
@@ -307,7 +324,7 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
             })}
           </scrollbox>
 
-          {selected && (
+          {selected && (!narrow || level > TASKS) && (
             <box
               style={{
                 flexGrow: 1,
@@ -398,13 +415,12 @@ export const TasksView = ({ jobs, onProgressChange, now, onRetry, onDiscard, onC
           border: true,
           padding: 0,
           marginTop: 1,
-          height: 3,
           flexShrink: 0,
         }}
       >
-        <text
-          content={`${retry?.canRetry ? "[r] Retry" : "[r] Retry (unavailable)"}  [x] Discard  ${levelKeys}  [Esc/q] Close`}
-          style={{ fg: colors.text.tertiary }}
+        <KeyHints
+          text={`${retry?.canRetry ? "[r] Retry" : "[r] Retry (unavailable)"}  [x] Discard  ${levelKeys}  [Esc/q] Close`}
+          color={colors.text.tertiary}
         />
       </box>
     </box>

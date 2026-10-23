@@ -1,6 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import { colors } from "../theme/index.js"
 import { featureFlags } from "../config.js"
+import { KeyHints } from "./KeyHints.js"
 
 interface StatusBarProps {
   mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs"
@@ -111,7 +112,7 @@ export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloud
           {featureFlags.cloudSync && <text content={cloudStatus} style={{ fg: cloudColor }} />}
         </box>
       )}
-      <text content={helpText} style={{ fg: colors.text.secondary }} />
+      <KeyHints text={helpText} />
     </box>
   )
 }

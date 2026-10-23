@@ -55,4 +55,14 @@ describe("StatusBar", () => {
     expect(lineOf("[Enter] Toggle group")).toBe(message + 4)
     expect(frame).toContain("[q] Quit")
   })
+
+  it("keeps each key hint whole on one line in a narrow terminal", async () => {
+    setup = await testRender(<StatusBar mode="list" grouped />, { width: 60, height: 8 })
+    await interact(setup, () => {})
+    const frame = setup.captureCharFrame()
+
+    for (const hint of ["[Enter] Toggle group", "[S] Sync All", "[c] Copy MCP Config", "[q] Quit"]) {
+      expect(frame).toContain(hint)
+    }
+  })
 })
