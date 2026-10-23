@@ -6,7 +6,7 @@ import {
   needsReindex,
   RepobaseEngine,
   RepoNotFoundError,
-  type SearchMode
+  SearchModeSchema
 } from "@repobase/engine"
 import { reindexNotice, serverInstructions } from "./instructions.js"
 
@@ -22,7 +22,7 @@ const SearchInput = toolInput(
   Schema.Struct({
     query: Schema.String.annotate({ description: "The search query" }),
     mode: Schema.optionalKey(
-      Schema.Literals(["keyword", "semantic", "hybrid"]).annotate({
+      SearchModeSchema.annotate({
         description: "Search mode: keyword (fast text search), semantic (meaning-based), or hybrid (combines both)",
         default: "hybrid"
       })
@@ -205,7 +205,7 @@ export const makeServer = async (runtime: ManagedRuntime.ManagedRuntime<Services
         Effect.gen(function* () {
           const notice = yield* unavailableNotice(repo)
           const engine = yield* RepobaseEngine
-          const results = yield* engine.search(query, mode as SearchMode, { limit, repo, path, glob })
+          const results = yield* engine.search(query, mode, { limit, repo, path, glob })
           return {
             notice,
             results: results.map((result) => ({

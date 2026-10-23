@@ -385,6 +385,36 @@ describe("App owner grouping", () => {
   })
 })
 
+describe("App status messages", () => {
+  it("keeps a new message for its full time when an older one's timer runs out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      const onSyncRepo = vi
+        .fn<() => Promise<{ updated: boolean }>>()
+        .mockResolvedValueOnce({ updated: true })
+        .mockResolvedValueOnce({ updated: false })
+      setup = await renderApp([repo("m", "one")], () => {}, { onSyncRepo })
+      await interact(setup, () => {})
+
+      await interact(setup, () => setup?.mockInput.pressKey("s"))
+      expect(setup.captureCharFrame()).toContain("[OK] m/one updated")
+
+      const advance = (ms: number) => () => {
+        vi.advanceTimersByTime(ms)
+      }
+      await interact(setup, advance(2500))
+      await interact(setup, () => setup?.mockInput.pressKey("s"))
+      await interact(setup, advance(1000))
+      expect(setup.captureCharFrame()).toContain("m/one already up to date")
+
+      await interact(setup, advance(2500))
+      expect(setup.captureCharFrame()).not.toContain("m/one already up to date")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe("App repo list selection and refresh", () => {
   const completed = (id: string, repoId: string): Job => ({
     id,

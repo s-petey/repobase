@@ -118,9 +118,15 @@ export const App = ({
   const [exitStage, setExitStage] = useState<ExitStage>("idle")
 
   const exitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-
-  useEffect(() => () => clearTimeout(exitTimer.current), [])
+  useEffect(
+    () => () => {
+      clearTimeout(exitTimer.current)
+      clearTimeout(messageTimer.current)
+    },
+    []
+  )
 
   useEffect(() => {
     let previouslyCompleted: ReadonlySet<string> | undefined
@@ -161,8 +167,9 @@ export const App = ({
   )
 
   const showMessage = useCallback((msg: string, duration = 3000) => {
+    clearTimeout(messageTimer.current)
     setMessage(msg)
-    setTimeout(() => setMessage(undefined), duration)
+    messageTimer.current = setTimeout(() => setMessage(undefined), duration)
   }, [])
 
   const leave = useCallback((from: AppMode) => setMode((current) => (current === from ? "list" : current)), [])
