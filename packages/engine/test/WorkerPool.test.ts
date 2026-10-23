@@ -18,7 +18,32 @@ const repoRoot = path.resolve(import.meta.dirname, "../../..")
 const workerUrl = new URL("./fixtures/worker.ts", import.meta.url)
 const Settings = Layer.succeed(WorkerSettings, { embedLog: "fatal" })
 
-const PoolLayer = layerWorkerPool({ workerUrl, size: 2 }).pipe(Layer.provide(Settings))
+const POOL_SIZE = 2
+const PoolLayer = layerWorkerPool({ workerUrl, size: POOL_SIZE }).pipe(Layer.provide(Settings))
+
+const countedWorkerUrl = new URL("./fixtures/worker.ts?counted", import.meta.url)
+
+const countWorkerThreads = Effect.acquireRelease(
+  Effect.sync(() => {
+    const Original = globalThis.Worker
+    let started = 0
+    globalThis.Worker = class extends Original {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args)
+        if (String(args[0]) === countedWorkerUrl.href) started++
+      }
+    }
+    return { started: () => started, restore: () => (globalThis.Worker = Original) }
+  }),
+  (threads) => Effect.sync(threads.restore)
+)
+
+const concurrentResolveHeads = (client: WorkerClient["Service"], count: number) =>
+  Effect.forEach(
+    Array.from({ length: count }),
+    () => client.ResolveHead({ repoId: "repobase", localPath: repoRoot }),
+    { concurrency: "unbounded" }
+  )
 
 // These run real worker threads, so they use the real clock (it.live): shutting
 // down an idle worker waits on a timer that the test clock would never advance.
@@ -43,16 +68,30 @@ describe("worker pool", () => {
       expect((error as ResolveHeadFailedError).message).toContain("/nonexistent/repo")
     }).pipe(Effect.provide(PoolLayer)), 30_000)
 
-  it.live("runs concurrent requests across the pool", () =>
+})
+
+describe("worker threads behind the pools", { concurrent: false }, () => {
+  it.live("spreads concurrent requests over the job pool's threads, never more than its size", () =>
     Effect.gen(function* () {
-      const client = yield* WorkerClient
-      const results = yield* Effect.forEach(
-        Array.from({ length: 6 }),
-        () => client.ResolveHead({ repoId: "repobase", localPath: repoRoot }),
-        { concurrency: "unbounded" }
+      const threads = yield* countWorkerThreads
+      const results = yield* WorkerClient.use((client) => concurrentResolveHeads(client, 6)).pipe(
+        Effect.provide(layerWorkerPool({ workerUrl: countedWorkerUrl, size: POOL_SIZE }).pipe(Layer.provide(Settings)))
       )
+
       expect(new Set(results.map((r) => r.commit)).size).toBe(1)
-    }).pipe(Effect.provide(PoolLayer)), 30_000)
+      expect(threads.started()).toBe(POOL_SIZE)
+    }).pipe(Effect.scoped), 30_000)
+
+  it.live("serves concurrent requests from the indexing pool's fixed threads", () =>
+    Effect.gen(function* () {
+      const threads = yield* countWorkerThreads
+      const results = yield* IndexingClient.use((client) => concurrentResolveHeads(client, 4)).pipe(
+        Effect.provide(layerIndexingPool({ workerUrl: countedWorkerUrl, size: POOL_SIZE }).pipe(Layer.provide(Settings)))
+      )
+
+      expect(new Set(results.map((r) => r.commit)).size).toBe(1)
+      expect(threads.started()).toBe(POOL_SIZE)
+    }).pipe(Effect.scoped), 30_000)
 })
 
 describe("query pool", () => {
@@ -70,17 +109,4 @@ describe("query pool", () => {
     }).pipe(
       Effect.provide(layerQueryFromIndexingPool.pipe(Layer.provideMerge(layerIndexingPool({ workerUrl, size: 1 }).pipe(Layer.provide(Settings)))))
     ), 30_000)
-})
-
-describe("indexing pool", () => {
-  it.live("serves concurrent requests from its fixed set of worker threads", () =>
-    Effect.gen(function* () {
-      const indexing = yield* IndexingClient
-      const results = yield* Effect.forEach(
-        Array.from({ length: 4 }),
-        () => indexing.ResolveHead({ repoId: "repobase", localPath: repoRoot }),
-        { concurrency: "unbounded" }
-      )
-      expect(new Set(results.map((r) => r.commit)).size).toBe(1)
-    }).pipe(Effect.provide(layerIndexingPool({ workerUrl, size: 2 }).pipe(Layer.provide(Settings)))), 30_000)
 })
