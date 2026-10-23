@@ -638,6 +638,28 @@ describe("Indexer", () => {
       })
     )
 
+    it.effect("numbers lines like an editor: no line after a final newline, and no \\r on CRLF lines", () =>
+      Effect.gen(function* () {
+        const reposDir = tempDir("repos")
+        const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir, embed: fakeEmbed })
+        const repoPath = path.join(reposDir, REPO)
+        writeFile(repoPath, "unix.ts", "first\nlast\n")
+        writeFile(repoPath, "windows.ts", "first\r\nlast\r\n")
+        yield* indexer.indexRepo(REPO, repoPath)
+
+        const results = yield* indexer.grepPattern("last$", { repo: REPO, contextBefore: 1, contextAfter: 1 })
+
+        const lines = [
+          { lineNumber: 1, content: "first", isMatch: false },
+          { lineNumber: 2, content: "last", isMatch: true }
+        ]
+        expect([...results].sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+          { repo: REPO, path: "unix.ts", matches: lines, matchCount: 1 },
+          { repo: REPO, path: "windows.ts", matches: lines, matchCount: 1 }
+        ])
+      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+    )
+
     it.effect("limits results to a directory, not siblings sharing its prefix", () =>
       Effect.gen(function* () {
         expect(yield* grepPaths({ repo: REPO, path: "src/editor/" })).toEqual([

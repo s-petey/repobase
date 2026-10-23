@@ -458,6 +458,8 @@ const GREP_READ_CONCURRENCY = 16
 // Bigger files are mostly data, fixtures or generated code, and slow to embed
 export const MAX_INDEXED_FILE_BYTES = 1024 * 1024
 
+const withoutCarriageReturn = (line: string) => (line.endsWith("\r") ? line.slice(0, -1) : line)
+
 const NOT_FOUND = "NotFound" satisfies PlatformError.SystemErrorTag
 
 const goneAsNone = <A>(effect: Effect.Effect<Option.Option<A>, PlatformError.PlatformError>) =>
@@ -1468,7 +1470,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         const handleFile = (file: { repo: string; path: string }, content: Option.Option<string>) => {
           if (Option.isNone(content)) return
 
-          const lines = content.value.split("\n")
+          const lines = splitLines(content.value).map(withoutCarriageReturn)
           const matchingLineNums = new Set<number>()
 
           // Find all matching lines
