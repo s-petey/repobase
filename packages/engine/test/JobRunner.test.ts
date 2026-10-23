@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@effect/vitest"
-import { DateTime, Deferred, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { spawnSync } from "node:child_process"
 import {
@@ -445,6 +445,59 @@ describe("JobRunner", () => {
       yield* gate.release
       expect((yield* runner.await(first.id)).status).toBe("completed")
       // Once it's done, the repo is free again
+      expect((yield* runner.await((yield* runner.start(syncRepo())).id)).status).toBe("completed")
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
+  it.effect("frees the repo when a start is interrupted before its job launches", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      const neverDone = yield* Deferred.make<void>()
+      const starting = yield* Effect.forkChild(runner.start(syncRepo(), { prepare: Deferred.await(neverDone) }))
+      yield* Effect.yieldNow
+
+      yield* Fiber.interrupt(starting)
+
+      expect((yield* runner.jobs).length).toBe(0)
+      expect((yield* runner.await((yield* runner.start(syncRepo())).id)).status).toBe("completed")
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
+  it.effect("frees the repo when a start's prepare fails or dies", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+
+      const failed = yield* Effect.flip(runner.start(syncRepo(), { prepare: Effect.fail(cloneFailure()) }))
+      expect(failed).toBeInstanceOf(CloneFailedError)
+      const died = yield* Effect.exit(runner.start(syncRepo(), { prepare: Effect.die(new Error("boom")) }))
+      expect(Exit.isFailure(died)).toBe(true)
+
+      expect((yield* runner.await((yield* runner.start(syncRepo())).id)).status).toBe("completed")
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
+  it.effect("holds the repo for the whole of whileClaimed, refusing jobs meanwhile", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      const gate = yield* script.block("fetch")
+      const sync = yield* runner.start(syncRepo())
+      expect(yield* Effect.flip(runner.whileClaimed("acme-widgets", Effect.void))).toBeInstanceOf(JobAlreadyRunningError)
+      yield* gate.release
+      yield* runner.await(sync.id)
+
+      const holding = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const claimed = yield* Effect.forkChild(
+        runner.whileClaimed("acme-widgets", Deferred.succeed(holding, undefined).pipe(Effect.andThen(Deferred.await(release))))
+      )
+      yield* Deferred.await(holding)
+      expect(yield* Effect.flip(runner.start(syncRepo()))).toBeInstanceOf(JobAlreadyRunningError)
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(claimed)
       expect((yield* runner.await((yield* runner.start(syncRepo())).id)).status).toBe("completed")
     }).pipe(Effect.provide(runnerLayer(script.definitions)))
   })

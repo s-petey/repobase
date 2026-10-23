@@ -154,8 +154,12 @@ export interface JobRunnerService {
   // Every known job, newest first, updated as steps run
   readonly jobs: Effect.Effect<ReadonlyArray<Job>>
   readonly changes: Stream.Stream<ReadonlyArray<Job>>
-  // Create a job and run it in the background
-  readonly start: (job: NewJob) => Effect.Effect<Job, JobRunnerError>
+  // Create a job and run it in the background; `prepare` runs first, while the repo is already claimed for it
+  readonly start: <E = never, R = never>(
+    job: NewJob,
+    options?: { readonly prepare?: Effect.Effect<void, E, R> }
+  ) => Effect.Effect<Job, JobRunnerError | E, R>
+  readonly whileClaimed: <A, E, R>(repoId: string, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | JobAlreadyRunningError, R>
   // Re-run a failed or interrupted job from the steps that didn't finish
   readonly retry: (jobId: string) => Effect.Effect<Job, JobRunnerError>
   readonly supersede: (jobId: string, by: string) => Effect.Effect<Job, JobRunnerError>
@@ -174,7 +178,9 @@ export class JobRunner extends Context.Service<JobRunner, JobRunnerService>()(
 // ---------------------------------------------------------------------------
 // Implementation
 
-const initialSteps = <J extends Job>(definition: JobDefinition<J, any>): ReadonlyArray<Step> =>
+const initialSteps = (definition: {
+  readonly steps: ReadonlyArray<{ readonly name: string; readonly runsOn: StepRunsOn }>
+}): ReadonlyArray<Step> =>
   definition.steps.map((def) => ({
     key: def.name,
     name: def.name,
@@ -279,6 +285,17 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
 
     const releaseRepo = (repoId: string, claim: symbol) =>
       dropClaim(repoId, claim).pipe(Effect.flatMap((dropped) => (dropped ? store.releaseRepo(repoId) : Effect.void)))
+
+    // Uninterruptible until the job's fiber takes the claim over, so a failure or interrupt in between releases it
+    const withClaim = <A, E, R2>(
+      repoId: string,
+      use: (claim: symbol, restore: <X, EX, RX>(effect: Effect.Effect<X, EX, RX>) => Effect.Effect<X, EX, RX>) => Effect.Effect<A, E, R2>
+    ) =>
+      Effect.uninterruptibleMask((restore) =>
+        claimRepo(repoId).pipe(
+          Effect.flatMap((claim) => use(claim, restore).pipe(Effect.onError(() => releaseRepo(repoId, claim))))
+        )
+      )
 
     const sorted = (jobs: ReadonlyMap<string, Job>) =>
       [...jobs.values()].sort((a, b) => DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt))
@@ -573,32 +590,35 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
             root: true,
             attributes: { "job.id": job.id, "job.repo": job.repoId, "job.kind": job.kind }
           }),
-          Effect.ensuring(release)
+          Effect.ensuring(release),
+          Effect.interruptible
         )
       ).pipe(Effect.asVoid)
     }
 
-    const start: JobRunnerService["start"] = (input) =>
-      Effect.gen(function* () {
-        const claim = yield* claimRepo(input.repoId)
-        const now = yield* DateTime.now
-        const definition = definitions[input.kind] as unknown as JobDefinition<Job, R>
-        const job = {
-          id: yield* makeJobId(input.kind, input.repoId),
-          kind: input.kind,
-          repoId: input.repoId,
-          payload: input.payload,
-          status: "running",
-          createdAt: now,
-          updatedAt: now,
-          owner,
-          steps: initialSteps(definition)
-        } as Job
-        yield* publish(job)
-        yield* Effect.logInfo(`Started ${job.kind} for ${job.repoId} (${job.id})`)
-        yield* launch(job, claim)
-        return job
-      })
+    const start: JobRunnerService["start"] = (input, options) =>
+      withClaim(input.repoId, (claim, restore) =>
+        Effect.gen(function* () {
+          if (options?.prepare) yield* restore(options.prepare)
+          const now = yield* DateTime.now
+          const job: Job = {
+            ...input,
+            id: yield* makeJobId(input.kind, input.repoId),
+            status: "running",
+            createdAt: now,
+            updatedAt: now,
+            owner,
+            steps: initialSteps(definitions[input.kind])
+          }
+          yield* publish(job)
+          yield* Effect.logInfo(`Started ${job.kind} for ${job.repoId} (${job.id})`)
+          yield* launch(job, claim)
+          return job
+        })
+      )
+
+    const whileClaimed: JobRunnerService["whileClaimed"] = (repoId, effect) =>
+      withClaim(repoId, (claim, restore) => restore(effect).pipe(Effect.ensuring(releaseRepo(repoId, claim))))
 
     const findJob = (jobId: string) =>
       current(jobId).pipe(
@@ -626,24 +646,27 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
             message: `Step ${permanent.key} can't succeed on retry: ${permanent.error.message}`
           })
         }
-        const claim = yield* claimRepo(job.repoId)
-        const from =job.steps.find((s) => s.status !== "done" && s.status !== "skipped")
+        const from = job.steps.find((s) => s.status !== "done" && s.status !== "skipped")
         const items = job.steps.filter((s) => s.key !== s.name)
         const itemsDone = items.filter((s) => s.status === "done").length
-        yield* Effect.logInfo(
-          `Resuming ${job.kind} for ${job.repoId} at ${from?.key ?? "the end"}${
-            items.length > 0 ? ` (${itemsDone}/${items.length} ${items[0].name} done)` : ""
-          }`
+        return yield* withClaim(job.repoId, (claim) =>
+          Effect.gen(function* () {
+            yield* Effect.logInfo(
+              `Resuming ${job.kind} for ${job.repoId} at ${from?.key ?? "the end"}${
+                items.length > 0 ? ` (${itemsDone}/${items.length} ${items[0].name} done)` : ""
+              }`
+            )
+            const resumed = yield* updateJob(jobId, (j, now) => ({
+              ...j,
+              createdAt: now,
+              status: "running",
+              owner,
+              steps: j.steps.map((s) => (unfinished(s) ? { ...s, status: "pending" as const } : s))
+            }))
+            yield* launch(resumed, claim)
+            return resumed
+          })
         )
-        const resumed = yield* updateJob(jobId, (j, now) => ({
-          ...j,
-          createdAt: now,
-          status: "running",
-          owner,
-          steps: j.steps.map((s) => (unfinished(s) ? { ...s, status: "pending" as const } : s))
-        }))
-        yield* launch(resumed, claim)
-        return resumed
       })
 
     const supersede: JobRunnerService["supersede"] = (jobId, by) =>
@@ -747,6 +770,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       jobs: SubscriptionRef.get(state).pipe(Effect.map(sorted)),
       changes: SubscriptionRef.changes(state).pipe(Stream.map(sorted)),
       start,
+      whileClaimed,
       retry,
       supersede,
       discard,
