@@ -109,14 +109,14 @@ export const make = Effect.gen(function* () {
     clone: (url, path, mode) => {
       if (mode?._tag === "pinned") {
         // --branch takes no commit SHA, so fetch the ref on its own
-        return run("clone", "clone", "--depth", "1", "--no-checkout", url, path).pipe(
-          Effect.andThen(run("fetch", "-C", path, "fetch", "--depth", "1", "origin", mode.ref)),
+        return run("clone", "clone", "--depth", "1", "--no-checkout", "--", url, path).pipe(
+          Effect.andThen(run("fetch", "-C", path, "fetch", "--depth", "1", "--", "origin", mode.ref)),
           Effect.andThen(run("checkout", "-C", path, "checkout", "--detach", "FETCH_HEAD")),
           Effect.asVoid
         )
       }
       const branch = mode?._tag === "tracking" ? ["--branch", mode.branch] : []
-      return run("clone", "clone", "--depth", "1", ...branch, url, path).pipe(Effect.asVoid)
+      return run("clone", "clone", "--depth", "1", ...branch, "--", url, path).pipe(Effect.asVoid)
     },
 
     fetch: (path) => run("fetch", "-C", path, "fetch", "origin").pipe(Effect.asVoid),
@@ -138,7 +138,7 @@ export const make = Effect.gen(function* () {
       ),
 
     lsRemote: (remote, ref) =>
-      run("ls-remote", "ls-remote", remote, ref).pipe(
+      run("ls-remote", "ls-remote", "--", remote, ref).pipe(
         Effect.map((stdout) => {
           const commit = stdout.split("\t")[0].trim()
           return commit === "" ? Option.none() : Option.some(commit)

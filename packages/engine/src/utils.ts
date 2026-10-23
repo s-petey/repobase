@@ -5,9 +5,13 @@ export function deriveRepoId(url: string): string {
   return `${owner}/${name}`
 }
 
+const GITHUB_URL_PATTERN = /github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/
+// An owner or name like this would make the id's folder the repos folder itself, or one outside it
+const DOT_SEGMENTS = new Set([".", ".."])
+
 export function extractRepoParts(url: string): { owner: string; name: string } {
-  const match = url.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/)
-  if (!match) {
+  const match = url.match(GITHUB_URL_PATTERN)
+  if (!match || DOT_SEGMENTS.has(match[1]) || DOT_SEGMENTS.has(match[2])) {
     throw new Error(`Invalid GitHub URL: ${url}`)
   }
   return { owner: match[1], name: match[2] }

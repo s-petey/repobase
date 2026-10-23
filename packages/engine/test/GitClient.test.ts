@@ -16,18 +16,18 @@ interface MockCommand {
 }
 
 const mockCommands: Record<string, MockCommand> = {
-  "git clone --depth 1 https://github.com/test/repo /tmp/repo": { exitCode: 0 },
-  "git clone --depth 1 --branch dev https://github.com/test/repo /tmp/repo": { exitCode: 0 },
-  "git clone --depth 1 --no-checkout https://github.com/test/repo /tmp/repo": { exitCode: 0 },
-  "git -C /tmp/repo fetch --depth 1 origin v1.0.0": { exitCode: 0 },
+  "git clone --depth 1 -- https://github.com/test/repo /tmp/repo": { exitCode: 0 },
+  "git clone --depth 1 --branch dev -- https://github.com/test/repo /tmp/repo": { exitCode: 0 },
+  "git clone --depth 1 --no-checkout -- https://github.com/test/repo /tmp/repo": { exitCode: 0 },
+  "git -C /tmp/repo fetch --depth 1 -- origin v1.0.0": { exitCode: 0 },
   "git -C /tmp/repo checkout --detach FETCH_HEAD": { exitCode: 0 },
   "git -C /tmp/repo fetch origin": { exitCode: 0 },
   "git -C /tmp/repo rev-parse HEAD": { stdout: "abc123def456\n" },
   "git -C /tmp/repo rev-parse --abbrev-ref HEAD": { stdout: "master\n" },
   "git -C /tmp/repo show -s --format=%ct abc123": { stdout: "1767323045\n" },
   "git -C /tmp/repo rev-parse origin/main": { stdout: "xyz789abc\n" },
-  "git ls-remote https://github.com/test/repo refs/heads/main": { stdout: "xyz789abc\trefs/heads/main\n" },
-  "git ls-remote https://github.com/test/repo refs/heads/gone": { stdout: "" },
+  "git ls-remote -- https://github.com/test/repo refs/heads/main": { stdout: "xyz789abc\trefs/heads/main\n" },
+  "git ls-remote -- https://github.com/test/repo refs/heads/gone": { stdout: "" },
   "git -C /tmp/repo reset --hard abc123": { exitCode: 0 },
   "git -C /tmp/repo checkout v1.0.0": { exitCode: 0 },
   "git -C /tmp/repo diff --name-status --no-renames -z abc..xyz": {
@@ -36,11 +36,11 @@ const mockCommands: Record<string, MockCommand> = {
   "git -C /tmp/repo diff --name-status --no-renames -z abc..symlinked": { stdout: "T\0now-a-link.ts\0" },
   "git -C /tmp/repo diff --name-status --no-renames -z abc..unmerged": { stdout: "M\0ok.ts\0U\0conflict.ts\0" },
   // Failure cases
-  "git clone --depth 1 https://github.com/invalid/repo /tmp/invalid": {
+  "git clone --depth 1 -- https://github.com/invalid/repo /tmp/invalid": {
     exitCode: 128,
     stderr: "Cloning into '/tmp/invalid'...\nfatal: repository 'https://github.com/invalid/repo/' not found\n"
   },
-  "git clone --depth 1 https://github.com/test/repo /tmp/no-git": {
+  "git clone --depth 1 -- https://github.com/test/repo /tmp/no-git": {
     error: "spawn git ENOENT"
   },
   "git -C /tmp/missing rev-parse HEAD": {

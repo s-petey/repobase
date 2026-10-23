@@ -68,14 +68,23 @@ describe("CLI commands", () => {
     )
   })
 
-  it("fails on a URL that isn't a GitHub repository", () =>
-    cli((run) =>
-      Effect.gen(function* () {
-        const result = yield* run(add("/tmp/not-a-repo"))
-        expect(result.exitCode).toBe(FAILED)
-        expect(result.err).toContain("isn't a GitHub repository URL")
-      })
-    ))
+  it.each([
+    "/tmp/not-a-repo",
+    "https://github.com/acme/..",
+    "https://github.com/acme/.",
+    "https://github.com/../widgets",
+    "https://github.com/./widgets"
+  ])(
+    "fails on %s: not a GitHub repository, or not a folder inside the repos root",
+    (url) =>
+      cli((run) =>
+        Effect.gen(function* () {
+          const result = yield* run(add(url))
+          expect(result.exitCode).toBe(FAILED)
+          expect(result.err).toContain("isn't a GitHub repository URL")
+        })
+      )
+  )
 
   it("fails to sync, re-index or remove a repo that isn't added", () =>
     cli((run) =>
