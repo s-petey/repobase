@@ -1,4 +1,4 @@
-import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, PlatformError, Schedule, Semaphore, Stream, SubscriptionRef } from "effect"
+import { Array as Arr, Clock, Context, DateTime, Duration, Effect, FileSystem, Layer, Option, PlatformError, Schedule, Schema, Semaphore, Stream, SubscriptionRef } from "effect"
 import { IndexError, SearchError, FileNotFoundError, InvalidPatternError } from "../errors.js"
 import type {
   FileChange,
@@ -17,6 +17,7 @@ import { globToRegex } from "../glob.js"
 import { chunkLines, splitLines } from "../chunk.js"
 import { EMBED_LOG_ENV, type EmbedLog, hostEmbedLog } from "../embedLog.js"
 import { Connection, Table } from "@lancedb/lancedb"
+import type { FeatureExtractionPipeline } from "@huggingface/transformers"
 
 // Configuration
 const INDEX_DIR = `${os.homedir()}/.repobase/index`
@@ -423,6 +424,31 @@ function validatePath(filePath: string): Effect.Effect<void, IndexError> {
  */
 const sqlString = (value: string) => `'${value.replaceAll("'", "''")}'`
 
+const decodeRows =
+  <S extends Schema.Top>(row: S) =>
+  (rows: unknown) =>
+    Schema.decodeUnknownEffect(Schema.Array(row))(rows).pipe(
+      Effect.mapError((e) => new IndexError({ operation: "decodeRows", message: e.message }))
+    )
+
+const asSearchError = (e: IndexError) => new SearchError({ message: e.message })
+
+const PathRow = Schema.Struct({ path: Schema.String })
+const HashRow = Schema.Struct({ path: Schema.String, hash: Schema.String })
+const RepoRow = Schema.Struct({ repo: Schema.String })
+const FileRow = Schema.Struct({ path: Schema.String, filename: Schema.String, size_bytes: Schema.Number, mtime_ms: Schema.Number })
+const RepoFileRow = Schema.Struct({ ...RepoRow.fields, ...FileRow.fields })
+const GrepRow = Schema.Struct({ repo: Schema.String, path: Schema.String, filename: Schema.String })
+const SearchRow = Schema.Struct({
+  ...GrepRow.fields,
+  text: Schema.String,
+  start_line: Schema.Number,
+  end_line: Schema.Number
+})
+const KeywordRow = Schema.Struct({ ...SearchRow.fields, _score: Schema.optional(Schema.Number) })
+const SemanticRow = Schema.Struct({ ...SearchRow.fields, _distance: Schema.optional(Schema.Number) })
+const HybridRow = Schema.Struct({ ...SearchRow.fields, _relevanceScore: Schema.optional(Schema.Number) })
+
 /**
  * LanceDB filter for a file, or every file under a directory (so `src/a`
  * doesn't also match `src/ab`)
@@ -479,22 +505,21 @@ const applySearchFilters = <Q extends { where(predicate: string): Q }>(search: Q
 }
 
 /** Columns a search reads from each chunk, besides its score */
-const SEARCH_COLUMNS = ["repo", "path", "filename", "text", "start_line", "end_line"]
+const SEARCH_COLUMNS = Object.keys(SearchRow.fields)
 
 /**
  * One result per file from chunks ordered best first: each file's first (best)
  * chunk, up to `limit` files
  */
-const bestChunkPerFile = (
-  rows: unknown,
-  score: (row: Record<string, number>) => number,
+const bestChunkPerFile = <R extends typeof SearchRow.Type>(
+  rows: ReadonlyArray<R>,
+  score: (row: R) => number,
   query: string,
   limit: number
 ): Array<SearchResult> => {
   const seen = new Set<string>()
   const results: Array<SearchResult> = []
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const row of rows as ReadonlyArray<any>) {
+  for (const row of rows) {
     const key = `${row.repo}\0${row.path}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -572,12 +597,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const config = { ...options, indexDir: options.indexDir ?? INDEX_DIR, reposDir: options.reposDir ?? getReposDir() }
 
   // Initialize LanceDB connection lazily
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let db: Connection | null = null
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let table: Table | null = null
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let embedder: any = null
+  let embedder: FeatureExtractionPipeline | null = null
 
   const getDb = Effect.gen(function* () {
     if (db) return db
@@ -697,8 +719,10 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         try: () => model(text.trim() || " ", { pooling: "mean", normalize: true }),
         catch: (e) => new IndexError({ operation: "embed", message: `Failed to embed text: ${e}` })
       })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return Array.from((output as any).data as Float32Array)
+      if (!(output.data instanceof Float32Array)) {
+        return yield* new IndexError({ operation: "embed", message: `The model returned ${output.type} embeddings, not float32` })
+      }
+      return Array.from(output.data)
     })
 
   // Counts one line's tokens for chunking, without the model's special tokens
@@ -740,15 +764,14 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
         Effect.mapError((e) => new IndexError({ operation: "planIndex.queryExisting", message: e.message, path: e.path }))
       )
       const existing = yield* Effect.tryPromise({
-        try: () =>
-          tbl
-            .query()
-            .where(`repo = ${sqlString(repoId)} AND ${FIRST_CHUNK}`)
-            .select(["path", "hash"])
-            .toArray() as Promise<Array<{ path: string; hash: string }>>,
+        try: () => tbl
+          .query()
+          .where(`repo = ${sqlString(repoId)} AND ${FIRST_CHUNK}`)
+          .select(["path", "hash"])
+          .toArray(),
         catch: (e) =>
           new IndexError({ operation: "planIndex.queryExisting", message: `Failed to query existing: ${e}` })
-      })
+      }).pipe(Effect.flatMap(decodeRows(HashRow)))
       return new Map(existing.map((r) => [r.path, r.hash]))
     })
 
@@ -1114,13 +1137,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
       // Select scores explicitly: LanceDB warns (on stderr, over the TUI) when they're implied
       const results = yield* Effect.tryPromise({
-        try: () =>
-          search
-            .select([...SEARCH_COLUMNS, "_score"])
-            .limit(limit * CHUNKS_PER_RESULT)
-            .toArray(),
+        try: () => search
+          .select([...SEARCH_COLUMNS, "_score"])
+          .limit(limit * CHUNKS_PER_RESULT)
+          .toArray(),
         catch: (e) => new SearchError({ message: `Keyword search failed: ${e}` })
-      })
+      }).pipe(Effect.flatMap((rows) => decodeRows(KeywordRow)(rows).pipe(Effect.mapError(asSearchError))))
 
       return bestChunkPerFile(results, (r) => r._score ?? 1, query, limit)
     }).pipe(traceSearch("keyword", query, options))
@@ -1139,13 +1161,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       const search = applySearchFilters(tbl.vectorSearch(queryVector).column("vector"), options)
 
       const results = yield* Effect.tryPromise({
-        try: () =>
-          search
-            .select([...SEARCH_COLUMNS, "_distance"])
-            .limit(limit * CHUNKS_PER_RESULT)
-            .toArray(),
+        try: () => search
+          .select([...SEARCH_COLUMNS, "_distance"])
+          .limit(limit * CHUNKS_PER_RESULT)
+          .toArray(),
         catch: (e) => new SearchError({ message: `Semantic search failed: ${e}` })
-      })
+      }).pipe(Effect.flatMap((rows) => decodeRows(SemanticRow)(rows).pipe(Effect.mapError(asSearchError))))
 
       return bestChunkPerFile(results, (r) => 1 / (1 + (r._distance ?? 0)), query, limit)
     }).pipe(traceSearch("semantic", query, options))
@@ -1183,13 +1204,12 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       )
 
       const results = yield* Effect.tryPromise({
-        try: () =>
-          search
-            .select(SEARCH_COLUMNS)
-            .limit(limit * CHUNKS_PER_RESULT)
-            .toArray(),
+        try: () => search
+          .select(SEARCH_COLUMNS)
+          .limit(limit * CHUNKS_PER_RESULT)
+          .toArray(),
         catch: (e) => new SearchError({ message: `Hybrid search failed: ${e}` })
-      })
+      }).pipe(Effect.flatMap((rows) => decodeRows(HybridRow)(rows).pipe(Effect.mapError(asSearchError))))
 
       return bestChunkPerFile(results, (r) => r._relevanceScore ?? 1, query, limit)
     }).pipe(traceSearch("hybrid", query, options))
@@ -1203,15 +1223,13 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       if (!repo) {
         // List all repositories: the repo of every file, with no limit, so none drops out
         const results = yield* Effect.tryPromise({
-          try: () =>
-            tbl
-              .query()
-              .where(FIRST_CHUNK)
-              .select(["repo"])
-              .toArray() as Promise<Array<{ repo: string }>>,
-          catch: (e) =>
-            new IndexError({ operation: "listFiles", message: `${e}` })
-        })
+          try: () => tbl
+            .query()
+            .where(FIRST_CHUNK)
+            .select(["repo"])
+            .toArray(),
+          catch: (e) => new IndexError({ operation: "listFiles", message: `${e}` })
+        }).pipe(Effect.flatMap(decodeRows(RepoRow)))
 
         const uniqueRepos = [...new Set(results.map((r) => r.repo))]
         return uniqueRepos.map(
@@ -1237,16 +1255,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             .query()
             .where(`repo = ${sqlString(repo)} AND starts_with(path, ${sqlString(searchPath)}) AND ${FIRST_CHUNK}`)
             .select(["path", "filename", "size_bytes", "mtime_ms"])
-            .toArray() as Promise<
-            Array<{
-              path: string
-              filename: string
-              size_bytes: number
-              mtime_ms: number
-            }>
-          >,
+            .toArray(),
         catch: (e) => new IndexError({ operation: "listFiles", message: `${e}` })
-      })
+      }).pipe(Effect.flatMap(decodeRows(FileRow)))
 
       // Extract immediate children (files and subdirectories)
       const entries = new Map<string, FileInfo>()
@@ -1304,17 +1315,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             .query()
             .where([...where, FIRST_CHUNK].join(" AND "))
             .select(["repo", "path", "filename", "size_bytes", "mtime_ms"])
-            .toArray() as Promise<
-            Array<{
-              repo: string
-              path: string
-              filename: string
-              size_bytes: number
-              mtime_ms: number
-            }>
-          >,
+            .toArray(),
         catch: (e) => new IndexError({ operation: "globFiles", message: `${e}` })
-      })
+      }).pipe(Effect.flatMap(decodeRows(RepoFileRow)))
 
       // Apply glob pattern matching
       const matched = allFiles.filter((file) => matchesGlob(file, pattern))
@@ -1350,9 +1353,9 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
             .where(`repo = ${sqlString(repo)} AND path = ${sqlString(filePath)} AND ${FIRST_CHUNK}`)
             .select(["path"])
             .limit(1)
-            .toArray() as Promise<Array<{ path: string }>>,
+            .toArray(),
         catch: (e) => new IndexError({ operation: "readFile", message: `${e}` })
-      })
+      }).pipe(Effect.flatMap(decodeRows(PathRow)))
 
       if (indexed.length === 0) {
         return yield* Effect.fail(
@@ -1434,13 +1437,14 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       if (base) where.push(pathFilter(base))
 
       const indexed = yield* Effect.tryPromise({
-        try: () =>
-          tbl.query().where([...where, FIRST_CHUNK].join(" AND ")).select(["repo", "path", "filename"]).toArray() as Promise<
-            Array<{ repo: string; path: string; filename: string }>
-          >,
-        catch: (e) =>
-          new IndexError({ operation: "grepPattern", message: `${e}` })
-      }).pipe(Effect.withSpan("grep.query"))
+        try: () => tbl
+          .query()
+          .where([...where, FIRST_CHUNK]
+            .join(" AND "))
+          .select(["repo", "path", "filename"])
+          .toArray(),
+        catch: (e) => new IndexError({ operation: "grepPattern", message: `${e}` })
+      }).pipe(Effect.flatMap(decodeRows(GrepRow)), Effect.withSpan("grep.query"))
 
       const files = indexed.filter(
         (file) =>

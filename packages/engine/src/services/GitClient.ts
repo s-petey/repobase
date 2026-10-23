@@ -48,6 +48,15 @@ const toGitError =
           : String(error)
     })
 
+// A type change (e.g. a file becoming a symlink) is a modification, so the file is
+// re-read. git reports the other statuses (U, X) only for unmerged or broken trees.
+const DIFF_STATUSES = new Map<string, FileChange["status"]>([
+  ["A", "A"],
+  ["M", "M"],
+  ["D", "D"],
+  ["T", "M"]
+])
+
 /**
  * Create the GitClient service implementation
  */
@@ -140,7 +149,7 @@ export const make = Effect.gen(function* () {
 
     checkout: (path, ref) => run("checkout", "-C", path, "checkout", ref).pipe(Effect.asVoid),
 
-    // --no-renames reports a rename as D + A, so every change is one of A/M/D.
+    // --no-renames reports a rename as D + A.
     // -z keeps paths unquoted: without it git quotes non-ASCII paths.
     diffNameStatus: (path, fromCommit, toCommit) =>
       run(
@@ -153,14 +162,20 @@ export const make = Effect.gen(function* () {
         "-z",
         `${fromCommit}..${toCommit}`
       ).pipe(
-        Effect.map((stdout) => {
+        Effect.flatMap((stdout) => {
           // status NUL path NUL, repeated
           const fields = stdout.split("\0")
           const changes: FileChange[] = []
           for (let i = 0; i + 1 < fields.length; i += 2) {
-            changes.push({ status: fields[i] as "A" | "M" | "D", path: fields[i + 1] })
+            const status = DIFF_STATUSES.get(fields[i])
+            if (status === undefined) {
+              return Effect.fail(
+                new GitError({ command: "diff", message: `Unexpected status ${fields[i]} for ${fields[i + 1]}` })
+              )
+            }
+            changes.push({ status, path: fields[i + 1] })
           }
-          return changes
+          return Effect.succeed(changes)
         })
       )
   })

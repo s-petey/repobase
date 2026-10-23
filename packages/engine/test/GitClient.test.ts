@@ -33,6 +33,8 @@ const mockCommands: Record<string, MockCommand> = {
   "git -C /tmp/repo diff --name-status --no-renames -z abc..xyz": {
     stdout: "A\0new-file.ts\0M\0docs/café.md\0D\0has\ttab.ts\0"
   },
+  "git -C /tmp/repo diff --name-status --no-renames -z abc..symlinked": { stdout: "T\0now-a-link.ts\0" },
+  "git -C /tmp/repo diff --name-status --no-renames -z abc..unmerged": { stdout: "M\0ok.ts\0U\0conflict.ts\0" },
   // Failure cases
   "git clone --depth 1 https://github.com/invalid/repo /tmp/invalid": {
     exitCode: 128,
@@ -299,6 +301,24 @@ describe("GitClient", () => {
           { status: "M", path: "docs/café.md" },
           { status: "D", path: "has\ttab.ts" }
         ])
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("reports a type change, such as a file becoming a symlink, as a modification", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        expect(yield* git.diffNameStatus("/tmp/repo", "abc", "symlinked")).toEqual([
+          { status: "M", path: "now-a-link.ts" }
+        ])
+      }).pipe(Effect.provide(TestGitClientLayer))
+    )
+
+    it.effect("fails on a status it doesn't know, rather than passing it on", () =>
+      Effect.gen(function* () {
+        const git = yield* GitClient
+        const error = yield* expectGitError(git.diffNameStatus("/tmp/repo", "abc", "unmerged"))
+        expect(error.command).toBe("diff")
+        expect(error.message).toBe("Unexpected status U for conflict.ts")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
 
