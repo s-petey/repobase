@@ -1,8 +1,17 @@
 import { BunServices } from "@effect/platform-bun"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
-import { GitClientLayer, IndexerLayerWith, RepobaseEngineLayer, RepoStore, type RepoStoreData } from "@repobase/engine"
-import { Effect, Layer, ManagedRuntime, Option, Ref } from "effect"
+import {
+  CURRENT_INDEX_FORMAT,
+  GitClientLayer,
+  Indexer,
+  IndexerLayerWith,
+  RepobaseEngineLayer,
+  RepoStore,
+  type RepoStoreData,
+  trackingMode
+} from "@repobase/engine"
+import { DateTime, Effect, Layer, ManagedRuntime, Option, Predicate, Ref } from "effect"
 import * as nodeFs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -37,16 +46,52 @@ afterEach(async () => {
   close = undefined
 })
 
-const connect = async () => {
+const REPO = "acme/widgets"
+
+const FILES = {
+  "src/math.ts": "export const addNumbers = (a: number, b: number) => a + b\n// TODO: handle overflow\n",
+  "src/greet.ts": "export const greet = (name: string) => `hello ${name}`\n",
+  "README.md": "# Widgets\nA small library of widgets.\n"
+}
+
+const indexFixtureRepo = (reposDir: string) =>
+  Effect.gen(function* () {
+    const localPath = path.join(reposDir, REPO)
+    for (const [file, contents] of Object.entries(FILES)) {
+      nodeFs.mkdirSync(path.dirname(path.join(localPath, file)), { recursive: true })
+      nodeFs.writeFileSync(path.join(localPath, file), contents)
+    }
+    const addedAt = yield* DateTime.now
+    yield* RepoStore.use((store) =>
+      store.addRepo({
+        id: REPO,
+        url: `https://github.com/${REPO}`,
+        localPath,
+        mode: trackingMode("main"),
+        lastSyncedCommit: Option.some("abc123"),
+        lastSyncedAt: Option.some(addedAt),
+        addedAt,
+        cloudEnabled: false,
+        lastPushedAt: Option.none(),
+        lastPushedCommit: Option.none(),
+        indexFormat: CURRENT_INDEX_FORMAT
+      })
+    )
+    yield* Indexer.use((indexer) => indexer.indexRepo(REPO, localPath))
+  })
+
+const connect = async (options: { readonly indexed?: boolean } = {}) => {
   const indexDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), "repobase-mcp-index-"))
+  const reposDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), "repobase-mcp-repos-"))
   const runtime = ManagedRuntime.make(
     RepobaseEngineLayer.pipe(
       Layer.provideMerge(
-        Layer.mergeAll(GitClientLayer, MemoryRepoStore, IndexerLayerWith({ indexDir, embed: fakeEmbed }))
+        Layer.mergeAll(GitClientLayer, MemoryRepoStore, IndexerLayerWith({ indexDir, reposDir, embed: fakeEmbed }))
       ),
       Layer.provide(BunServices.layer)
     )
   )
+  if (options.indexed) await runtime.runPromise(indexFixtureRepo(reposDir))
   const server = await makeServer(runtime)
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
   await server.connect(serverSide)
@@ -133,5 +178,82 @@ describe("repobase MCP server", () => {
     const grep = await client.callTool({ name: "grep", arguments: { pattern: "anything" } })
     expect(grep.isError).toBeFalsy()
     expect(grep.content).toEqual([{ type: "text", text: "[]" }])
+  })
+})
+
+describe("repobase MCP server tools on an indexed repo", () => {
+  const call = async (client: Client, name: string, args: Record<string, unknown>) => {
+    const result = await client.callTool({ name, arguments: args })
+    expect(result.isError).toBeFalsy()
+    const block = Array.isArray(result.content) ? result.content[0] : undefined
+    if (!Predicate.hasProperty(block, "text") || !Predicate.isString(block.text)) {
+      throw new Error(`${name} returned no text block`)
+    }
+    return JSON.parse(block.text)
+  }
+
+  it("lists the repo as indexed and current", async () => {
+    const client = await connect({ indexed: true })
+
+    expect(await call(client, "list_repos", {})).toEqual([
+      expect.objectContaining({ id: REPO, lastSyncedCommit: "abc123", needsReindex: false })
+    ])
+  })
+
+  it("searches the repo, honouring repo, path and limit", async () => {
+    const client = await connect({ indexed: true })
+
+    const found = await call(client, "search", { query: "addNumbers", mode: "keyword", repo: REPO })
+    expect(found[0]).toMatchObject({ repo: REPO, path: "src/math.ts", startLine: 1 })
+
+    const inPath = await call(client, "search", { query: "export", mode: "keyword", path: "src/greet.ts" })
+    expect(inPath.map((r: { path: string }) => r.path)).toEqual(["src/greet.ts"])
+
+    expect(await call(client, "search", { query: "export", mode: "keyword", limit: 1 })).toHaveLength(1)
+  })
+
+  it("greps with context, files-with-matches and counts", async () => {
+    const client = await connect({ indexed: true })
+
+    expect(await call(client, "grep", { pattern: "TODO", repo: REPO, context: 1 })).toEqual([
+      {
+        repo: REPO,
+        path: "src/math.ts",
+        matchCount: 1,
+        matches: [
+          { lineNumber: 1, content: "export const addNumbers = (a: number, b: number) => a + b", isMatch: false },
+          { lineNumber: 2, content: "// TODO: handle overflow", isMatch: true }
+        ]
+      }
+    ])
+
+    const files = await call(client, "grep", { pattern: "export", filesWithMatches: true })
+    expect(files.map((r: { path: string }) => r.path).sort()).toEqual(["src/greet.ts", "src/math.ts"])
+
+    const counts = await call(client, "grep", { pattern: "e", count: true, path: "README.md" })
+    expect(counts).toEqual([expect.objectContaining({ path: "README.md", matchCount: 2, matches: [] })])
+  })
+
+  it("reads part of a file", async () => {
+    const client = await connect({ indexed: true })
+
+    expect(await call(client, "read_file", { repo: REPO, path: "src/math.ts", offset: 2, limit: 1, lineNumbers: false })).toMatchObject({
+      repo: REPO,
+      path: "src/math.ts",
+      content: "// TODO: handle overflow",
+      startLine: 2,
+      endLine: 2
+    })
+  })
+
+  it("finds files by glob and lists a directory", async () => {
+    const client = await connect({ indexed: true })
+
+    const ts = await call(client, "glob_files", { pattern: "**/*.ts", repo: REPO })
+    expect(ts.map((f: { path: string }) => f.path).sort()).toEqual(["src/greet.ts", "src/math.ts"])
+    expect(await call(client, "glob_files", { pattern: "**/*.ts", limit: 1 })).toHaveLength(1)
+
+    const src = await call(client, "list_files", { repo: REPO, path: "src" })
+    expect(src.map((f: { filename: string }) => f.filename).sort()).toEqual(["greet.ts", "math.ts"])
   })
 })
