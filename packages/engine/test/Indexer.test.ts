@@ -689,6 +689,13 @@ describe("Indexer", () => {
       })
     )
 
+    it.effect("stops at the limit when only counting or listing matching files", () =>
+      Effect.gen(function* () {
+        expect(yield* grepPaths({ repo: REPO, count: true, limit: 2 })).toHaveLength(2)
+        expect(yield* grepPaths({ repo: REPO, filesWithMatches: true, limit: 2 })).toHaveLength(2)
+      })
+    )
+
     it.effect("combines the repo, file type and path filters", () =>
       Effect.gen(function* () {
         expect(yield* grepPaths({ repo: REPO, fileType: "ts", path: "src/editor" })).toEqual([

@@ -1487,7 +1487,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
           if (matchingLineNums.size === 0) return
 
-          if (options?.filesWithMatches) {
+          if (options?.filesWithMatches || options?.count) {
             results.push({
               repo: file.repo,
               path: file.path,
@@ -1495,16 +1495,6 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
               matchCount: matchingLineNums.size
             })
             outputCount++
-            return
-          }
-
-          if (options?.count) {
-            results.push({
-              repo: file.repo,
-              path: file.path,
-              matches: [],
-              matchCount: matchingLineNums.size
-            })
             return
           }
 
