@@ -45,6 +45,10 @@ export interface RepoHeld {
   readonly holder: Option.Option<JobOwner>
 }
 
+// A claim this process holds is left from a release that failed to delete it: the
+// JobRunner never claims a repo it already has
+const heldHere = (held: RepoHeld) => Option.exists(held.holder, (holder) => holder.pid === process.pid)
+
 export const heldBy = (held: RepoHeld): string =>
   Option.match(held.holder, {
     onNone: () => "another repobase process",
@@ -232,11 +236,7 @@ export const makeWith = (config: { readonly dir: string }) =>
         if (!(yield* fs.exists(dir))) return []
         const files = (yield* fs.readDirectory(dir)).filter((entry) => entry.endsWith(LOCK_EXTENSION))
         const claims = yield* Effect.forEach(files, (entry) => liveClaim(path.join(dir, entry)))
-        return claims.flatMap((claim) =>
-          Option.isSome(claim) && !Option.exists(claim.value.holder, (holder) => holder.pid === process.pid)
-            ? [claim.value]
-            : []
-        )
+        return claims.flatMap((claim) => (Option.isSome(claim) && !heldHere(claim.value) ? [claim.value] : []))
       }).pipe(Effect.mapError(toStoreError("heldElsewhere")))
 
     const claimRepo: JobStoreService["claimRepo"] = (repoId, owner) =>
@@ -252,7 +252,7 @@ export const makeWith = (config: { readonly dir: string }) =>
           )
           if (created) return Option.none()
           const held = yield* liveClaim(file)
-          if (Option.isSome(held)) return held
+          if (Option.isSome(held) && !heldHere(held.value)) return held
           yield* fs.remove(file, { force: true })
         }
         return Option.some({ holder: Option.none() })
@@ -347,7 +347,9 @@ export const layerMemory: Layer.Layer<JobStore> = Layer.effect(
       claimRepo: (repoId, owner) =>
         Ref.modify(claims, (held): [Option.Option<RepoHeld>, ReadonlyMap<string, JobOwner>] => {
           const holder = Option.fromUndefinedOr(held.get(repoId))
-          return Option.isSome(holder) ? [Option.some({ holder }), held] : [Option.none(), new Map(held).set(repoId, owner)]
+          return Option.isSome(holder) && !heldHere({ holder })
+            ? [Option.some({ holder }), held]
+            : [Option.none(), new Map(held).set(repoId, owner)]
         }),
       releaseRepo: (repoId) =>
         Ref.update(claims, (held) => {

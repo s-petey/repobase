@@ -190,15 +190,20 @@ describe.each([
     }).pipe(Effect.provide(makeLayer()))
   )
 
-  it.effect("claims a repo once until the claim is released, and says who holds it", () =>
+  it.effect("refuses a repo another live process claimed, and says who holds it", () =>
+    Effect.gen(function* () {
+      const store = yield* JobStore
+      const cli = { pid: process.ppid, name: "cli" }
+      expect(yield* store.claimRepo("acme/widgets", cli)).toEqual(Option.none())
+      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.some({ holder: Option.some(cli) }))
+      expect(yield* store.claimRepo("acme/gadgets", tui)).toEqual(Option.none())
+    }).pipe(Effect.provide(makeLayer()))
+  )
+
+  it.effect("claims a repo again whose claim this process left behind", () =>
     Effect.gen(function* () {
       const store = yield* JobStore
       expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.none())
-      expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.some({ holder: Option.some(tui) }))
-      expect(yield* store.claimRepo("acme/gadgets", tui)).toEqual(Option.none())
-
-      yield* store.releaseRepo("acme/widgets")
-
       expect(yield* store.claimRepo("acme/widgets", tui)).toEqual(Option.none())
     }).pipe(Effect.provide(makeLayer()))
   )
