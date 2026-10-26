@@ -56,6 +56,8 @@ export const ownerAlive = (owner: JobOwner): boolean =>
 export const runningElsewhere = (job: Job): boolean =>
   job.status === "running" && job.owner !== undefined && job.owner.pid !== process.pid && ownerAlive(job.owner)
 
-export const runningHere = (job: Job): boolean => job.status === "running" && job.owner?.pid === process.pid
+export const ownedHere = (job: Job): boolean => job.owner?.pid === process.pid
+
+export const runningHere = (job: Job): boolean => job.status === "running" && ownedHere(job)
 
 export const abandoned = (job: Job): boolean => job.status === "running" && !(job.owner && ownerAlive(job.owner))

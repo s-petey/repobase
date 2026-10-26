@@ -29,7 +29,7 @@ import {
   superseded
 } from "./Job.js"
 import { heldBy, JobStore } from "./JobStore.js"
-import { abandoned, runningElsewhere, runningHere, thisProcessStartedAt } from "./owner.js"
+import { abandoned, ownedHere, runningElsewhere, runningHere, thisProcessStartedAt } from "./owner.js"
 
 const OWNER_CHECK_INTERVAL = Duration.seconds(15)
 
@@ -729,6 +729,8 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
           const mine = (yield* SubscriptionRef.get(state)).get(jobId)
           if (mine && runningHere(mine)) return
           const stored = yield* store.get(jobId)
+          const onlyThisProcessWritesIt = mine !== undefined && ownedHere(mine) && Option.exists(stored, ownedHere)
+          if (onlyThisProcessWritesIt) return
           yield* SubscriptionRef.update(state, (jobs) => {
             const next = new Map(jobs)
             if (Option.isSome(stored)) {

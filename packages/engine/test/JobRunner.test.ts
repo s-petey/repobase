@@ -1,7 +1,8 @@
 import { describe, it, expect } from "@effect/vitest"
-import { DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, PubSub, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { spawnSync } from "node:child_process"
+import { StoreError } from "../src/errors.js"
 import {
   CloneFailedError,
   IndexBatchFailedError,
@@ -316,6 +317,39 @@ describe("JobRunner", () => {
       yield* TestClock.adjust("1 second")
       expect((yield* runner.jobs).find((j) => j.id === elsewhere.id)?.status).toBe("completed")
     }).pipe(Effect.scoped, Effect.provide(layerMemory))
+  })
+
+  it.effect("keeps its own newer copy of a job when the store only has an older one", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const changed = yield* PubSub.unbounded<string>()
+      // Saving the final status fails, so the store keeps the job as running
+      const failingStore = Layer.effect(
+        JobStore,
+        Effect.gen(function* () {
+          const store = yield* JobStore
+          return JobStore.of({
+            ...store,
+            save: (job) =>
+              job.status === "completed"
+                ? Effect.fail(new StoreError({ operation: "saveJob", message: "disk full" }))
+                : store.save(job),
+            changes: Stream.fromPubSub(changed)
+          })
+        })
+      ).pipe(Layer.provide(layerMemory))
+
+      yield* Effect.gen(function* () {
+        const runner = yield* makeJobRunner(script.definitions, { concurrency: 2, followOthers: true })
+        const job = yield* runner.await((yield* runner.start(syncRepo())).id)
+        expect(job.status).toBe("completed")
+
+        yield* PubSub.publish(changed, job.id)
+        yield* TestClock.adjust("1 second")
+
+        expect((yield* runner.jobs).find((j) => j.id === job.id)?.status).toBe("completed")
+      }).pipe(Effect.scoped, Effect.provide(failingStore))
+    })
   })
 
   it.effect("marks a job whose process died as interrupted, so it can be retried here", () => {
