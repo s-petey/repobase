@@ -237,7 +237,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
     )
     const stored = yield* store.list().pipe(
       Effect.catch((e) =>
-        Effect.logWarning(`Could not load jobs: ${e.message}`).pipe(Effect.as([] as ReadonlyArray<Job>))
+        Effect.logWarning(`Could not load jobs: ${e.message}`).pipe(Effect.as<ReadonlyArray<Job>>([]))
       )
     )
     const state = yield* SubscriptionRef.make<ReadonlyMap<string, Job>>(
@@ -320,7 +320,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         Effect.gen(function* () {
           const now = yield* DateTime.now
           const job = Option.getOrThrow(yield* current(jobId))
-          const next = { ...f(job, now), updatedAt: now } as Job
+          const next: Job = { ...f(job, now), updatedAt: now }
           yield* store.save(next).pipe(
             Effect.catch((e) => Effect.logWarning(`Could not save job ${jobId}: ${e.message}`))
           )
@@ -336,9 +336,9 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       }))
 
     // A step context bound to the job's latest saved state
-    const snapshot = <J extends Job>(jobId: string) =>
+    const snapshot = <J extends Job>(jobId: string, isKind: (job: Job) => job is J) =>
       Effect.gen(function* () {
-        const job = Option.getOrThrow(yield* current(jobId)) as J
+        const job = Option.getOrThrow(Option.filter(yield* current(jobId), isKind))
         const ctx: StepContext<J> = {
           job,
           indexLock,
@@ -366,7 +366,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       key: string,
       outputSchema: OutputSchema<O>,
       effect: Effect.Effect<A, StepError, R>,
-      toOutput: (value: A) => O = (value) => value as unknown as O
+      toOutput: (value: A) => O
     ) =>
       Effect.gen(function* () {
         yield* updateStep(jobId, key, (s, now) => ({
@@ -459,13 +459,13 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         Effect.uninterruptible
       )
 
-    // Run a fan-out. Its own step lists the items (every attempt: it is cheap
-    // and must give the same items each time); the first time, one step per
-    // item is added after it. Then every item step that isn't done runs.
+    // Run a fan-out. Its own step lists the items (every attempt: it is cheap);
+    // the first time, or if the items changed, one step per item is made afresh
+    // after it. Then every item step that isn't done runs.
     // Items don't cancel each other; the fan-out fails if any of them failed.
-    const runFanOut = <J extends Job>(jobId: string, def: FanOutDefinition<J, any, any, R>) =>
+    const runFanOut = <J extends Job>(jobId: string, def: FanOutDefinition<J, any, any, R>, isKind: (job: Job) => job is J) =>
       Effect.gen(function* () {
-        const ctx = yield* snapshot<J>(jobId)
+        const ctx = yield* snapshot(jobId, isKind)
         const items: ReadonlyArray<unknown> = yield* runStep(
           jobId,
           def.name,
@@ -475,16 +475,10 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         )
 
         yield* updateJob(jobId, (job) => {
-          const existing = job.steps.filter((s) => s.name === def.name && s.key !== def.name)
-          if (existing.length > 0) {
-            if (existing.length !== items.length) {
-              throw new Error(
-                `${def.name} of job ${jobId} now has ${items.length} items, not ${existing.length}; items must be stable`
-              )
-            }
-            return job
-          }
-          const at = job.steps.findIndex((s) => s.key === def.name)
+          const isItem = (s: Step) => s.name === def.name && s.key !== def.name
+          if (job.steps.filter(isItem).length === items.length) return job
+          const others = job.steps.filter((s) => !isItem(s))
+          const at = others.findIndex((s) => s.key === def.name)
           const expanded = items.map((_, index) => ({
             key: fanOutKey(def.name, index),
             name: def.name,
@@ -492,7 +486,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
             status: "pending" as const,
             attempts: 0
           }))
-          return { ...job, steps: [...job.steps.slice(0, at + 1), ...expanded, ...job.steps.slice(at + 1)] }
+          return { ...job, steps: [...others.slice(0, at + 1), ...expanded, ...others.slice(at + 1)] }
         })
 
         const job = Option.getOrThrow(yield* current(jobId))
@@ -503,7 +497,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         const exits = yield* Effect.forEach(
           toRun,
           ({ item, index, key }) =>
-            runStep(jobId, key, def.output, def.run(item, { index, total: items.length }, ctx)).pipe(
+            runStep(jobId, key, def.output, def.run(item, { index, total: items.length }, ctx), (value) => value).pipe(
               Effect.exit
             ),
           { concurrency: options.concurrency }
@@ -513,12 +507,13 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       })
 
     // Run a job's remaining steps in order
-    const runJob = (jobId: string, release: Effect.Effect<void>) =>
+    const runJob = <K extends JobKind>(kind: K, jobId: string, release: Effect.Effect<void>) =>
       Effect.gen(function* () {
-        const initial = Option.getOrThrow(yield* current(jobId))
-        const definition = definitions[initial.kind] as unknown as JobDefinition<Job, R>
+        const definition = definitions[kind]
+        const isKind = (job: Job): job is Extract<Job, { kind: K }> => job.kind === kind
+        const initial = Option.getOrThrow(Option.filter(yield* current(jobId), isKind))
         if (!hasEveryStep(initial, definition)) {
-          yield* updateJob(jobId, (job) => withEveryStep(job, definition))
+          yield* updateJob(jobId, (job) => (isKind(job) ? withEveryStep(job, definition) : job))
         }
 
         for (const def of definition.steps) {
@@ -527,7 +522,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
             const expanded = job.steps.filter((s) => s.name === def.name && s.key !== def.name)
             const allDone = expanded.length > 0 && expanded.every((s) => s.status === "done")
             if (allDone) continue
-            yield* runFanOut(jobId, def)
+            yield* runFanOut(jobId, def, isKind)
             continue
           }
 
@@ -536,7 +531,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
           const output =
             saved?.status === "done"
               ? yield* Schema.decodeUnknownEffect(def.output)(saved.output).pipe(Effect.orDie)
-              : yield* runStep(jobId, def.name, def.output, def.run(yield* snapshot(jobId)))
+              : yield* runStep(jobId, def.name, def.output, def.run(yield* snapshot(jobId, isKind)), (value) => value)
           const early = def.finishJob ? def.finishJob(output) : Option.none()
           if (Option.isSome(early)) {
             yield* finish(jobId, early.value, release)
@@ -585,7 +580,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       return FiberMap.run(
         fibers,
         job.id,
-        runJob(job.id, release).pipe(
+        runJob(job.kind, job.id, release).pipe(
           Effect.withSpan(`job.${job.kind}`, {
             root: true,
             attributes: { "job.id": job.id, "job.repo": job.repoId, "job.kind": job.kind }

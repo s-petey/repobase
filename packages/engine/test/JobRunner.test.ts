@@ -557,6 +557,50 @@ describe("JobRunner", () => {
     }).pipe(Effect.scoped, Effect.provide(layerMemory))
   })
 
+  it.effect("makes a fan-out's item steps afresh when its items changed since the job stopped", () => {
+    const script = makeScript()
+    const now = DateTime.makeUnsafe("2026-09-25T10:00:00Z")
+    // Stopped with 2 batches; the fan-out now lists 3 (as if the batch size changed)
+    const stopped: Job = {
+      id: "addRepo-acme-widgets-old",
+      kind: "addRepo",
+      repoId: "acme-widgets",
+      payload: { url: "https://github.com/acme/widgets", mode: trackingMode("main") },
+      status: "interrupted",
+      createdAt: now,
+      updatedAt: now,
+      steps: [
+        { key: "checkAbsent", name: "checkAbsent", runsOn: "main", status: "done", attempts: 1, output: null },
+        { key: "clone", name: "clone", runsOn: "worker", status: "done", attempts: 1, output: { commit: "abc123" } },
+        { key: "saveConfig", name: "saveConfig", runsOn: "main", status: "done", attempts: 1, output: null },
+        { key: "indexBatch", name: "indexBatch", runsOn: "worker", status: "done", attempts: 1, output: { count: 2 } },
+        { key: "indexBatch:0", name: "indexBatch", runsOn: "worker", status: "done", attempts: 1, output: { indexed: 1 } },
+        { key: "indexBatch:1", name: "indexBatch", runsOn: "worker", status: "interrupted", attempts: 1 },
+        { key: "finalize", name: "finalize", runsOn: "worker", status: "pending", attempts: 0 }
+      ]
+    }
+    return Effect.gen(function* () {
+      yield* JobStore.use((store) => store.save(stopped))
+      const runner = yield* makeJobRunner(script.definitions, { concurrency: 2 })
+
+      yield* runner.retry(stopped.id)
+      const job = yield* runner.await(stopped.id)
+
+      expect(job.status).toBe("completed")
+      expect(job.steps.map((s) => s.key)).toEqual([
+        "checkAbsent",
+        "clone",
+        "saveConfig",
+        "indexBatch",
+        "indexBatch:0",
+        "indexBatch:1",
+        "indexBatch:2",
+        "finalize"
+      ])
+      expect([...script.ran].sort()).toEqual(["finalize", "indexBatch", "indexBatch:0", "indexBatch:1", "indexBatch:2"])
+    }).pipe(Effect.scoped, Effect.provide(layerMemory))
+  })
+
   it.effect("ends a resumed job at a step that finished before the interrupt and ends the job", () => {
     const script = makeScript()
     const now = DateTime.makeUnsafe("2026-09-25T10:00:00Z")
