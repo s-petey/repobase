@@ -18,7 +18,7 @@ const isReachable = (url: string) =>
 export const hostOtlpEndpoint: Effect.Effect<Option.Option<string>> = Effect.gen(function* () {
   const { endpoint, disabled } = yield* Config.all({
     endpoint: Config.option(Config.String("OTEL_EXPORTER_OTLP_ENDPOINT")),
-    disabled: Config.Boolean("OTEL_SDK_DISABLED").pipe(Config.withDefault(false))
+    disabled: Config.Boolean("OTEL_SDK_DISABLED").pipe(Config.orElse(() => Config.succeed(false)))
   })
   if (disabled || Option.isNone(endpoint)) return Option.none()
 

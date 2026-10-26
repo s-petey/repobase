@@ -66,6 +66,18 @@ describe("telemetryLayer", () => {
     expect(receiver.received).toEqual([])
   })
 
+  it.each(["TRUE", "True", "maybe"])("treats an invalid OTEL_SDK_DISABLED=%s as not disabled", async (value) => {
+    const receiver = startReceiver()
+    try {
+      expect(await runTraced({ OTEL_EXPORTER_OTLP_ENDPOINT: receiver.url, OTEL_SDK_DISABLED: value })).toContain(
+        "indexed a batch"
+      )
+      expect(receiver.received.filter((r) => r.path === "/v1/traces")).not.toEqual([])
+    } finally {
+      receiver.stop()
+    }
+  })
+
   it("exports nothing without an endpoint, or when disabled", async () => {
     const receiver = startReceiver()
     try {
