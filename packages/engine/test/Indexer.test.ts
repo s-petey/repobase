@@ -570,7 +570,7 @@ describe("Indexer", () => {
           id: `old-repo:${p}`,
           repo: "old-repo",
           path: p,
-          filename: p.split("/").pop()!,
+          filename: path.basename(p),
           contents: "",
           mtime_ms: 0,
           size_bytes: 1,

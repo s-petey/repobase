@@ -65,20 +65,10 @@ const lookup = (
     ? [command.command, ...command.args].join(" ")
     : "<piped command>"
   const mock = mockCommands[cmd]
-  if (!mock) {
-    return Effect.fail({
-      _tag: "SystemError",
-      reason: "Unknown",
-      message: `Unknown command: ${cmd}`
-    } as any)
-  }
-  if (mock.error) {
-    return Effect.fail({
-      _tag: "SystemError",
-      reason: "Unknown",
-      message: mock.error
-    } as any)
-  }
+  const spawnFailed = (description: string) =>
+    Effect.fail(PlatformError.systemError({ _tag: "Unknown", module: "ChildProcess", method: "spawn", description }))
+  if (!mock) return spawnFailed(`Unknown command: ${cmd}`)
+  if (mock.error) return spawnFailed(mock.error)
   return Effect.succeed(mock)
 }
 
@@ -177,7 +167,7 @@ describe("GitClient", () => {
         const git = yield* GitClient
         const error = yield* expectGitError(git.clone("https://github.com/test/repo", "/tmp/no-git"))
         expect(error.command).toBe("clone")
-        expect(error.message).toBe("spawn git ENOENT")
+        expect(error.message).toBe("Unknown: ChildProcess.spawn: spawn git ENOENT")
       }).pipe(Effect.provide(TestGitClientLayer))
     )
   })

@@ -118,7 +118,12 @@ describe("repobase MCP server", () => {
       "read_file",
       "search"
     ])
-    const search = tools.find((t) => t.name === "search")!.inputSchema
+    const inputSchemaOf = (name: string) => {
+      const tool = tools.find((t) => t.name === name)
+      if (!tool) throw new Error(`No ${name} tool`)
+      return tool.inputSchema
+    }
+    const search = inputSchemaOf("search")
     expect(search.required).toEqual(["query"])
     expect(search.properties).toMatchObject({
       query: { type: "string", description: "The search query" },
@@ -126,7 +131,7 @@ describe("repobase MCP server", () => {
       limit: { type: "integer", default: 20, description: "Maximum number of results to return" },
       repo: { type: "string" }
     })
-    const grep = tools.find((t) => t.name === "grep")!.inputSchema
+    const grep = inputSchemaOf("grep")
     expect(grep.required).toEqual(["pattern"])
     expect(grep.properties).toMatchObject({
       ignoreCase: { type: "boolean", default: false },

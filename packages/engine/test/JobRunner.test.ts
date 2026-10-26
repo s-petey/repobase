@@ -153,7 +153,11 @@ const runnerLayer = (definitions: JobDefinitions<never>) =>
   JobRunnerLayer(definitions, { concurrency: 2 }).pipe(Layer.provideMerge(layerMemory))
 
 const statuses = (job: Job) => Object.fromEntries(job.steps.map((s) => [s.key, s.status]))
-const stepOf = (job: Job, key: string): Step => job.steps.find((s) => s.key === key)!
+const stepOf = (job: Job, key: string): Step => {
+  const step = job.steps.find((s) => s.key === key)
+  if (!step) throw new Error(`${job.id} has no step ${key}`)
+  return step
+}
 
 describe("JobRunner", () => {
   it.effect("runs every step, expands the fan-out and saves the job", () => {

@@ -8,7 +8,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { StoreError } from "../src/errors.js"
 import { CloneFailedError } from "../src/jobs/errors.js"
-import { type Job, makeJobId } from "../src/jobs/Job.js"
+import { type AddRepoJob, makeJobId, type SyncRepoJob } from "../src/jobs/Job.js"
 import { heldBy, JobStore, layerMemory, layerWith } from "../src/jobs/JobStore.js"
 import { thisProcessStartedAt } from "../src/jobs/owner.js"
 import { trackingMode } from "../src/utils.js"
@@ -17,8 +17,7 @@ const tempDir = () => nodeFs.mkdtempSync(path.join(os.tmpdir(), "repobase-jobs-"
 
 const at = (iso: string) => DateTime.makeUnsafe(iso)
 
-const makeJob = (overrides: Partial<Job> = {}): Job =>
-  ({
+const makeJob = (overrides: Partial<AddRepoJob> = {}): AddRepoJob => ({
     id: "addRepo-acme-widgets-1",
     kind: "addRepo",
     repoId: "acme-widgets",
@@ -54,10 +53,9 @@ const makeJob = (overrides: Partial<Job> = {}): Job =>
       { key: "resolveHead", name: "resolveHead", runsOn: "worker", status: "pending", attempts: 0 }
     ],
     ...overrides
-  }) as Job
+  })
 
-const syncJob = (overrides: Partial<Job> = {}): Job =>
-  ({
+const syncJob = (overrides: Partial<SyncRepoJob> = {}): SyncRepoJob => ({
     id: "syncRepo-acme-widgets-2",
     kind: "syncRepo",
     repoId: "acme-widgets",
@@ -84,7 +82,7 @@ const syncJob = (overrides: Partial<Job> = {}): Job =>
       }
     ],
     ...overrides
-  }) as Job
+  })
 
 const plan = { toIndex: [{ path: "src/a.ts", hash: "aaa" }], toDelete: ["old.ts"], skipped: 2 }
 

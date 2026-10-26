@@ -142,7 +142,11 @@ export const syncRepo = (repoId = "acme-widgets", options: { readonly force?: bo
 
 export const reindexRepo = (repoId = "acme-widgets") => runToEnd({ kind: "reindexRepo", repoId, payload: {} })
 
-export const stepOf = (job: Job, key: string) => job.steps.find((s) => s.key === key)!
+export const stepOf = (job: Job, key: string) => {
+  const step = job.steps.find((s) => s.key === key)
+  if (!step) throw new Error(`${job.id} has no step ${key}`)
+  return step
+}
 
 export const statuses = (job: Job) => Object.fromEntries(job.steps.map((s) => [s.key, s.status]))
 
