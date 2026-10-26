@@ -368,7 +368,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
       effect: Effect.Effect<A, StepError, R>,
       toOutput: (value: A) => O
     ) =>
-      Effect.gen(function* () {
+      Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
         yield* updateStep(jobId, key, (s, now) => ({
           ...s,
           status: "running",
@@ -378,7 +378,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
           error: undefined
         }))
 
-        const exit = yield* effect.pipe(
+        const exit = yield* restore(effect).pipe(
           Effect.flatMap((value) =>
             Schema.encodeEffect(outputSchema)(toOutput(value)).pipe(
               Effect.orDie,
@@ -409,7 +409,7 @@ export const make = <R>(definitions: JobDefinitions<R>, options: JobRunnerOption
         const error = stepErrorFrom(job.repoId, key, exit.cause)
         yield* updateStep(jobId, key, (s, now) => ({ ...s, status: "failed", error, finishedAt: now }))
         return yield* Effect.fail(error)
-      })
+      }))
 
     // Finished jobs that nothing will look at again: for each repo only its
     // latest job is kept, plus failed and interrupted ones until they're retried,

@@ -795,6 +795,55 @@ describe("JobRunner", () => {
     })
   })
 
+  it.effect("saves a step that finished as done, even when interruptAll arrives while that's being saved", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const saving = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      let gated = false
+      // Saving loadRepo as done waits once, so the interrupt lands in the middle of it
+      const gatedStore = Layer.effect(
+        JobStore,
+        Effect.gen(function* () {
+          const store = yield* JobStore
+          return JobStore.of({
+            ...store,
+            save: (job) => {
+              if (gated || !job.steps.some((s) => s.key === "loadRepo" && s.status === "done")) return store.save(job)
+              gated = true
+              return Deferred.succeed(saving, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(store.save(job))
+              )
+            }
+          })
+        })
+      ).pipe(Layer.provide(layerMemory))
+
+      yield* Effect.gen(function* () {
+        const runner = yield* JobRunner
+        const job = yield* runner.start(syncRepo())
+        yield* Deferred.await(saving)
+
+        const interrupting = yield* Effect.forkChild(runner.interruptAll)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(interrupting)
+
+        const stored = Option.getOrThrow(yield* JobStore.use((store) => store.get(job.id)))
+        expect(stored.status).toBe("interrupted")
+        expect(statuses(stored)).toEqual({ loadRepo: "done", fetch: "pending" })
+
+        script.ran.length = 0
+        yield* runner.retry(job.id)
+        expect((yield* runner.await(job.id)).status).toBe("completed")
+        expect(script.ran).toEqual(["fetch"])
+      }).pipe(
+        Effect.provide(JobRunnerLayer(script.definitions, { concurrency: 2 }).pipe(Layer.provideMerge(gatedStore)))
+      )
+    })
+  })
+
   it.effect("publishes job updates as they happen", () => {
     const script = makeScript()
     return Effect.gen(function* () {
