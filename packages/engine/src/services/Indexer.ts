@@ -15,14 +15,13 @@ import * as crypto from "crypto"
 import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
 import { chunkLines, splitLines } from "../chunk.js"
-import { EMBED_LOG_ENV, type EmbedLog, hostEmbedLog } from "../embedLog.js"
-import { Connection, Table } from "@lancedb/lancedb"
-import type { FeatureExtractionPipeline } from "@huggingface/transformers"
+import type { Table } from "@lancedb/lancedb"
+import { type EmbedderConfig, make as makeEmbedder } from "./Embedder.js"
+import { make as makeIndexStore } from "./IndexStore.js"
 
 // Configuration
 const INDEX_DIR = `${os.homedir()}/.repobase/index`
-// One row per chunk of a file; file-level queries read each file's first chunk
-const CHUNKS_TABLE = "chunks"
+// File-level queries read each file's first chunk
 const FIRST_CHUNK = "chunk = 0"
 
 /**
@@ -46,8 +45,6 @@ const SLOW_FILE_MS = 5_000
 
 // Max ids per `id IN (...)` delete, to keep the SQL predicate a sane size
 const DELETE_CHUNK_SIZE = 500
-const EMBEDDING_DIMENSION = 384
-const MODEL_ID = "Xenova/all-MiniLM-L6-v2"
 
 // Default ignore patterns (node_modules, .git, binaries, etc.)
 const DEFAULT_IGNORE_PATTERNS = [
@@ -140,22 +137,11 @@ export interface IndexBatchOptions {
 /**
  * Where the index lives and, for tests, how text is embedded
  */
-export interface IndexerConfig {
+export interface IndexerConfig extends EmbedderConfig {
   /** Defaults to ~/.repobase/index */
   readonly indexDir?: string
   /** Where repo clones are read from; defaults to ~/.repobase/repos */
   readonly reposDir?: string
-  /** Replaces the transformers embedding model (e.g. a deterministic fake in tests) */
-  readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
-  /** ONNX Runtime threads the model embeds with, including the caller's; defaults to its own pool */
-  readonly threads?: number
-  /** Defaults to reading EMBED_LOG_ENV */
-  readonly embedLog?: EmbedLog
-  /**
-   * Counts a line's tokens when chunking. Defaults to the model's tokenizer, or
-   * to a word count when `embed` replaces the model.
-   */
-  readonly countTokens?: (line: string) => number
 }
 
 /**
@@ -596,142 +582,8 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const config = { ...options, indexDir: options.indexDir ?? INDEX_DIR, reposDir: options.reposDir ?? getReposDir() }
 
-  // Initialize LanceDB connection lazily
-  let db: Connection | null = null
-  let table: Table | null = null
-  let embedder: FeatureExtractionPipeline | null = null
-
-  const getDb = Effect.gen(function* () {
-    if (db) return db
-    yield* fs.makeDirectory(config.indexDir, { recursive: true }).pipe(Effect.ignore)
-
-    const lancedb = yield* Effect.tryPromise({
-      try: () => import("@lancedb/lancedb"),
-      catch: (e) => new IndexError({ operation: "init", message: `Failed to import lancedb: ${e}` })
-    })
-
-    // Every worker thread has its own long-lived connection to the same index.
-    // Without a consistency check each one keeps reading the table as it was
-    // when it opened it: searches miss newly indexed files, and compaction
-    // plans from stale fragments and hits a commit conflict on every retry.
-    db = yield* Effect.tryPromise({
-      try: () => lancedb.connect(config.indexDir, { readConsistencyInterval: 0 }),
-      catch: (e) => new IndexError({ operation: "init", message: `Failed to connect to LanceDB: ${e}` })
-    })
-    return db
-  })
-
-  // One opener at a time, so concurrent first calls don't all try to create the table
-  const tableLock = yield* Semaphore.make(1)
-
-  const openTable = (database: Connection) =>
-    Effect.tryPromise({
-      try: () => database.openTable(CHUNKS_TABLE),
-      catch: (e) => new IndexError({ operation: "init", message: `Failed to open table: ${e}` })
-    })
-
-  const getTable = tableLock.withPermit(Effect.gen(function* () {
-    if (table) return table
-
-    const database = yield* getDb
-    const tableNames = yield* Effect.tryPromise({
-      try: () => database.tableNames(),
-      catch: (e) => new IndexError({ operation: "init", message: `Failed to list tables: ${e}` })
-    })
-
-    if (tableNames.includes(CHUNKS_TABLE)) {
-      table = yield* openTable(database)
-    } else {
-      // Create with schema using a template record
-      table = yield* Effect.tryPromise({
-        try: async () => {
-          const newTable = await database.createTable(CHUNKS_TABLE, [
-            {
-              id: "__template__",
-              repo: "",
-              path: "",
-              filename: "",
-              chunk: 0,
-              start_line: 0,
-              end_line: 0,
-              text: "",
-              mtime_ms: 0,
-              size_bytes: 0,
-              hash: "",
-              vector: Array(EMBEDDING_DIMENSION).fill(0)
-            }
-          ])
-          await newTable.delete("id = '__template__'")
-          return newTable
-        },
-        catch: (e) => new IndexError({ operation: "init", message: `Failed to create table: ${e}` })
-      }).pipe(
-        // Another process (a worker thread or the MCP server) created it first
-        Effect.catchIf(
-          (e) => /already exists/i.test(e.message),
-          () => openTable(database)
-        )
-      )
-    }
-    return table
-  }))
-
-  // Initialize embedding model lazily
-  const getEmbedder = Effect.gen(function* () {
-    if (embedder) return embedder
-
-    const transformers = yield* Effect.tryPromise({
-      try: () => import("@huggingface/transformers"),
-      catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to import transformers: ${e}` })
-    })
-
-    const embedLog = config.embedLog ?? (yield* hostEmbedLog.pipe(
-      Effect.mapError((e) => new IndexError({ operation: "loadEmbedder", message: `Failed to read ${EMBED_LOG_ENV}: ${e}` })),
-      Effect.tap((resolved) => (resolved.warning ? Effect.logWarning(resolved.warning) : Effect.void))
-    ))
-
-    embedder = yield* Effect.tryPromise({
-      try: () =>
-        transformers.pipeline("feature-extraction", MODEL_ID, {
-          dtype: "fp32",
-          session_options: {
-            logSeverityLevel: embedLog.severity,
-            ...(config.threads === undefined ? {} : { intraOpNumThreads: config.threads, interOpNumThreads: 1 })
-          }
-        }),
-      catch: (e) => new IndexError({ operation: "loadEmbedder", message: `Failed to load embedding model: ${e}` })
-    })
-
-    return embedder
-  })
-
-  const embedText = (text: string): Effect.Effect<number[], IndexError> =>
-    Effect.gen(function* () {
-      if (config.embed) {
-        const embed = config.embed
-        return yield* Effect.tryPromise({
-          try: async () => [...(await embed(text))],
-          catch: (e) => new IndexError({ operation: "embed", message: `Failed to embed text: ${e}` })
-        })
-      }
-      const model = yield* getEmbedder
-      const output = yield* Effect.tryPromise({
-        try: () => model(text.trim() || " ", { pooling: "mean", normalize: true }),
-        catch: (e) => new IndexError({ operation: "embed", message: `Failed to embed text: ${e}` })
-      })
-      if (!(output.data instanceof Float32Array)) {
-        return yield* new IndexError({ operation: "embed", message: `The model returned ${output.type} embeddings, not float32` })
-      }
-      return Array.from(output.data)
-    })
-
-  // Counts one line's tokens for chunking, without the model's special tokens
-  const getTokenCounter: Effect.Effect<(line: string) => number, IndexError> = Effect.gen(function* () {
-    if (config.countTokens) return config.countTokens
-    if (config.embed) return (line: string) => line.split(/\s+/).filter(Boolean).length
-    const model = yield* getEmbedder
-    return (line: string) => model.tokenizer.encode(line, { add_special_tokens: false }).length
-  })
+  const store = yield* makeIndexStore(config.indexDir)
+  const embedder = yield* makeEmbedder(config)
 
   // A file's path inside `root`, if no symlink is on the way to it: a cloned
   // repo can't point indexing, read_file or grep at files outside itself
@@ -760,7 +612,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   const existingHashes = (repoId: string) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable.pipe(
+      const tbl = yield* store.table.pipe(
         Effect.mapError((e) => new IndexError({ operation: "planIndex.queryExisting", message: e.message, path: e.path }))
       )
       const existing = yield* Effect.tryPromise({
@@ -867,7 +719,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const deletePaths: IndexerService["deletePaths"] = (repoId, paths) =>
     Effect.gen(function* () {
       if (paths.length === 0) return
-      const tbl = yield* getTable
+      const tbl = yield* store.table
       for (const group of Arr.chunksOf(paths, DELETE_CHUNK_SIZE)) {
         const list = group.map(sqlString).join(", ")
         yield* retryOnCommitConflict(
@@ -882,7 +734,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   const indexBatch: IndexerService["indexBatch"] = (repoId, repoPath, files, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
       const records: Array<Record<string, unknown>> = []
       // Each written file's chunk count, to drop chunks left from a longer version
       const chunkCounts: Array<readonly [string, number]> = []
@@ -893,7 +745,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
           message: e.message,
           path
         })
-      const countTokens = yield* getTokenCounter.pipe(Effect.mapError(embedError(files[0]?.path ?? "")))
+      const countTokens = yield* embedder.tokenCounter.pipe(Effect.mapError(embedError(files[0]?.path ?? "")))
 
       const indexFile = (file: IndexPlanFile) =>
         Effect.gen(function* () {
@@ -911,7 +763,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
           const rows: Array<Record<string, unknown>> = []
           for (const chunk of chunkLines(contents, countTokens)) {
-            const vector = yield* embedText(chunk.text).pipe(Effect.mapError(embedError(file.path)))
+            const vector = yield* embedder.embed(chunk.text).pipe(Effect.mapError(embedError(file.path)))
             rows.push({
               id: recordId(repoId, file.path, chunk.chunk),
               repo: repoId,
@@ -996,7 +848,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   const finalizeIndex: IndexerService["finalizeIndex"] = () =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
       const lancedb = yield* Effect.tryPromise({
         try: () => import("@lancedb/lancedb"),
         catch: (e) => new IndexError({ operation: "finalizeIndex", message: `Failed to import lancedb: ${e}` })
@@ -1019,7 +871,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 
   const dropLegacyIndex: IndexerService["dropLegacyIndex"] = () =>
     Effect.gen(function* () {
-      const database = yield* getDb
+      const database = yield* store.connection
       return yield* Effect.tryPromise({
         try: async () => {
           if (!(await database.tableNames()).includes(LEGACY_FILES_TABLE)) return false
@@ -1104,7 +956,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Remove all index data for a repo
   const removeIndex: IndexerService["removeIndex"] = (repoId) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
       yield* retryOnCommitConflict(
         Effect.tryPromise({
           try: () => tbl.delete(`repo = ${sqlString(repoId)}`),
@@ -1125,7 +977,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Keyword search (FTS only)
   const searchKeyword: IndexerService["searchKeyword"] = (query, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable.pipe(
+      const tbl = yield* store.table.pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
 
@@ -1152,11 +1004,11 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Semantic search (vector only)
   const searchSemantic: IndexerService["searchSemantic"] = (query, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable.pipe(
+      const tbl = yield* store.table.pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
       const limit = options?.limit ?? 20
-      const queryVector = yield* embedText(query).pipe(
+      const queryVector = yield* embedder.embed(query).pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
 
@@ -1176,7 +1028,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Hybrid search (FTS + vector with RRF reranking)
   const searchHybrid: IndexerService["searchHybrid"] = (query, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable.pipe(
+      const tbl = yield* store.table.pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
 
@@ -1186,7 +1038,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
       }
 
       const limit = options?.limit ?? 20
-      const queryVector = yield* embedText(query).pipe(
+      const queryVector = yield* embedder.embed(query).pipe(
         Effect.mapError((e) => new SearchError({ message: e.message }))
       )
 
@@ -1219,7 +1071,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // List files and directories in a repository path
   const listFiles: IndexerService["listFiles"] = (options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
       const { repo, path: dirPath = "" } = options
 
       if (!repo) {
@@ -1305,7 +1157,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Find files matching a glob pattern
   const globFiles: IndexerService["globFiles"] = (pattern, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
       const limit = options?.limit ?? 100
 
       // Query all files (or filtered by repo)
@@ -1342,7 +1194,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Read file contents from disk
   const readFile: IndexerService["readFile"] = (repo, filePath, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
 
       // Validate path
       yield* validatePath(filePath)
@@ -1413,7 +1265,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   // Grep pattern search with context support
   const grepPattern: IndexerService["grepPattern"] = (pattern, options) =>
     Effect.gen(function* () {
-      const tbl = yield* getTable
+      const tbl = yield* store.table
 
       // Build regex - validate pattern first
       const flags = options?.ignoreCase ? "gi" : "g"
