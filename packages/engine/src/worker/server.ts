@@ -21,6 +21,7 @@ import {
   ResolveHeadFailedError
 } from "../jobs/errors.js"
 import { JobStore, layer as JobStoreLayer } from "../jobs/JobStore.js"
+import { layer as EmbedderLayer } from "../services/Embedder.js"
 import { GitClient, layer as GitClientLayer } from "../services/GitClient.js"
 import { INDEX_BATCH_SIZE, Indexer, layerWith as IndexerLayerWith } from "../services/Indexer.js"
 import { otlpLayer } from "../telemetry.js"
@@ -272,7 +273,11 @@ const serverLayer = (settings: WorkerSettings["Service"]) => {
   ).pipe(
     Layer.provide(HandlersLayer),
     Layer.provide(
-      Layer.mergeAll(GitClientLayer, IndexerLayerWith({ threads: ONNX_THREADS_PER_WORKER, embedLog }), JobStoreLayer)
+      Layer.mergeAll(
+        GitClientLayer,
+        IndexerLayerWith({}).pipe(Layer.provide(EmbedderLayer({ threads: ONNX_THREADS_PER_WORKER, embedLog }))),
+        JobStoreLayer
+      )
     ),
     Layer.provideMerge(otlpLayer("repobase-worker", Option.fromUndefinedOr(settings.otlpEndpoint)))
   )

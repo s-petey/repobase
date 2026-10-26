@@ -20,17 +20,10 @@ export class Embedder extends Context.Service<Embedder, EmbedderService>()(
 ) {}
 
 export interface EmbedderConfig {
-  /** Replaces the embedding model (e.g. a deterministic fake in tests) */
-  readonly embed?: (text: string) => Promise<ReadonlyArray<number>>
   /** ONNX Runtime threads the model embeds with, including the caller's; defaults to its own pool */
   readonly threads?: number
   /** Defaults to reading EMBED_LOG_ENV */
   readonly embedLog?: EmbedLog
-  /**
-   * Counts a line's tokens when chunking. Defaults to the model's tokenizer, or
-   * to a word count when `embed` replaces the model.
-   */
-  readonly countTokens?: (line: string) => number
 }
 
 export const make = (config: EmbedderConfig) =>
@@ -73,13 +66,6 @@ export const make = (config: EmbedderConfig) =>
 
     const embed = (text: string): Effect.Effect<number[], IndexError> =>
       Effect.gen(function* () {
-        if (config.embed) {
-          const fake = config.embed
-          return yield* Effect.tryPromise({
-            try: async () => [...(await fake(text))],
-            catch: (e) => new IndexError({ operation: "embed", message: `Failed to embed text: ${e}` })
-          })
-        }
         const loaded = yield* getModel
         const output = yield* Effect.tryPromise({
           try: () => loaded(text.trim() || " ", { pooling: "mean", normalize: true }),
@@ -91,12 +77,9 @@ export const make = (config: EmbedderConfig) =>
         return Array.from(output.data)
       })
 
-    const tokenCounter: Effect.Effect<(line: string) => number, IndexError> = Effect.gen(function* () {
-      if (config.countTokens) return config.countTokens
-      if (config.embed) return (line: string) => line.split(/\s+/).filter(Boolean).length
-      const loaded = yield* getModel
-      return (line: string) => loaded.tokenizer.encode(line, { add_special_tokens: false }).length
-    })
+    const tokenCounter = getModel.pipe(
+      Effect.map((loaded) => (line: string) => loaded.tokenizer.encode(line, { add_special_tokens: false }).length)
+    )
 
     return Embedder.of({ embed, tokenCounter })
   })

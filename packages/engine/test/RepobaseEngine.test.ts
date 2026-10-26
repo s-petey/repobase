@@ -10,11 +10,11 @@ import { Indexer, layerWith as IndexerLayerWith } from "../src/services/Indexer.
 import { layerWith as RepobaseEngineLayerWith, RepobaseEngine } from "../src/services/RepobaseEngine.js"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { pinnedMode, trackingMode } from "../src/utils.js"
+import { fakeEmbedder } from "./fixtures/fakeEmbedder.js"
 import { indexedPaths, makeSourceRepo, MemoryRepoStore, tempDir } from "./fixtures/jobEnv.js"
 
 
 const REPO = "acme-widgets"
-const fakeEmbed = async () => Array.from({ length: 384 }, (_, i) => (i + 1) / 384)
 
 const setup = (
   source: ReturnType<typeof makeSourceRepo>,
@@ -39,7 +39,7 @@ const setup = (
   }
   const layer = RepobaseEngineLayerWith({ reposDir }).pipe(
     Layer.provideMerge(
-      Layer.mergeAll(GitClientLayer, MemoryRepoStore, IndexerLayerWith({ indexDir, embed: fakeEmbed }))
+      Layer.mergeAll(GitClientLayer, MemoryRepoStore, IndexerLayerWith({ indexDir }).pipe(Layer.provide(fakeEmbedder())))
     ),
     Layer.provideMerge(BunServices.layer)
   )

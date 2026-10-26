@@ -2,26 +2,21 @@ import { describe, it, expect } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import * as lancedb from "@lancedb/lancedb"
 import { Effect, FileSystem, Layer, SubscriptionRef } from "effect"
-import * as crypto from "node:crypto"
 import * as nodeFs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { Indexer, IndexError, initialIndexingProgress } from "../src/index.js"
+import { layer as EmbedderLayer } from "../src/services/Embedder.js"
 import { isGenerated, layerWith as IndexerLayerWith, makeWith, MAX_INDEXED_FILE_BYTES } from "../src/services/Indexer.js"
 import { ONNX_THREADS_PER_WORKER } from "../src/worker/limits.js"
+import { fakeEmbedder, fakeVector } from "./fixtures/fakeEmbedder.js"
 
 // These tests run the real Indexer against a real LanceDB table and real
 // files, each in its own temp directory. Only the embedding model is faked.
 
 const EMBEDDING_DIMENSION = 384
 
-// Deterministic unit vector derived from the text
-const fakeEmbed = async (text: string) => {
-  const seed = crypto.createHash("sha256").update(text).digest()
-  const vector = Array.from({ length: EMBEDDING_DIMENSION }, (_, i) => seed[i % seed.length] / 255 + 0.01)
-  const norm = Math.hypot(...vector)
-  return vector.map((v) => v / norm)
-}
+const TestServices = Layer.merge(BunServices.layer, fakeEmbedder())
 
 const tempDir = (prefix: string) => nodeFs.mkdtempSync(path.join(os.tmpdir(), `repobase-${prefix}-`))
 
@@ -44,8 +39,8 @@ const makeRepo = () => {
   return repoPath
 }
 
-const indexerLayer = (embed: (text: string) => Promise<ReadonlyArray<number>> = fakeEmbed) =>
-  IndexerLayerWith({ indexDir: tempDir("index"), embed }).pipe(Layer.provide(BunServices.layer))
+const indexerLayer = (embedder = fakeEmbedder()) =>
+  IndexerLayerWith({ indexDir: tempDir("index") }).pipe(Layer.provide(embedder), Layer.provide(BunServices.layer))
 
 // Every indexed row for a repo, as path -> count (to catch duplicates)
 const indexedPaths = (repo: string) =>
@@ -104,7 +99,8 @@ export const verifyLogin = async (password: string, storedHash: string) => compa
       expect(authHit.path).toBe("src/auth.ts")
     }).pipe(
       Effect.provide(
-        IndexerLayerWith({ indexDir: tempDir("index"), threads: ONNX_THREADS_PER_WORKER }).pipe(
+        IndexerLayerWith({ indexDir: tempDir("index") }).pipe(
+          Layer.provide(EmbedderLayer({ threads: ONNX_THREADS_PER_WORKER })),
           Layer.provide(BunServices.layer)
         )
       )
@@ -118,15 +114,15 @@ describe("Indexer across connections", () => {
   it.effect("sees rows another connection wrote after it opened the table, and finalizes after them", () =>
     Effect.gen(function* () {
       const indexDir = tempDir("index")
-      const indexing = yield* makeWith({ indexDir, embed: fakeEmbed })
-      const jobs = yield* makeWith({ indexDir, embed: fakeEmbed })
+      const indexing = yield* makeWith({ indexDir })
+      const jobs = yield* makeWith({ indexDir })
       yield* jobs.indexRepo("earlier-repo", makeRepo())
 
       yield* indexing.indexRepo(REPO, makeRepo())
 
       expect(yield* jobs.globFiles("**", { repo: REPO, limit: 100 })).toHaveLength(3)
       yield* jobs.finalizeIndex()
-    }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+    }).pipe(Effect.scoped, Effect.provide(TestServices))
   )
 })
 
@@ -389,10 +385,13 @@ describe("Indexer", () => {
         expect(error.path).toBe("src/boom.ts")
       }).pipe(
         Effect.provide(
-          indexerLayer(async (text) => {
-            if (text.includes("EXPLODE")) throw new Error("model crashed")
-            return fakeEmbed(text)
-          })
+          indexerLayer(
+            fakeEmbedder((text) =>
+              text.includes("EXPLODE")
+                ? Effect.fail(new IndexError({ operation: "embed", message: "model crashed" }))
+                : Effect.succeed(fakeVector(text))
+            )
+          )
         )
       )
     )
@@ -579,7 +578,7 @@ describe("Indexer", () => {
         })
         await db.createTable("files", [row("src/a.ts"), row("README.md")])
       })
-      return yield* makeWith({ indexDir, reposDir, embed: fakeEmbed })
+      return yield* makeWith({ indexDir, reposDir })
     })
 
     it.effect("is never read: a repo only in the old table is unavailable until re-indexed", () =>
@@ -595,7 +594,7 @@ describe("Indexer", () => {
         expect(yield* indexer.searchSemantic("needle", {})).toEqual([])
         const error = yield* Effect.flip(indexer.readFile("old-repo", "src/a.ts"))
         expect(error._tag).toBe("FileNotFoundError")
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
 
     it.effect("dropLegacyIndex removes the old table once, then reports it gone", () =>
@@ -604,7 +603,7 @@ describe("Indexer", () => {
 
         expect(yield* indexer.dropLegacyIndex()).toBe(true)
         expect(yield* indexer.dropLegacyIndex()).toBe(false)
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
   })
 
@@ -612,7 +611,7 @@ describe("Indexer", () => {
     // grep reads files from <reposDir>/<repo>, so the repos live there
     const grepSetup = Effect.gen(function* () {
       const reposDir = tempDir("repos")
-      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir, embed: fakeEmbed })
+      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir })
       for (const repo of [REPO, "other-repo"]) {
         const repoPath = path.join(reposDir, repo)
         writeFile(repoPath, "src/editor/menu.ts", "export const needle = 1")
@@ -630,7 +629,7 @@ describe("Indexer", () => {
         const indexer = yield* grepSetup
         const results = yield* indexer.grepPattern("needle", options)
         return results.map((r) => `${r.repo}/${r.path}`).sort()
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
 
     it.effect("limits results to one file", () =>
       Effect.gen(function* () {
@@ -641,7 +640,7 @@ describe("Indexer", () => {
     it.effect("numbers lines like an editor: no line after a final newline, and no \\r on CRLF lines", () =>
       Effect.gen(function* () {
         const reposDir = tempDir("repos")
-        const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir, embed: fakeEmbed })
+        const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir })
         const repoPath = path.join(reposDir, REPO)
         writeFile(repoPath, "unix.ts", "first\nlast\n")
         writeFile(repoPath, "windows.ts", "first\r\nlast\r\n")
@@ -657,7 +656,7 @@ describe("Indexer", () => {
           { repo: REPO, path: "unix.ts", matches: lines, matchCount: 1 },
           { repo: REPO, path: "windows.ts", matches: lines, matchCount: 1 }
         ])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
 
     it.effect("limits results to a directory, not siblings sharing its prefix", () =>
@@ -719,7 +718,7 @@ describe("Indexer", () => {
       writeFile(repoPath, "src/parser.c", "/* Automatically @generated by tree-sitter v0.25.10 */\n\nneedle;\n")
       yield* fs.symlink(path.join(outside, "secret.txt"), path.join(repoPath, "linked.txt"))
       yield* fs.symlink(outside, path.join(repoPath, "linked-dir"))
-      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir, embed: fakeEmbed })
+      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir })
       yield* indexer.indexRepo(REPO, repoPath)
       return { indexer, repoPath }
     })
@@ -739,7 +738,7 @@ describe("Indexer", () => {
         const { indexer } = yield* setup
         const files = yield* indexer.globFiles("**", { repo: REPO })
         expect(files.map((f) => f.path)).toEqual(["src/main.ts"])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
 
     it.effect("doesn't read through a file replaced by a symlink after indexing", () =>
@@ -754,7 +753,7 @@ describe("Indexer", () => {
         const error = yield* Effect.flip(indexer.readFile(REPO, "src/main.ts"))
         expect(error._tag).toBe("FileNotFoundError")
         expect(yield* indexer.grepPattern("needle", { repo: REPO })).toEqual([])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
   })
 
@@ -766,7 +765,7 @@ describe("Indexer", () => {
       writeFile(repoPath, "src/axb/two.ts", "needle two")
       writeFile(repoPath, ".github/ci.yml", "needle ci")
       writeFile(repoPath, "README.md", "needle readme")
-      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir, embed: fakeEmbed })
+      const indexer = yield* makeWith({ indexDir: tempDir("index"), reposDir })
       yield* indexer.indexRepo(REPO, repoPath)
       return indexer
     })
@@ -776,7 +775,7 @@ describe("Indexer", () => {
         const indexer = yield* setup
         const files = yield* indexer.listFiles({ repo: REPO, path: "src/a_b" })
         expect(files.map((f) => f.path)).toEqual(["src/a_b/one.ts"])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
 
     it.effect("matches dotfiles with * in grep, glob_files and search alike", () =>
@@ -787,7 +786,7 @@ describe("Indexer", () => {
         expect((yield* indexer.globFiles("**/*.yml", { repo: REPO })).map((f) => f.path)).toEqual([".github/ci.yml"])
         const search = yield* indexer.searchKeyword("needle", { repo: REPO, glob: "*.yml" })
         expect(search.map((r) => r.path)).toEqual([".github/ci.yml"])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
 
     it.effect("takes a negated glob in search, as grep does", () =>
@@ -797,7 +796,7 @@ describe("Indexer", () => {
         expect(search.map((r) => r.path).sort()).toEqual([".github/ci.yml", "README.md"])
         const grep = yield* indexer.grepPattern("needle", { repo: REPO, glob: "!**/*.ts" })
         expect(grep.map((r) => r.path).sort()).toEqual([".github/ci.yml", "README.md"])
-      }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
+      }).pipe(Effect.scoped, Effect.provide(TestServices))
     )
   })
 

@@ -84,6 +84,7 @@ export {
   type ReadFileOptions,
   type GrepOptions
 } from "./services/Indexer.js"
+export { Embedder, type EmbedderService } from "./services/Embedder.js"
 export {
   RepobaseEngine,
   type RepobaseEngineService,

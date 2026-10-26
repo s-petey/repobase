@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
 import {
   CURRENT_INDEX_FORMAT,
+  Embedder,
   GitClientLayer,
   Indexer,
   IndexerLayerWith,
@@ -37,7 +38,13 @@ const MemoryRepoStore = Layer.effect(
   })
 )
 
-const fakeEmbed = async () => Array.from({ length: 384 }, (_, i) => (i + 1) / 384)
+const FakeEmbedder = Layer.succeed(
+  Embedder,
+  Embedder.of({
+    embed: () => Effect.succeed(Array.from({ length: 384 }, (_, i) => (i + 1) / 384)),
+    tokenCounter: Effect.succeed((line: string) => line.split(/\s+/).filter(Boolean).length)
+  })
+)
 
 let close: (() => Promise<void>) | undefined
 
@@ -86,7 +93,11 @@ const connect = async (options: { readonly indexed?: boolean } = {}) => {
   const runtime = ManagedRuntime.make(
     RepobaseEngineLayer.pipe(
       Layer.provideMerge(
-        Layer.mergeAll(GitClientLayer, MemoryRepoStore, IndexerLayerWith({ indexDir, reposDir, embed: fakeEmbed }))
+        Layer.mergeAll(
+          GitClientLayer,
+          MemoryRepoStore,
+          IndexerLayerWith({ indexDir, reposDir }).pipe(Layer.provide(FakeEmbedder))
+        )
       ),
       Layer.provide(BunServices.layer)
     )

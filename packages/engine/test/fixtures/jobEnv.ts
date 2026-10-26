@@ -2,13 +2,13 @@
 // handlers (in-process through RpcTest instead of a thread), with git, LanceDB
 // and the job store in temp directories. Only the embedding model is faked.
 import { BunServices } from "@effect/platform-bun"
-import { Effect, Layer, Option, Ref } from "effect"
+import { Context, Effect, Latch, Layer, Option, Ref, SubscriptionRef } from "effect"
 import { RpcTest } from "effect/unstable/rpc"
 import { execSync } from "node:child_process"
-import * as crypto from "node:crypto"
 import * as nodeFs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { IndexError } from "../../src/errors.js"
 import { makeJobDefinitions } from "../../src/jobs/definitions.js"
 import type { Job } from "../../src/jobs/Job.js"
 import { layer as JobProgressLayer } from "../../src/jobs/JobProgress.js"
@@ -22,6 +22,7 @@ import { RepoStore } from "../../src/services/RepoStore.js"
 import { IndexingClient, WorkerClient } from "../../src/worker/client.js"
 import { StepRpcs } from "../../src/worker/rpcs.js"
 import { HandlersLayer } from "../../src/worker/server.js"
+import { fakeEmbedder, fakeVector } from "./fakeEmbedder.js"
 
 export const tempDir = (prefix: string) => nodeFs.mkdtempSync(path.join(os.tmpdir(), `repobase-${prefix}-`))
 
@@ -59,22 +60,53 @@ export const makeSourceRepo = (files = 60, branch = "main") => {
 
 export const embedFailures = { explode: false, markers: new Set<string>() }
 
-export const embedConcurrency = { current: 0, peak: 0 }
-
-const fakeEmbed = async (text: string) => {
-  embedConcurrency.current++
-  embedConcurrency.peak = Math.max(embedConcurrency.peak, embedConcurrency.current)
-  try {
-    // Yield, so embeds from batches that run at the same time overlap
-    await new Promise((resolve) => setTimeout(resolve, 1))
-    if (embedFailures.explode && text.includes("EXPLODE")) throw new Error("model crashed")
-    for (const marker of embedFailures.markers) if (text.includes(marker)) throw new Error("model crashed")
-    const seed = crypto.createHash("sha256").update(text).digest()
-    return Array.from({ length: 384 }, (_, i) => seed[i % seed.length] / 255 + 0.01)
-  } finally {
-    embedConcurrency.current--
+/**
+ * How many embeds are running, the most that ever ran at once, and a gate that
+ * holds every embed while it's closed
+ */
+export class EmbedProbe extends Context.Service<
+  EmbedProbe,
+  {
+    readonly gate: Latch.Latch
+    readonly inFlight: SubscriptionRef.SubscriptionRef<number>
+    readonly peak: Ref.Ref<number>
   }
-}
+>()("test/EmbedProbe") {}
+
+const EmbedProbeLayer = Layer.effect(
+  EmbedProbe,
+  Effect.gen(function* () {
+    return EmbedProbe.of({
+      gate: yield* Latch.make(true),
+      inFlight: yield* SubscriptionRef.make(0),
+      peak: yield* Ref.make(0)
+    })
+  })
+)
+
+const crashes = (text: string) =>
+  (embedFailures.explode && text.includes("EXPLODE")) || [...embedFailures.markers].some((marker) => text.includes(marker))
+
+const ProbedEmbedder = Layer.unwrap(
+  EmbedProbe.use((probe) =>
+    Effect.succeed(
+      fakeEmbedder((text) =>
+        SubscriptionRef.update(probe.inFlight, (n) => n + 1).pipe(
+          Effect.andThen(SubscriptionRef.get(probe.inFlight)),
+          Effect.flatMap((n) => Ref.update(probe.peak, (peak) => Math.max(peak, n))),
+          Effect.andThen(
+            probe.gate.whenOpen(
+              crashes(text)
+                ? Effect.fail(new IndexError({ operation: "embed", message: "model crashed" }))
+                : Effect.succeed(fakeVector(text))
+            )
+          ),
+          Effect.ensuring(SubscriptionRef.update(probe.inFlight, (n) => n - 1))
+        )
+      )
+    )
+  )
+)
 
 // config.json in memory, so tests never touch ~/.repobase
 export const MemoryRepoStore = Layer.effect(
@@ -112,7 +144,10 @@ const onlyRpcs = (pool: string, allowed: (rpc: string) => boolean) =>
 export const testEnv = (options: { readonly indexingConcurrency?: number } = {}) => {
   const reposDir = tempDir("repos")
   const indexDir = tempDir("index")
-  const WorkerSide = Layer.mergeAll(GitClientLayer, IndexerLayerWith({ indexDir, embed: fakeEmbed }))
+  const WorkerSide = Layer.mergeAll(
+    GitClientLayer,
+    IndexerLayerWith({ indexDir }).pipe(Layer.provide(ProbedEmbedder))
+  )
   const Workers = Layer.mergeAll(
     Layer.effect(WorkerClient)(onlyRpcs("job", (rpc) => rpc !== "IndexBatch")),
     Layer.effect(IndexingClient)(onlyRpcs("indexing", (rpc) => rpc === "IndexBatch"))
@@ -125,6 +160,7 @@ export const testEnv = (options: { readonly indexingConcurrency?: number } = {})
     Layer.provideMerge(Engine),
     Layer.provideMerge(Layer.mergeAll(Workers, MemoryRepoStore, JobProgressLayer)),
     Layer.provideMerge(JobStoreLayerWith({ dir: tempDir("jobs") })),
+    Layer.provideMerge(EmbedProbeLayer),
     Layer.provide(BunServices.layer)
   )
   return { reposDir, indexDir, layer }

@@ -16,7 +16,7 @@ import micromatch from "micromatch"
 import { globToRegex } from "../glob.js"
 import { chunkLines, splitLines } from "../chunk.js"
 import type { Table } from "@lancedb/lancedb"
-import { type EmbedderConfig, make as makeEmbedder } from "./Embedder.js"
+import { Embedder, layer as EmbedderLayer } from "./Embedder.js"
 import { make as makeIndexStore } from "./IndexStore.js"
 
 // Configuration
@@ -135,9 +135,9 @@ export interface IndexBatchOptions {
 }
 
 /**
- * Where the index lives and, for tests, how text is embedded
+ * Where the index lives
  */
-export interface IndexerConfig extends EmbedderConfig {
+export interface IndexerConfig {
   /** Defaults to ~/.repobase/index */
   readonly indexDir?: string
   /** Where repo clones are read from; defaults to ~/.repobase/repos */
@@ -583,7 +583,7 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
   const config = { ...options, indexDir: options.indexDir ?? INDEX_DIR, reposDir: options.reposDir ?? getReposDir() }
 
   const store = yield* makeIndexStore(config.indexDir)
-  const embedder = yield* makeEmbedder(config)
+  const embedder = yield* Embedder
 
   // A file's path inside `root`, if no symlink is on the way to it: a cloned
   // repo can't point indexing, read_file or grep at files outside itself
@@ -1439,11 +1439,11 @@ export const makeWith = (options: IndexerConfig) => Effect.gen(function* () {
 export const make = makeWith({})
 
 /**
- * Indexer layer - requires FileSystem
+ * Indexer layer with the embedding model - requires FileSystem
  */
-export const layer = Layer.effect(Indexer, make)
+export const layer = Layer.effect(Indexer, make).pipe(Layer.provide(EmbedderLayer({})))
 
 /**
- * Indexer layer for a custom index directory (and, in tests, a fake embedder)
+ * Indexer layer for a custom index directory - requires an Embedder
  */
 export const layerWith = (config: IndexerConfig) => Layer.effect(Indexer, makeWith(config))
