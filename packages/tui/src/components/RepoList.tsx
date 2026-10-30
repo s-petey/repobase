@@ -1,5 +1,6 @@
-import { TextAttributes } from "@opentui/core"
+import { type ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
+import { useEffect, useRef } from "react"
 import { needsReindex, type RepoConfig } from "@repobase/engine"
 import { DateTime, Option } from "effect"
 import { fit, isNarrow } from "../layout.js"
@@ -64,6 +65,8 @@ const repoCountLabel = (count: number): string => {
   return `${count} repo${count !== 1 ? "s" : ""}`
 }
 
+const rowId = (index: number) => `repo-row-${index}`
+
 const LIST_PADDING = 1
 const MARKER_WIDTH = 2
 const SCROLLBAR_WIDTH = 1
@@ -90,6 +93,11 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
   const { width } = useTerminalDimensions()
   const narrow = isNarrow(width)
   const nameWidth = nameWidthFor(width, !narrow)
+  const listRef = useRef<ScrollBoxRenderable | null>(null)
+
+  useEffect(() => {
+    listRef.current?.scrollChildIntoView(rowId(selectedIndex))
+  }, [selectedIndex])
 
   if (totalRepos === 0) {
     return (
@@ -130,7 +138,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
         }}
       />
       <scrollbox
-        focused
+        ref={listRef}
         style={{
           flexGrow: 1,
         }}
@@ -143,6 +151,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
             const icon = row.collapsed ? "▶" : "▼"
             return (
               <box
+                id={rowId(index)}
                 key={`header-${row.owner}`}
                 style={{
                   flexDirection: "row",
@@ -174,6 +183,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
 
           return (
             <box
+              id={rowId(index)}
               key={repo.id}
               style={{
                 flexDirection: "row",

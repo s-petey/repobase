@@ -1,5 +1,7 @@
 import type { TestRendererSetup } from "@opentui/core/testing"
+import { useKeyboard } from "@opentui/react"
 import { testRender } from "@opentui/react/test-utils"
+import { useState } from "react"
 import type { RepoConfig } from "@repobase/engine"
 import { DateTime, Option } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
@@ -34,6 +36,8 @@ const rowsOf = (repos: ReadonlyArray<RepoConfig>): FlatRow[] =>
   repos.map((r) => ({ kind: "repo", repo: r, label: r.id, indented: false }))
 
 const rows = rowsOf([repo("acme/widgets"), repo(LONG_NAME), repo("acme/gadgets", "2026-09-02T12:00:00Z")])
+
+const many = rowsOf(Array.from({ length: 20 }, (_, i) => repo(`acme/repo-${String(i).padStart(2, "0")}`)))
 
 const show = async (width: number, shown = rows, height = 10) => {
   const app = await testRender(<RepoList flatRows={shown} totalRepos={shown.length} selectedIndex={0} />, {
@@ -88,8 +92,31 @@ describe("RepoList", () => {
     expect(gadgets.indexOf("02 Sep 2026")).toBe(widgets.indexOf("21 Oct 2026"))
   })
 
+  it("scrolls only when the selected repo would leave the view", async () => {
+    const MovingSelection = () => {
+      const [selected, setSelected] = useState(0)
+      useKeyboard((key) => {
+        if (key.name === "j") setSelected((index) => Math.min(index + 1, many.length - 1))
+      })
+      return <RepoList flatRows={many} totalRepos={many.length} selectedIndex={selected} />
+    }
+    const app = await testRender(<MovingSelection />, { width: 120, height: 8 })
+    setup = app
+    await interact(app, () => {})
+
+    const press = async (times: number) => {
+      for (let i = 0; i < times; i++) await interact(app, () => app.mockInput.pressKey("j"))
+      return app.captureCharFrame().split("\n")
+    }
+
+    const nearTop = await press(2)
+    expect(lineOf(nearTop, "acme/repo-02")).toContain("> acme/repo-02")
+    expect(lineOf(nearTop, "acme/repo-00")).not.toBe("")
+
+    expect(lineOf(await press(13), "acme/repo-15")).toContain("> acme/repo-15")
+  })
+
   it.each([60, 120])("keeps every date clear of the scrollbar at %i columns", async (width) => {
-    const many = rowsOf(Array.from({ length: 20 }, (_, i) => repo(`acme/repo-${String(i).padStart(2, "0")}`)))
     const lines = await show(width, many, 8)
 
     const repoLines = lines.filter((line) => line.includes("acme/repo-"))
