@@ -606,7 +606,8 @@ export const App = ({
         outdated={outdated.length - reindexing.size}
         grouped={flatRows.some(r => r.kind === "header")}
         jobCounts={jobCounts(jobs)}
-        activity={syncActivity ? syncActivityText(syncActivity, jobs, workerLimit) : undefined}
+        activity={syncActivity ? syncActivityText(syncActivity, jobs) : undefined}
+        workerLimit={syncActivity ? workerLimit : undefined}
         mcpServerRunning={false}
         cloudConfigured={featureFlags.cloudSync ? cloudConfigured : false}
         cloudPendingCount={featureFlags.cloudSync ? repos.filter(r => {

@@ -1,7 +1,7 @@
 import type { Job } from "@repobase/engine"
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
-import { formatAge, jobCounts, syncActivityText } from "./jobView.js"
+import { formatAge, jobCounts, syncActivityText, workersText } from "./jobView.js"
 
 const at = (ms: number) => DateTime.makeUnsafe(ms)
 
@@ -22,9 +22,7 @@ describe("syncActivityText", () => {
     ({ status, kind, repoId: "a", createdAt: at(createdAtMs) }) as Job
 
   it("names the repo for a single sync", () => {
-    expect(syncActivityText({ kind: "one", repoId: "acme-widgets" }, [], 3)).toBe(
-      "Syncing acme-widgets · up to 3 workers"
-    )
+    expect(syncActivityText({ kind: "one", repoId: "acme-widgets" }, [])).toBe("Syncing acme-widgets")
   })
 
   it("counts Sync All's finished syncs, ignoring jobs from before it started and adds", () => {
@@ -35,13 +33,16 @@ describe("syncActivityText", () => {
       job("running", 1_300),
       job("completed", 1_400, "addRepo")
     ]
-    expect(syncActivityText({ kind: "all", since: at(1_000), total: 7 }, jobs, 1)).toBe(
-      "Syncing 2/7 repos · up to 1 worker"
-    )
+    expect(syncActivityText({ kind: "all", since: at(1_000), total: 7 }, jobs)).toBe("Syncing 2/7 repos")
   })
+})
 
-  it("leaves out the worker limit when it isn't known", () => {
-    expect(syncActivityText({ kind: "all", since: at(0), total: 2 }, [])).toBe("Syncing 0/2 repos")
+describe("workersText", () => {
+  it.each([
+    [1, "up to 1 worker"],
+    [3, "up to 3 workers"]
+  ])("%i is %s", (limit, expected) => {
+    expect(workersText(limit)).toBe(expected)
   })
 })
 

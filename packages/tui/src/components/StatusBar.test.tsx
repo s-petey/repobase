@@ -37,7 +37,8 @@ describe("StatusBar", () => {
         grouped
         message="[OK] Effect-TS-effect updated"
         outdated={3}
-        activity="Syncing hi-rasmus/hirasmus · up to 3 workers"
+        activity="Syncing hi-rasmus/hirasmus"
+        workerLimit={3}
         jobCounts={{ running: 1, failed: 6 }}
       />,
       { width: 100, height: 12 }
@@ -54,6 +55,26 @@ describe("StatusBar", () => {
     expect(lineOf("Tasks: 1 running, 6 failed")).toBe(message + 3)
     expect(lineOf("[Enter] Toggle group")).toBe(message + 4)
     expect(frame).toContain("[q] Quit")
+  })
+
+  it("puts the activity and task counts on one line, without the worker limit, in a narrow terminal", async () => {
+    setup = await testRender(
+      <StatusBar
+        mode="list"
+        message="[OK] Effect-TS-effect updated"
+        outdated={3}
+        activity="Syncing hi-rasmus/hirasmus"
+        workerLimit={3}
+        jobCounts={{ running: 1, failed: 6 }}
+      />,
+      { width: 60, height: 12 }
+    )
+    await interact(setup, () => {})
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("Syncing hi-rasmus/hirasmus · Tasks: 1 running, 6 failed")
+    expect(frame).not.toContain("workers")
+    expect(frame).toContain("! 3 repos need re-indexing · [r] [R] all")
   })
 
   it("keeps each key hint whole on one line in a narrow terminal", async () => {

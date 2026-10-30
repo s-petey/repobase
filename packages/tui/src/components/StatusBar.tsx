@@ -1,4 +1,7 @@
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/react"
+import { workersText } from "../jobView.js"
+import { fit, isNarrow } from "../layout.js"
 import { colors } from "../theme/index.js"
 import { featureFlags } from "../config.js"
 import { KeyHints } from "./KeyHints.js"
@@ -13,9 +16,16 @@ interface StatusBarProps {
   grouped?: boolean
   jobCounts?: { readonly running: number; readonly failed: number }
   activity?: string
+  workerLimit?: number
 }
 
-export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped, jobCounts, activity }: StatusBarProps) => {
+const BAR_CHROME = 4 // border and padding on each side
+const SEPARATOR = " · "
+const TASKS_LABEL = "Tasks: "
+
+export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloudConfigured, cloudPendingCount, grouped, jobCounts, activity, workerLimit }: StatusBarProps) => {
+  const { width } = useTerminalDimensions()
+  const narrow = isNarrow(width)
   const getHelpText = () => {
     if (mode === "add" || mode === "search" || mode === "confirmDelete" || mode === "confirmReindex" || mode === "jobs") {
       return "" // Help text shown in modal
@@ -69,6 +79,26 @@ export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloud
       ? colors.status.warning.default
       : colors.status.success.default
 
+  const outdatedText = narrow
+    ? `! ${outdated} ${outdated === 1 ? "repo needs" : "repos need"} re-indexing · [r] [R] all`
+    : `${outdated === 1 ? "1 repo isn't" : `${outdated} repos aren't`} searchable until re-indexed · [r] Re-index  [R] All`
+
+  const countsText = jobParts.map((part) => part.text).join(", ")
+  const activityWidth =
+    width - BAR_CHROME - (countsText ? SEPARATOR.length + TASKS_LABEL.length + countsText.length : 0)
+  const wideActivity = activity && workerLimit !== undefined ? `${activity}${SEPARATOR}${workersText(workerLimit)}` : activity
+  const counts = (
+    <box style={{ flexDirection: "row" }}>
+      <text content={TASKS_LABEL} style={{ fg: colors.text.secondary }} />
+      {jobParts.map((part, index) => (
+        <box key={part.text} style={{ flexDirection: "row" }}>
+          {index > 0 && <text content=", " style={{ fg: colors.text.secondary }} />}
+          <text content={part.text} style={{ fg: part.color }} />
+        </box>
+      ))}
+    </box>
+  )
+
   return (
     <box
       style={{
@@ -88,23 +118,22 @@ export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloud
           attributes: message ? TextAttributes.BOLD : undefined,
         }}
       />
-      {outdated > 0 && (
-        <text
-          content={`${outdated === 1 ? "1 repo isn't" : `${outdated} repos aren't`} searchable until re-indexed · [r] Re-index  [R] All`}
-          style={{ fg: colors.status.warning.default }}
-        />
-      )}
-      {activity && <text content={activity} style={{ fg: colors.status.info.default }} />}
-      {jobParts.length > 0 && (
-        <box style={{ flexDirection: "row" }}>
-          <text content="Tasks: " style={{ fg: colors.text.secondary }} />
-          {jobParts.map((part, index) => (
-            <box key={part.text} style={{ flexDirection: "row" }}>
-              {index > 0 && <text content=", " style={{ fg: colors.text.secondary }} />}
-              <text content={part.text} style={{ fg: part.color }} />
-            </box>
-          ))}
-        </box>
+      {outdated > 0 && <text content={outdatedText} style={{ fg: colors.status.warning.default }} />}
+      {narrow ? (
+        (activity || jobParts.length > 0) && (
+          <box style={{ flexDirection: "row" }}>
+            {activity && (
+              <text content={fit(activity, activityWidth).trimEnd()} style={{ fg: colors.status.info.default }} />
+            )}
+            {activity && jobParts.length > 0 && <text content={SEPARATOR} style={{ fg: colors.text.secondary }} />}
+            {jobParts.length > 0 && counts}
+          </box>
+        )
+      ) : (
+        <>
+          {wideActivity && <text content={wideActivity} style={{ fg: colors.status.info.default }} />}
+          {jobParts.length > 0 && counts}
+        </>
       )}
       {(featureFlags.mcpServerToggle || featureFlags.cloudSync) && (
         <box style={{ flexDirection: "row", gap: 2 }}>

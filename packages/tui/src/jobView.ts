@@ -77,16 +77,15 @@ export type SyncActivity =
   | { readonly kind: "one"; readonly repoId: string }
   | { readonly kind: "all"; readonly since: DateTime.Utc; readonly total: number };
 
+export const workersText = (workerLimit: number): string =>
+  `up to ${workerLimit} worker${workerLimit === 1 ? "" : "s"}`;
+
 export const syncActivityText = (
   activity: SyncActivity,
   jobs: ReadonlyArray<Job>,
-  workerLimit?: number,
 ): string => {
-  const workers =
-    workerLimit === undefined ? "" : ` · up to ${workerLimit} worker${workerLimit === 1 ? "" : "s"}`;
-
   if (activity.kind === "one") {
-    return `Syncing ${activity.repoId}${workers}`;
+    return `Syncing ${activity.repoId}`;
   }
 
   const since = DateTime.toEpochMillis(activity.since);
@@ -97,5 +96,5 @@ export const syncActivityText = (
       DateTime.toEpochMillis(job.createdAt) >= since,
   ).length;
 
-  return `Syncing ${Math.min(finished, activity.total)}/${activity.total} repos${workers}`;
+  return `Syncing ${Math.min(finished, activity.total)}/${activity.total} repos`;
 };
