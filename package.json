@@ -8,8 +8,8 @@
       "packages/*"
     ],
     "catalog": {
-      "@effect/platform-bun": "4.0.0-rc.115",
-      "@effect/vitest": "4.0.0-rc.115",
+      "@effect/platform-bun": "4.1.0",
+      "@effect/vitest": "4.1.0",
       "@huggingface/transformers": "^4.3.0",
       "@lancedb/lancedb": "^0.39.0",
       "@modelcontextprotocol/client": "^2.2.0",
@@ -17,7 +17,7 @@
       "@opentui/core": "^0.5.11",
       "@opentui/react": "^0.5.11",
       "@types/react": "^19.3.0",
-      "effect": "4.0.0-rc.115",
+      "effect": "4.1.0",
       "fast-glob": "^3.3.3",
       "micromatch": "^4.0.8",
       "react": "^19.3.0",
@@ -61,14 +61,14 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.115",
+    "@effect/platform-bun": "4.1.0",
     "@huggingface/transformers": "^4.3.0",
     "@lancedb/lancedb": "^0.39.0",
     "@modelcontextprotocol/server": "^2.2.0",
     "@opentui/core": "^0.5.11",
     "@opentui/react": "^0.5.11",
     "@types/bun": "^1.4.2",
-    "effect": "4.0.0-rc.115",
+    "effect": "4.1.0",
     "fast-glob": "^3.3.3",
     "micromatch": "^4.0.8",
     "react": "^19.3.0"

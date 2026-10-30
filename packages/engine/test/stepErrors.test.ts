@@ -1,6 +1,6 @@
 import { describe, it, expect } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { RpcClientError } from "effect/unstable/rpc"
+import { RpcClientError } from "effect/rpc"
 import { GitError } from "../src/errors.js"
 import {
   classifyGitFailure,

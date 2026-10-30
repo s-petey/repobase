@@ -1,5 +1,5 @@
 import { DateTime, Effect, Option, Ref, Schema, Semaphore, Stream } from "effect"
-import type { RpcClientError } from "effect/unstable/rpc"
+import type { RpcClientError } from "effect/rpc"
 import * as path from "path"
 import * as os from "os"
 import type { RepoConfig } from "../schemas.js"

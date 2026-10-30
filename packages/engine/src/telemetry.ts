@@ -1,6 +1,6 @@
 import { Config, Effect, Layer, Option } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
-import { OtlpLogger, OtlpSerialization, OtlpTracer } from "effect/unstable/observability"
+import { FetchHttpClient } from "effect/http"
+import { OtlpLogger, OtlpSerialization, OtlpTracer } from "effect/observability"
 
 // Any HTTP response means something is listening
 const isReachable = (url: string) =>

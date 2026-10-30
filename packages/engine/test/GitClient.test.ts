@@ -1,6 +1,6 @@
 import { describe, it, expect } from "@effect/vitest"
 import { Cause, DateTime, Effect, Layer, Option, PlatformError, Sink, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GitClient, GitError } from "../src/index.js"
 import { layer as GitClientLayer } from "../src/services/GitClient.js"
 

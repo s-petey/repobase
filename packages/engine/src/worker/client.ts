@@ -1,6 +1,6 @@
 import { BunWorker } from "@effect/platform-bun"
 import { Context, Effect, Layer } from "effect"
-import { RpcClient, type RpcClientError, type RpcGroup, RpcWorker } from "effect/unstable/rpc"
+import { RpcClient, type RpcClientError, type RpcGroup, RpcWorker } from "effect/rpc"
 import { hostWorkerCount, splitPools } from "./limits.js"
 import { StepRpcs } from "./rpcs.js"
 import { WorkerSettings } from "./settings.js"

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S LANCEDB_LOG=error bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Ref } from "effect"
-import { Argument, Command, Flag } from "effect/unstable/cli"
+import { Argument, Command, Flag } from "effect/cli"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,

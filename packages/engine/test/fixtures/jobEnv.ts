@@ -3,7 +3,7 @@
 // and the job store in temp directories. Only the embedding model is faked.
 import { BunServices } from "@effect/platform-bun"
 import { Context, Effect, Latch, Layer, Option, Ref, SubscriptionRef } from "effect"
-import { RpcTest } from "effect/unstable/rpc"
+import { RpcTest } from "effect/rpc"
 import { execSync } from "node:child_process"
 import * as nodeFs from "node:fs"
 import * as os from "node:os"

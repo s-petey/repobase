@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import type { RpcClientError } from "effect/unstable/rpc"
+import type { RpcClientError } from "effect/rpc"
 import type { GitError, IndexError } from "../errors.js"
 
 // One error class per job step, so a failed step can be shown to the user

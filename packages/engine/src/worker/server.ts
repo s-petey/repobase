@@ -1,7 +1,7 @@
 import { BunServices, BunWorkerRunner } from "@effect/platform-bun"
 import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Queue, Stream } from "effect"
 import type { Context } from "effect"
-import { RpcServer, RpcTest, RpcWorker } from "effect/unstable/rpc"
+import { RpcServer, RpcTest, RpcWorker } from "effect/rpc"
 import { format } from "node:util"
 import { consoleLogLevel, type EmbedLog, type EmbedLogLevel, embedLogOf } from "../embedLog.js"
 import {

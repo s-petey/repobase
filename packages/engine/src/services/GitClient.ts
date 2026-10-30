@@ -1,5 +1,5 @@
 import { Context, DateTime, Effect, Layer, Option, type PlatformError, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GitError } from "../errors.js"
 import type { FileChange, RepoMode } from "../schemas.js"
 
