@@ -186,7 +186,11 @@ const program = Effect.gen(function* () {
   // Disable exitOnCtrlC so shutdown goes through the program's finalizers
   const renderer = yield* Effect.acquireRelease(
     Effect.promise(() => createCliRenderer({ exitOnCtrlC: false })),
-    (renderer) => Effect.sync(() => renderer.destroy())
+    (renderer) =>
+      Effect.promise(() => {
+        renderer.destroy()
+        return renderer.closed
+      })
   )
 
   // Load initial repos
