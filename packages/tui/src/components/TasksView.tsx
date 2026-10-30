@@ -16,6 +16,7 @@ import {
 import { DateTime } from "effect"
 import { useEffect, useRef, useState } from "react"
 import { formatAge } from "../jobView.js"
+import { isNarrow } from "../layout.js"
 import { colors } from "../theme/index.js"
 import { KeyHints } from "./KeyHints.js"
 
@@ -53,7 +54,6 @@ const lineId = (key: string) => `line-${key}`
 // The list takes 40% of the width (at least 40 columns); each row is the
 // selection marker, then the repo, status and age columns
 const listWidth = (terminalWidth: number) => Math.max(40, Math.floor(terminalWidth * 0.4))
-const NARROW_WIDTH = 80
 const PAGE_PADDING = 1
 const AGE_TICK_MS = 30_000
 const MARKER_WIDTH = 2
@@ -138,7 +138,7 @@ function getLevelKeysText(level: number, shownError: boolean, showingBatches: bo
 export const TasksView = ({ jobs, onProgressChange, now: fixedNow, onRetry, onDiscard, onClose }: TasksViewProps) => {
   const { width } = useTerminalDimensions()
   const now = useClock(fixedNow)
-  const narrow = width < NARROW_WIDTH
+  const narrow = isNarrow(width)
   const [selection, setSelection] = useState(() => ({ id: jobs[0]?.id, index: 0 }))
   const [levelState, setLevel] = useState(TASKS)
   const [stepKey, setStepKey] = useState<string | undefined>()
