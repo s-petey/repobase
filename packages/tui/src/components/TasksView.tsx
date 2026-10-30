@@ -16,7 +16,7 @@ import {
 import { DateTime } from "effect"
 import { useEffect, useRef, useState } from "react"
 import { formatAge } from "../jobView.js"
-import { isNarrow } from "../layout.js"
+import { fit, isNarrow } from "../layout.js"
 import { colors } from "../theme/index.js"
 import { KeyHints } from "./KeyHints.js"
 
@@ -67,9 +67,6 @@ const TASKS = 0
 const STEPS = 1
 const DETAILS = 2
 const BATCH_ERROR = 3
-
-const fit = (text: string, width: number) =>
-  text.length <= width ? text.padEnd(width) : `${text.slice(0, Math.max(0, width - 1))}…`
 
 const useClock = (fixed: DateTime.Utc | undefined) => {
   const [ticking, setTicking] = useState(() => DateTime.nowUnsafe())

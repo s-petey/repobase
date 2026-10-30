@@ -1,6 +1,8 @@
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/react"
 import { needsReindex, type RepoConfig } from "@repobase/engine"
 import { DateTime, Option } from "effect"
+import { fit, isNarrow } from "../layout.js"
 import { colors } from "../theme/index.js"
 
 export type FlatRow =
@@ -35,10 +37,13 @@ const formatStatus = (repo: RepoConfig, reindexing: boolean): { text: string; co
     : { text: "o pending", color: colors.status.warning.default }
 }
 
-const formatCommitDate = (repo: RepoConfig): string =>
-  repo.lastSyncedCommitAt
-    ? DateTime.formatLocal(repo.lastSyncedCommitAt, { locale: "en-US", year: "numeric", month: "short", day: "numeric" })
-    : ""
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+const formatCommitDate = (repo: RepoConfig): string => {
+  if (!repo.lastSyncedCommitAt) return ""
+  const date = DateTime.toDate(repo.lastSyncedCommitAt)
+  return `${String(date.getDate()).padStart(2, "0")} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`
+}
 
 const formatCloudStatus =(repo: RepoConfig): string => {
   if (!repo.cloudEnabled) return ""
@@ -59,7 +64,33 @@ const repoCountLabel = (count: number): string => {
   return `${count} repo${count !== 1 ? "s" : ""}`
 }
 
+const LIST_PADDING = 1
+const MARKER_WIDTH = 2
+const SCROLLBAR_WIDTH = 1
+const SCROLLBAR_GAP = 1
+const MIN_NAME_WIDTH = 8
+const MODE_WIDTH = 18
+const STATUS_WIDTH = 12
+const DATE_WIDTH = 11 // "02 Sep 2026"
+
+const nameWidthFor = (width: number, showMode: boolean) =>
+  Math.max(
+    MIN_NAME_WIDTH,
+    width -
+      2 * LIST_PADDING -
+      MARKER_WIDTH -
+      SCROLLBAR_WIDTH -
+      SCROLLBAR_GAP -
+      (showMode ? 1 + MODE_WIDTH : 0) -
+      (1 + STATUS_WIDTH) -
+      (1 + DATE_WIDTH)
+  )
+
 export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new Set() }: RepoListProps) => {
+  const { width } = useTerminalDimensions()
+  const narrow = isNarrow(width)
+  const nameWidth = nameWidthFor(width, !narrow)
+
   if (totalRepos === 0) {
     return (
       <box
@@ -136,6 +167,10 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
           const commitDate = formatCommitDate(repo)
           const cloudStatus = formatCloudStatus(repo)
           const indent = row.indented ? "  " : ""
+          const name = fit(`${indent}${row.label}`, nameWidth)
+          const columns = narrow
+            ? [name, status.text.padEnd(STATUS_WIDTH), commitDate.padEnd(DATE_WIDTH), cloudStatus]
+            : [name, mode.padEnd(MODE_WIDTH), status.text.padEnd(STATUS_WIDTH), commitDate.padEnd(DATE_WIDTH), cloudStatus]
 
           return (
             <box
@@ -147,7 +182,7 @@ export const RepoList = ({ flatRows, totalRepos, selectedIndex, reindexing = new
               }}
             >
               <text
-                content={`${prefix}${indent}${row.label.padEnd(24 - indent.length)} ${mode.padEnd(18)} ${status.text.padEnd(12)} ${commitDate.padEnd(12)} ${cloudStatus}`}
+                content={`${prefix}${columns.join(" ")}`}
                 style={{
                   fg: isSelected ? colors.text.primary : colors.interactive.default,
                   attributes: isSelected ? TextAttributes.BOLD : undefined,
