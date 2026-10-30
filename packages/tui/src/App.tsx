@@ -6,6 +6,7 @@ import { Array as Arr, DateTime, Order } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, TasksView } from "./components/index.js"
 import type { FlatRow } from "./components/RepoList.js"
+import { type ListAction, matchesKey } from "./actions.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
 import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
@@ -405,6 +406,113 @@ export const App = ({
     })
   }, [])
 
+  const row = flatRows[selectedIndex]
+
+  const reindexHighlighted = (all: boolean) => {
+    // [R] every outdated repo, [r] those in the highlighted repo or group. Only
+    // outdated ones: a full re-index of a current repo is expensive and changes nothing
+    if (outdated.length === 0) return showMessage("Every repo is up to date; nothing to re-index")
+    const scope = all ? outdated : (highlightedScope?.repos ?? []).filter((id) => outdated.includes(id))
+    if (scope.length === 0) {
+      return showMessage(`${highlightedScope?.label ?? "This repo"} doesn't need re-indexing · [R] re-indexes all ${outdated.length}`)
+    }
+    handleReindex(scope)
+  }
+
+  const listActions: ReadonlyArray<ListAction> = [
+    {
+      key: { names: ["enter", "return"] },
+      label: row?.kind === "header" && row.collapsed ? "Expand" : "Collapse",
+      description: "Show or hide this group's repos",
+      scope: "row",
+      run: () => {
+        if (row?.kind === "header") toggleGroup(row.owner)
+      }
+    },
+    {
+      key: { names: ["r"], shift: false },
+      label: "Re-index",
+      description: "Rebuild the search index of this repo, or the outdated repos in this group",
+      scope: "row",
+      run: () => reindexHighlighted(false)
+    },
+    {
+      key: { names: ["s"], shift: false },
+      label: "Sync",
+      description: "Fetch and index new commits",
+      scope: "row",
+      run: () => {
+        if (row?.kind === "repo") handleSyncRepo(row.repo)
+      }
+    },
+    {
+      key: { names: ["/"] },
+      label: "Search",
+      description: "Search this repo or group",
+      scope: "row",
+      run: () => setMode("search")
+    },
+    {
+      key: { names: ["d"] },
+      label: "Delete",
+      description: "Remove the repo and its index",
+      scope: "row",
+      run: () => {
+        if (row?.kind !== "repo") return
+        if (jobs.some((j) => j.repoId === row.repo.id && j.status === "running")) {
+          return showMessage(`${row.repo.id} has a task running; wait for it or discard it in [t] Tasks`)
+        }
+        setRepoToDelete(row.repo)
+        setMode("confirmDelete")
+      }
+    },
+    {
+      key: { names: ["a"] },
+      label: "Add",
+      description: "Add a repository",
+      scope: "general",
+      run: () => setMode("add")
+    },
+    {
+      key: { names: ["s"], shift: true },
+      label: "Sync all",
+      description: "Sync every repo",
+      scope: "general",
+      run: () => {
+        if (syncActivity?.kind === "all") return showMessage("Sync All is already running; see [t] Tasks")
+        handleSyncAll()
+      }
+    },
+    {
+      key: { names: ["r"], shift: true },
+      label: "Re-index all",
+      description: "Re-index every outdated repo",
+      scope: "general",
+      run: () => reindexHighlighted(true)
+    },
+    {
+      key: { names: ["t"] },
+      label: "Tasks",
+      description: "Open the Tasks view",
+      scope: "general",
+      run: () => setMode("jobs")
+    },
+    {
+      key: { names: ["c"] },
+      label: "Copy MCP config",
+      description: "Copy the MCP server config to the clipboard",
+      scope: "general",
+      run: () => handleCopyMcpConfig()
+    },
+    {
+      key: { names: ["q"] },
+      label: "Quit",
+      description: "Quit repobase",
+      scope: "general",
+      run: onQuit
+    }
+  ]
+
   useKeyboard((key) => {
     // Ctrl+C works in every mode, so the app can always be exited. This handler is
     // registered before any modal's, so stopping propagation keeps the key from
@@ -423,8 +531,7 @@ export const App = ({
       return
     }
 
-    // Handle escape/quit in any mode
-    if (key.name === "escape" || (key.name === "q" && mode === "list")) {
+    if (key.name === "escape") {
       if (mode === "add" || mode === "search") {
         setMode("list")
         setInputValue("")
@@ -445,84 +552,23 @@ export const App = ({
       return
     }
 
-    // Only handle navigation in list mode
     if (mode !== "list") return
-
-    const row = flatRows[selectedIndex]
 
     switch (key.name) {
       case "up":
       case "k":
-        selectRow(Math.max(0, selectedIndex - 1))
-        break
+        return selectRow(Math.max(0, selectedIndex - 1))
       case "down":
       case "j":
-        selectRow(Math.min(lastRow, selectedIndex + 1))
-        break
-      case "enter":
-      case "return":
-        if (row?.kind === "header") {
-          toggleGroup(row.owner)
-        }
-        break
+        return selectRow(Math.min(lastRow, selectedIndex + 1))
       case "left":
-        if (row?.kind === "header" && !row.collapsed) {
-          toggleGroup(row.owner)
-        }
-        break
+        if (row?.kind === "header" && !row.collapsed) toggleGroup(row.owner)
+        return
       case "right":
-        if (row?.kind === "header" && row.collapsed) {
-          toggleGroup(row.owner)
-        }
-        break
-      case "a":
-        setMode("add")
-        break
-      case "d":
-        if (row?.kind !== "repo") break
-        if (jobs.some((j) => j.repoId === row.repo.id && j.status === "running")) {
-          showMessage(`${row.repo.id} has a task running; wait for it or discard it in [t] Tasks`)
-          break
-        }
-        setRepoToDelete(row.repo)
-        setMode("confirmDelete")
-        break
-      case "s":
-        if (key.shift) {
-          if (syncActivity?.kind === "all") {
-            showMessage("Sync All is already running; see [t] Tasks")
-          } else {
-            handleSyncAll()
-          }
-        } else if (row?.kind === "repo") {
-          handleSyncRepo(row.repo)
-        }
-        break
-      case "r": {
-        // [R] every outdated repo, [r] those in the highlighted repo or group. Only
-        // outdated ones: a full re-index of a current repo is expensive and changes nothing
-        if (outdated.length === 0) {
-          showMessage("Every repo is up to date; nothing to re-index")
-          break
-        }
-        const scope = key.shift ? outdated : (highlightedScope?.repos ?? []).filter((id) => outdated.includes(id))
-        if (scope.length === 0) {
-          showMessage(`${highlightedScope?.label ?? "This repo"} doesn't need re-indexing · [R] re-indexes all ${outdated.length}`)
-          break
-        }
-        handleReindex(scope)
-        break
-      }
-      case "/":
-        setMode("search")
-        break
-      case "t":
-        setMode("jobs")
-        break
-      case "c":
-        handleCopyMcpConfig()
-        break
+        if (row?.kind === "header" && row.collapsed) toggleGroup(row.owner)
+        return
     }
+    listActions.find((action) => matchesKey(action.key, key))?.run()
   })
 
   const exitMessage = exitNotice(exitStage, jobCounts(jobs).running)
