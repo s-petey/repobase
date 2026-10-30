@@ -1,11 +1,9 @@
-import { FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Clock, Context, DateTime, Effect, FileSystem, Layer, Option, Path, Schema } from "effect"
 import { CloudError, CloudNotConfiguredError, StoreError } from "../errors.js"
 import { CloudConfig, RepoConfig, SyncManifest } from "../schemas.js"
 import { RepoStore } from "./RepoStore.js"
 import * as os from "os"
 import * as crypto from "crypto"
-import * as path from "path"
 
 /**
  * Result of a push operation
@@ -33,7 +31,7 @@ export interface SyncStatus {
   inSync: boolean
   localCommit: Option.Option<string>
   cloudCommit: Option.Option<string>
-  lastPushedAt: Option.Option<Date>
+  lastPushedAt: Option.Option<DateTime.Utc>
 }
 
 /**
@@ -72,20 +70,9 @@ export interface CloudSyncService {
 /**
  * CloudSync service tag
  */
-export class CloudSync extends Context.Tag("@repobase/engine/CloudSync")<
-  CloudSync,
-  CloudSyncService
->() {}
-
-/**
- * Get the cloud config file path
- */
-const getCloudConfigPath = () => `${os.homedir()}/.repobase/cloud.json`
-
-/**
- * Get the index directory path
- */
-const getIndexDir = () => `${os.homedir()}/.repobase/index`
+export class CloudSync extends Context.Service<CloudSync, CloudSyncService>()(
+  "@repobase/engine/CloudSync"
+) {}
 
 /**
  * Helper to convert errors to CloudError
@@ -110,9 +97,10 @@ function hashBuffer(buffer: Uint8Array): string {
  */
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
   const store = yield* RepoStore
-  const cloudConfigPath = getCloudConfigPath()
-  const indexDir = getIndexDir()
+  const cloudConfigPath = path.join(os.homedir(), ".repobase", "cloud.json")
+  const indexDir = path.join(os.homedir(), ".repobase", "index")
 
   /**
    * Load cloud config from disk
@@ -123,7 +111,7 @@ export const make = Effect.gen(function* () {
       return yield* Effect.fail(new CloudNotConfiguredError())
     }
     const content = yield* fs.readFileString(cloudConfigPath)
-    return yield* Schema.decodeUnknown(CloudConfig)(JSON.parse(content))
+    return yield* Schema.decodeUnknownEffect(CloudConfig)(JSON.parse(content))
   }).pipe(Effect.mapError((e) => 
     e instanceof CloudNotConfiguredError ? e : toCloudError("loadConfig")(e)
   ))
@@ -133,7 +121,7 @@ export const make = Effect.gen(function* () {
    */
   const saveConfig = (config: CloudConfig) =>
     Effect.gen(function* () {
-      const encoded = yield* Schema.encode(CloudConfig)(config)
+      const encoded = yield* Schema.encodeEffect(CloudConfig)(config)
       const dir = path.dirname(cloudConfigPath)
       yield* fs.makeDirectory(dir, { recursive: true })
       yield* fs.writeFileString(cloudConfigPath, JSON.stringify(encoded, null, 2))
@@ -220,7 +208,7 @@ export const make = Effect.gen(function* () {
 
   const push: CloudSyncService["push"] = (repoId) =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       const config = yield* loadConfig
 
       // Build local manifest for this repo's files
@@ -242,7 +230,7 @@ export const make = Effect.gen(function* () {
       if (Option.isSome(repoOpt)) {
         const repo = repoOpt.value
         yield* store.updateRepo(repoId, {
-          lastPushedAt: Option.some(new Date()),
+          lastPushedAt: Option.some(yield* DateTime.now),
           lastPushedCommit: repo.lastSyncedCommit
         })
       }
@@ -251,7 +239,7 @@ export const make = Effect.gen(function* () {
         repoId,
         filesUploaded: repoFiles.length,
         filesSkipped: 0,
-        durationMs: Date.now() - startTime
+        durationMs: (yield* Clock.currentTimeMillis) - startTime
       }
     })
 
@@ -282,7 +270,7 @@ export const make = Effect.gen(function* () {
 
   const pull: CloudSyncService["pull"] = () =>
     Effect.gen(function* () {
-      const startTime = Date.now()
+      const startTime = yield* Clock.currentTimeMillis
       const config = yield* loadConfig
 
       // TODO: Implement actual HTTP download from cloud API
@@ -291,7 +279,7 @@ export const make = Effect.gen(function* () {
 
       return {
         filesDownloaded: 0,
-        durationMs: Date.now() - startTime
+        durationMs: (yield* Clock.currentTimeMillis) - startTime
       }
     })
 

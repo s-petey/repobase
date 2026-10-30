@@ -72,6 +72,9 @@ repogrep grep "console\.log" --type js -c
 
 # Just show filenames
 repogrep grep "deprecated" -l
+
+# Only one directory, skipping tests
+repogrep grep "truncate" --repo myproject -p src/editor -X "**/*.test.ts"
 ```
 
 **Options:**
@@ -82,7 +85,10 @@ repogrep grep "deprecated" -l
 - `-C <num>` - Lines before and after
 - `-l, --files-with-matches` - Show only filenames
 - `-c, --count` - Show match counts
-- `--type <ext>` - Filter by extension (ts, js, py, etc.)
+- `-t, --type <ext>` - Filter by extension (ts, js, py, etc.)
+- `-p, --path <path>` - Only search this file, or the files under this directory
+- `-g, --glob <glob>` - Only search files matching a glob (e.g. `src/**/*.ts`)
+- `-X, --exclude <glob>` - Skip files matching a glob (e.g. `**/*.test.ts`)
 - `--limit <number>` - Limit output lines
 
 ### 4. `repogrep read` - Read File Contents
@@ -203,7 +209,7 @@ repogrep grep "useEffect\(" --type tsx -C 3 --limit 50
 - Search results reference indexed repositories stored in `~/.repogrep/`
 - The tool combines SQLite FTS (fast keyword) + LanceDB (semantic vectors)
 - Semantic search uses embeddings from a local transformer model
-- Maximum indexed file size: 64KB per file
+- Files are indexed in full, split into chunks of about 20–35 lines; search results include the matching lines
 - Binary files are automatically skipped during indexing
 
 ## Adding New Repositories
@@ -227,6 +233,7 @@ repogrep index /path/to/repo --force
 - Use `--limit` to cap results for large searches
 - Keyword search is faster than semantic search
 - Use `--type` to filter by file extension when grepping
+- Use `--path` or `--glob` to grep one file or directory in a large repository
 - Use `-c` or `-l` flags with grep to reduce output when exploring
 
 ## Command Selection Guide

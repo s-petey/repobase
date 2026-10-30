@@ -1,12 +1,5 @@
-import { TextAttributes, type InputRenderable } from "@opentui/core"
-import { useRenderer } from "@opentui/react"
-import { useEffect, useRef } from "react"
+import { TextAttributes } from "@opentui/core"
 import { colors } from "../theme/index.js"
-
-interface PasteEvent {
-  text: string
-  preventDefault: () => void
-}
 
 interface AddRepoModalProps {
   onSubmit: (url: string) => void
@@ -15,25 +8,8 @@ interface AddRepoModalProps {
   value: string
 }
 
+// Paste is handled natively by the focused <input> (opentui >= 0.5)
 export const AddRepoModal = ({ onSubmit, onCancel, onInput, value }: AddRepoModalProps) => {
-  const renderer = useRenderer()
-  const inputRef = useRef<InputRenderable | null>(null)
-
-  // Listen for paste events on the renderer's keyInput
-  useEffect(() => {
-    const handlePaste = (event: PasteEvent) => {
-      // Insert pasted text at cursor position using InputRenderable's insertText
-      if (inputRef.current) {
-        inputRef.current.insertText(event.text)
-      }
-    }
-
-    renderer?.keyInput.on("paste", handlePaste)
-    return () => {
-      renderer?.keyInput.off("paste", handlePaste)
-    }
-  }, [renderer])
-
   return (
     <box
       style={{
@@ -67,9 +43,11 @@ export const AddRepoModal = ({ onSubmit, onCancel, onInput, value }: AddRepoModa
         }}
       >
         <input
-          ref={(r: InputRenderable | null) => { inputRef.current = r }}
           placeholder="https://github.com/owner/repo"
           onInput={onInput}
+          // opentui types <input onSubmit> as both (value: string) and Textarea's
+          // (event: SubmitEvent); at runtime an <input> always receives the string value.
+          // @ts-expect-error - onSubmit is called with a string value, not a SubmitEvent
           onSubmit={onSubmit}
           focused
           style={{

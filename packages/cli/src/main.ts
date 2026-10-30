@@ -1,7 +1,7 @@
-#!/usr/bin/env bun
-import { Args, Command, Options, Prompt } from "@effect/cli"
-import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Console, Effect, Layer, Option } from "effect"
+#!/usr/bin/env -S LANCEDB_LOG=error bun
+import { BunRuntime, BunServices } from "@effect/platform-bun"
+import { Console, Effect, Layer, Option, Ref } from "effect"
+import { Argument, Command, Flag } from "effect/cli"
 import {
   RepobaseEngine,
   RepobaseEngineLayer,
@@ -11,54 +11,37 @@ import {
   CloudSync,
   CloudSyncLayer,
   Indexer,
-  trackingMode,
-  pinnedMode,
+  JobProgressLayer,
+  JobRunnerLayer,
+  JobStoreLayer,
+  defaultDefinitionsConfig,
+  fileLoggerLayer,
+  layerInProcessWorkers,
+  logPath,
+  makeJobDefinitions,
+  needsReindex,
+  telemetryLayer,
+  splitRepoPath,
   type RepoConfig,
   type FileInfo,
   type GrepResult
 } from "@repobase/engine"
-
-// ============================================================================
-// Helper to access RepobaseEngine service functions
-// ============================================================================
-const { addRepo, removeRepo, listRepos, syncRepo, syncAll } =
-  Effect.serviceFunctions(RepobaseEngine)
-
-const {
-  configure: configureCloud,
-  getConfig: getCloudConfig,
-  clearConfig: clearCloudConfig,
-  isConfigured: isCloudConfigured,
-  enableRepo: enableCloudRepo,
-  disableRepo: disableCloudRepo,
-  push: pushToCloud,
-  pushAll: pushAllToCloud,
-  getStatus: getCloudStatus,
-  listCloudEnabled
-} = Effect.serviceFunctions(CloudSync)
-
-const {
-  searchKeyword,
-  searchSemantic,
-  searchHybrid,
-  listFiles,
-  globFiles,
-  readFile,
-  grepPattern
-} = Effect.serviceFunctions(Indexer)
+import {
+  CliExit,
+  formatDate,
+  handleAdd,
+  handleReindex,
+  handleRemove,
+  handleSync,
+  outdatedRepoIds,
+  printError,
+  reportError,
+  shortCommit
+} from "./commands.js"
 
 // ============================================================================
 // Formatters
 // ============================================================================
-const formatDate = (date: Date): string =>
-  date.toLocaleString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  })
-
 const formatRepo = (repo: RepoConfig): string => {
   const mode =
     repo.mode._tag === "tracking"
@@ -68,10 +51,7 @@ const formatRepo = (repo: RepoConfig): string => {
     onNone: () => "never",
     onSome: formatDate
   })
-  const commit = Option.match(repo.lastSyncedCommit, {
-    onNone: () => "none",
-    onSome: (c) => c.slice(0, 8)
-  })
+  const commit = shortCommit(repo)
   const cloudStatus = repo.cloudEnabled ? "☁️ enabled" : "local only"
   const lastPush = repo.lastPushedAt
     ? Option.match(repo.lastPushedAt, {
@@ -79,60 +59,61 @@ const formatRepo = (repo: RepoConfig): string => {
         onSome: formatDate
       })
     : "never"
+  const index = needsReindex(repo)
+    ? `\n    Index: old format, unavailable until re-indexed (run 'repobase reindex ${repo.id}')`
+    : ""
   return `  ${repo.id}
     URL: ${repo.url}
     Mode: ${mode}
     Last sync: ${lastSync}
     Commit: ${commit}
-    Cloud: ${cloudStatus}${repo.cloudEnabled ? ` (last push: ${lastPush})` : ""}`
+    Cloud: ${cloudStatus}${repo.cloudEnabled ? ` (last push: ${lastPush})` : ""}${index}`
 }
+
+const noteUnavailable = (repo?: string) =>
+  outdatedRepoIds.pipe(
+    Effect.map((ids) => ids.filter((id) => !repo || id === repo)),
+    Effect.flatMap((ids) =>
+      ids.length === 0
+        ? Effect.void
+        : Console.error(
+            `Note: ${ids.length === 1 ? `${ids[0]} is` : `${ids.length} repositories are`} unavailable until re-indexed; run 'repobase reindex'\n`
+          )
+    )
+  )
 
 // ============================================================================
 // Commands
 // ============================================================================
 
 // --- ADD COMMAND ---
-const urlArg = Args.text({ name: "url" }).pipe(
-  Args.withDescription("GitHub repository URL")
+const urlArg = Argument.String("url").pipe(
+  Argument.withDescription("GitHub repository URL")
 )
 
-const branchOption = Options.text("branch").pipe(
-  Options.withAlias("b"),
-  Options.withDescription("Branch to track (default: main)"),
-  Options.optional
+const branchOption = Flag.String("branch").pipe(
+  Flag.withAlias("b"),
+  Flag.withDescription("Branch to track (default: the repository's default branch)"),
+  Flag.optional
 )
 
-const pinOption = Options.text("pin").pipe(
-  Options.withAlias("p"),
-  Options.withDescription("Pin to specific tag or commit SHA"),
-  Options.optional
+const pinOption = Flag.String("pin").pipe(
+  Flag.withAlias("p"),
+  Flag.withDescription("Pin to specific tag or commit SHA"),
+  Flag.optional
 )
 
 const addCommand = Command.make(
   "add",
   { url: urlArg, branch: branchOption, pin: pinOption },
-  ({ url, branch, pin }) =>
-    Effect.gen(function* () {
-      // Determine mode from options
-      const mode = Option.match(pin, {
-        onSome: (ref) => pinnedMode(ref),
-        onNone: () => trackingMode(Option.getOrElse(branch, () => "main"))
-      })
-
-      const repo = yield* addRepo(url, { mode })
-      yield* Console.log(`✓ Added repository: ${repo.id}`)
-      yield* Console.log(`  Path: ${repo.localPath}`)
-    }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
-      )
-    )
+  handleAdd
 ).pipe(Command.withDescription("Add a GitHub repository"))
 
 // --- LIST COMMAND ---
 const listCommand = Command.make("list", {}, () =>
   Effect.gen(function* () {
-    const repos = yield* listRepos()
+    const engine = yield* RepobaseEngine
+    const repos = yield* engine.listRepos()
     if (repos.length === 0) {
       yield* Console.log("No repositories configured.")
       yield* Console.log("Use 'repobase add <url>' to add one.")
@@ -144,81 +125,60 @@ const listCommand = Command.make("list", {}, () =>
       yield* Console.log("")
     }
   }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+    Effect.catch((error) =>
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("List all repositories"))
 
 // --- SYNC COMMAND ---
-const repoIdArg = Args.text({ name: "id" }).pipe(
-  Args.withDescription("Repository ID to sync"),
-  Args.optional
+const repoIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to sync"),
+  Argument.optional
 )
 
-const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) =>
-  Effect.gen(function* () {
-    const results = yield* Option.match(id, {
-      onSome: (repoId) => syncRepo(repoId).pipe(Effect.map((r) => [r])),
-      onNone: () => syncAll()
-    })
+const syncCommand = Command.make("sync", { id: repoIdArg }, ({ id }) => handleSync(id)).pipe(
+  Command.withDescription("Sync repositories (all if no ID specified)")
+)
 
-    if (results.length === 0) {
-      yield* Console.log("No repositories to sync.")
-      return
-    }
+// --- REINDEX COMMAND ---
+const reindexIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to re-index (default: every repository in an old index format)"),
+  Argument.optional
+)
 
-    for (const result of results) {
-      if (result.updated) {
-        yield* Console.log(
-          `✓ ${result.id}: updated to ${result.currentCommit.slice(0, 8)}`
-        )
-      } else {
-        yield* Console.log(`  ${result.id}: already up to date`)
-      }
-    }
-  }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
-    )
-  )
-).pipe(Command.withDescription("Sync repositories (all if no ID specified)"))
+const reindexCommand = Command.make("reindex", { id: reindexIdArg }, ({ id }) => handleReindex(id)).pipe(
+  Command.withDescription("Re-index repositories in the current index format (every outdated one if no ID specified)")
+)
 
 // --- REMOVE COMMAND ---
-const removeIdArg = Args.text({ name: "id" }).pipe(
-  Args.withDescription("Repository ID to remove")
+const removeIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to remove")
 )
 
-const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) =>
-  Effect.gen(function* () {
-    yield* removeRepo(id)
-    yield* Console.log(`✓ Removed repository: ${id}`)
-  }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
-    )
-  )
-).pipe(Command.withDescription("Remove a repository"))
+const removeCommand = Command.make("remove", { id: removeIdArg }, ({ id }) => handleRemove(id)).pipe(
+  Command.withDescription("Remove a repository")
+)
 
 // ============================================================================
 // Cloud Commands
 // ============================================================================
 
 // --- CLOUD LOGIN COMMAND ---
-const endpointOption = Options.text("endpoint").pipe(
-  Options.withAlias("e"),
-  Options.withDescription("Cloud API endpoint"),
-  Options.withDefault("https://repobase-api.workers.dev")
+const endpointOption = Flag.String("endpoint").pipe(
+  Flag.withAlias("e"),
+  Flag.withDescription("Cloud API endpoint"),
+  Flag.withDefault("https://repobase-api.workers.dev")
 )
 
-const userIdOption = Options.text("user").pipe(
-  Options.withAlias("u"),
-  Options.withDescription("User ID")
+const userIdOption = Flag.String("user").pipe(
+  Flag.withAlias("u"),
+  Flag.withDescription("User ID")
 )
 
-const apiKeyOption = Options.text("key").pipe(
-  Options.withAlias("k"),
-  Options.withDescription("API key")
+const apiKeyOption = Flag.String("key").pipe(
+  Flag.withAlias("k"),
+  Flag.withDescription("API key")
 )
 
 const cloudLoginCommand = Command.make(
@@ -226,13 +186,14 @@ const cloudLoginCommand = Command.make(
   { endpoint: endpointOption, userId: userIdOption, apiKey: apiKeyOption },
   ({ endpoint, userId, apiKey }) =>
     Effect.gen(function* () {
-      yield* configureCloud({ userId, apiKey, endpoint })
+      const cloud = yield* CloudSync
+      yield* cloud.configure({ userId, apiKey, endpoint })
       yield* Console.log(`✓ Cloud sync configured`)
       yield* Console.log(`  User: ${userId}`)
       yield* Console.log(`  Endpoint: ${endpoint}`)
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Configure cloud sync credentials"))
@@ -240,11 +201,12 @@ const cloudLoginCommand = Command.make(
 // --- CLOUD LOGOUT COMMAND ---
 const cloudLogoutCommand = Command.make("logout", {}, () =>
   Effect.gen(function* () {
-    yield* clearCloudConfig()
+    const cloud = yield* CloudSync
+    yield* cloud.clearConfig()
     yield* Console.log(`✓ Cloud sync configuration cleared`)
   }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+    Effect.catch((error) =>
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Clear cloud sync configuration"))
@@ -252,42 +214,43 @@ const cloudLogoutCommand = Command.make("logout", {}, () =>
 // --- CLOUD STATUS COMMAND ---
 const cloudStatusCommand = Command.make("status", {}, () =>
   Effect.gen(function* () {
-    const configured = yield* isCloudConfigured()
-    
+    const cloud = yield* CloudSync
+    const configured = yield* cloud.isConfigured()
+
     if (!configured) {
       yield* Console.log("Cloud sync is not configured.")
       yield* Console.log("Run 'repobase cloud login' to configure.")
       return
     }
 
-    const config = yield* getCloudConfig()
+    const config = yield* cloud.getConfig()
     yield* Console.log(`Cloud sync configured:`)
     yield* Console.log(`  User: ${config.userId}`)
     yield* Console.log(`  Endpoint: ${config.endpoint}`)
     yield* Console.log("")
 
-    const enabledRepos = yield* listCloudEnabled()
+    const enabledRepos = yield* cloud.listCloudEnabled()
     if (enabledRepos.length === 0) {
       yield* Console.log("No repos have cloud sync enabled.")
       yield* Console.log("Use 'repobase cloud enable <repo-id>' to enable.")
     } else {
       yield* Console.log(`Cloud-enabled repos (${enabledRepos.length}):`)
       for (const repo of enabledRepos) {
-        const status = yield* getCloudStatus(repo.id)
+        const status = yield* cloud.getStatus(repo.id)
         const syncIcon = status.inSync ? "✓" : "⏳"
         yield* Console.log(`  ${syncIcon} ${repo.id}`)
       }
     }
   }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+    Effect.catch((error) =>
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Show cloud sync status"))
 
 // --- CLOUD ENABLE COMMAND ---
-const cloudEnableIdArg = Args.text({ name: "id" }).pipe(
-  Args.withDescription("Repository ID to enable cloud sync for")
+const cloudEnableIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to enable cloud sync for")
 )
 
 const cloudEnableCommand = Command.make(
@@ -295,18 +258,19 @@ const cloudEnableCommand = Command.make(
   { id: cloudEnableIdArg },
   ({ id }) =>
     Effect.gen(function* () {
-      yield* enableCloudRepo(id)
+      const cloud = yield* CloudSync
+      yield* cloud.enableRepo(id)
       yield* Console.log(`✓ Cloud sync enabled for: ${id}`)
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Enable cloud sync for a repository"))
 
 // --- CLOUD DISABLE COMMAND ---
-const cloudDisableIdArg = Args.text({ name: "id" }).pipe(
-  Args.withDescription("Repository ID to disable cloud sync for")
+const cloudDisableIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to disable cloud sync for")
 )
 
 const cloudDisableCommand = Command.make(
@@ -314,19 +278,20 @@ const cloudDisableCommand = Command.make(
   { id: cloudDisableIdArg },
   ({ id }) =>
     Effect.gen(function* () {
-      yield* disableCloudRepo(id)
+      const cloud = yield* CloudSync
+      yield* cloud.disableRepo(id)
       yield* Console.log(`✓ Cloud sync disabled for: ${id}`)
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Disable cloud sync for a repository"))
 
 // --- CLOUD PUSH COMMAND ---
-const cloudPushIdArg = Args.text({ name: "id" }).pipe(
-  Args.withDescription("Repository ID to push (omit for all enabled repos)"),
-  Args.optional
+const cloudPushIdArg = Argument.String("id").pipe(
+  Argument.withDescription("Repository ID to push (omit for all enabled repos)"),
+  Argument.optional
 )
 
 const cloudPushCommand = Command.make(
@@ -334,9 +299,10 @@ const cloudPushCommand = Command.make(
   { id: cloudPushIdArg },
   ({ id }) =>
     Effect.gen(function* () {
+      const cloud = yield* CloudSync
       const results = yield* Option.match(id, {
-        onSome: (repoId) => pushToCloud(repoId).pipe(Effect.map((r) => [r])),
-        onNone: () => pushAllToCloud()
+        onSome: (repoId) => cloud.push(repoId).pipe(Effect.map((r) => [r])),
+        onNone: () => cloud.pushAll()
       })
 
       if (results.length === 0) {
@@ -351,8 +317,8 @@ const cloudPushCommand = Command.make(
         )
       }
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Push repos to cloud"))
@@ -360,13 +326,14 @@ const cloudPushCommand = Command.make(
 // --- CLOUD PULL COMMAND ---
 const cloudPullCommand = Command.make("pull", {}, () =>
   Effect.gen(function* () {
-    const result = yield* Effect.serviceFunctionEffect(CloudSync, (s) => s.pull)()
+    const cloud = yield* CloudSync
+    const result = yield* cloud.pull()
     yield* Console.log(
       `✓ Pulled ${result.filesDownloaded} files (${result.durationMs}ms)`
     )
   }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+    Effect.catch((error) =>
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("Pull index from cloud (for new device setup)"))
@@ -390,32 +357,32 @@ const cloudCommand = Command.make("cloud").pipe(
 // ============================================================================
 
 // --- SEARCH COMMAND ---
-const searchQueryArg = Args.text({ name: "query" }).pipe(
-  Args.withDescription("Search query")
+const searchQueryArg = Argument.String("query").pipe(
+  Argument.withDescription("Search query")
 )
 
-const searchRepoOption = Options.text("repo").pipe(
-  Options.withAlias("r"),
-  Options.withDescription("Filter to specific repository"),
-  Options.optional
+const searchRepoOption = Flag.String("repo").pipe(
+  Flag.withAlias("r"),
+  Flag.withDescription("Filter to specific repository"),
+  Flag.optional
 )
 
-const searchLimitOption = Options.integer("limit").pipe(
-  Options.withAlias("l"),
-  Options.withDescription("Maximum results (default: 20)"),
-  Options.withDefault(20)
+const searchLimitOption = Flag.Int("limit").pipe(
+  Flag.withAlias("l"),
+  Flag.withDescription("Maximum results (default: 20)"),
+  Flag.withDefault(20)
 )
 
-const semanticOption = Options.boolean("semantic").pipe(
-  Options.withAlias("s"),
-  Options.withDescription("Use semantic search"),
-  Options.withDefault(false)
+const semanticOption = Flag.Boolean("semantic").pipe(
+  Flag.withAlias("s"),
+  Flag.withDescription("Use semantic search"),
+  Flag.withDefault(false)
 )
 
-const hybridOption = Options.boolean("hybrid").pipe(
-  Options.withAlias("H"),
-  Options.withDescription("Use hybrid search (FTS + semantic)"),
-  Options.withDefault(false)
+const hybridOption = Flag.Boolean("hybrid").pipe(
+  Flag.withAlias("H"),
+  Flag.withDescription("Use hybrid search (FTS + semantic)"),
+  Flag.withDefault(false)
 )
 
 const searchCommand = Command.make(
@@ -435,11 +402,14 @@ const searchCommand = Command.make(
       }
 
       // Determine search mode
+      const indexer = yield* Indexer
       const results = yield* (hybrid
-        ? searchHybrid(query, options)
+        ? indexer.searchHybrid(query, options)
         : semantic
-          ? searchSemantic(query, options)
-          : searchKeyword(query, options))
+          ? indexer.searchSemantic(query, options)
+          : indexer.searchKeyword(query, options))
+
+      yield* noteUnavailable(options.repo)
 
       if (results.length === 0) {
         yield* Console.log("No results found.")
@@ -448,7 +418,8 @@ const searchCommand = Command.make(
 
       yield* Console.log(`Found ${results.length} result(s):\n`)
       for (const result of results) {
-        yield* Console.log(`${result.repo}/${result.path}`)
+        const lines = result.startLine === undefined ? "" : `:${result.startLine}-${result.endLine}`
+        yield* Console.log(`${result.repo}/${result.path}${lines}`)
         yield* Console.log(`  Score: ${result.score.toFixed(3)}`)
         if (result.snippet) {
           const snippet = result.snippet.replace(/\n/g, " ").slice(0, 100)
@@ -457,16 +428,16 @@ const searchCommand = Command.make(
         yield* Console.log("")
       }
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Search across indexed repositories"))
 
 // --- LS COMMAND ---
-const lsPathArg = Args.text({ name: "path" }).pipe(
-  Args.withDescription("Repository or path (e.g., 'repo' or 'repo/src')"),
-  Args.optional
+const lsPathArg = Argument.String("path").pipe(
+  Argument.withDescription("Repository or path (e.g., 'owner/name' or 'owner/name/src')"),
+  Argument.optional
 )
 
 const formatFileInfo = (file: FileInfo): string => {
@@ -483,13 +454,22 @@ const formatSize = (bytes: number): string => {
 
 const lsCommand = Command.make("ls", { path: lsPathArg }, ({ path }) =>
   Effect.gen(function* () {
-    // Parse path into repo and subpath
-    const pathStr = Option.getOrElse(path, () => "")
-    const parts = pathStr.split("/")
-    const repo = parts[0] || undefined
-    const subPath = parts.slice(1).join("/") || undefined
+    const engine = yield* RepobaseEngine
+    let repo: string | undefined
+    let subPath: string | undefined
+    if (Option.isSome(path)) {
+      const ids = (yield* engine.listRepos()).map((r) => r.id)
+      const split = splitRepoPath(ids, path.value)
+      if (split === undefined) {
+        return yield* printError(`No indexed repository matches ${path.value}; 'repobase list' shows them`)
+      }
+      repo = split.repo
+      subPath = split.path || undefined
+    }
 
-    const files = yield* listFiles({ repo, path: subPath })
+    const indexer = yield* Indexer
+    const files = yield* indexer.listFiles({ repo, path: subPath })
+    yield* noteUnavailable(repo)
 
     if (files.length === 0) {
       yield* Console.log("No files found.")
@@ -507,27 +487,27 @@ const lsCommand = Command.make("ls", { path: lsPathArg }, ({ path }) =>
       yield* Console.log(formatFileInfo(file))
     }
   }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+    Effect.catch((error) =>
+      reportError(error)
     )
   )
 ).pipe(Command.withDescription("List files and directories"))
 
 // --- GLOB COMMAND ---
-const globPatternArg = Args.text({ name: "pattern" }).pipe(
-  Args.withDescription("Glob pattern (e.g., '*.ts', '**/test/**')")
+const globPatternArg = Argument.String("pattern").pipe(
+  Argument.withDescription("Glob pattern (e.g., '*.ts', '**/test/**')")
 )
 
-const globRepoOption = Options.text("repo").pipe(
-  Options.withAlias("r"),
-  Options.withDescription("Filter to specific repository"),
-  Options.optional
+const globRepoOption = Flag.String("repo").pipe(
+  Flag.withAlias("r"),
+  Flag.withDescription("Filter to specific repository"),
+  Flag.optional
 )
 
-const globLimitOption = Options.integer("limit").pipe(
-  Options.withAlias("l"),
-  Options.withDescription("Maximum results (default: 50)"),
-  Options.withDefault(50)
+const globLimitOption = Flag.Int("limit").pipe(
+  Flag.withAlias("l"),
+  Flag.withDescription("Maximum results (default: 50)"),
+  Flag.withDefault(50)
 )
 
 const globCommand = Command.make(
@@ -535,10 +515,12 @@ const globCommand = Command.make(
   { pattern: globPatternArg, repo: globRepoOption, limit: globLimitOption },
   ({ pattern, repo, limit }) =>
     Effect.gen(function* () {
-      const files = yield* globFiles(pattern, {
+      const indexer = yield* Indexer
+      const files = yield* indexer.globFiles(pattern, {
         repo: Option.getOrUndefined(repo),
         limit
       })
+      yield* noteUnavailable(Option.getOrUndefined(repo))
 
       if (files.length === 0) {
         yield* Console.log("No files matched.")
@@ -550,33 +532,33 @@ const globCommand = Command.make(
         yield* Console.log(`${file.repo}/${file.path}`)
       }
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Find files matching a glob pattern"))
 
 // --- READ COMMAND ---
-const readPathArg = Args.text({ name: "path" }).pipe(
-  Args.withDescription("File path (e.g., 'repo/src/main.ts')")
+const readPathArg = Argument.String("path").pipe(
+  Argument.withDescription("File path (e.g., 'owner/name/src/main.ts')")
 )
 
-const readOffsetOption = Options.integer("offset").pipe(
-  Options.withAlias("o"),
-  Options.withDescription("Start line (1-based)"),
-  Options.withDefault(1)
+const readOffsetOption = Flag.Int("offset").pipe(
+  Flag.withAlias("o"),
+  Flag.withDescription("Start line (1-based)"),
+  Flag.withDefault(1)
 )
 
-const readLimitOption = Options.integer("lines").pipe(
-  Options.withAlias("L"),
-  Options.withDescription("Number of lines to read"),
-  Options.optional
+const readLimitOption = Flag.Int("lines").pipe(
+  Flag.withAlias("L"),
+  Flag.withDescription("Number of lines to read"),
+  Flag.optional
 )
 
-const noLineNumbersOption = Options.boolean("no-line-numbers").pipe(
-  Options.withAlias("n"),
-  Options.withDescription("Omit line numbers"),
-  Options.withDefault(false)
+const noLineNumbersOption = Flag.Boolean("no-line-numbers").pipe(
+  Flag.withAlias("n"),
+  Flag.withDescription("Omit line numbers"),
+  Flag.withDefault(false)
 )
 
 const readCommand = Command.make(
@@ -589,16 +571,19 @@ const readCommand = Command.make(
   },
   ({ path, offset, lines, noLineNumbers }) =>
     Effect.gen(function* () {
-      // Parse path into repo and file path
-      const parts = path.split("/")
-      if (parts.length < 2) {
-        yield* Console.error("Path must be in format: repo/path/to/file")
-        return
+      const engine = yield* RepobaseEngine
+      const split = splitRepoPath((yield* engine.listRepos()).map((r) => r.id), path)
+      if (split === undefined || split.path === "") {
+        return yield* printError("Path must be in format: owner/name/path/to/file, for an indexed repository")
       }
-      const repo = parts[0]
-      const filePath = parts.slice(1).join("/")
+      const { repo, path: filePath } = split
 
-      const result = yield* readFile(repo, filePath, {
+      if ((yield* outdatedRepoIds).includes(repo)) {
+        return yield* printError(`${repo} is unavailable until re-indexed; run 'repobase reindex ${repo}'`)
+      }
+
+      const indexer = yield* Indexer
+      const result = yield* indexer.readFile(repo, filePath, {
         offset,
         limit: Option.getOrUndefined(lines),
         lineNumbers: !noLineNumbers
@@ -609,68 +594,86 @@ const readCommand = Command.make(
       )
       yield* Console.log(result.content)
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Read file contents"))
 
 // --- GREP COMMAND ---
-const grepPatternArg = Args.text({ name: "pattern" }).pipe(
-  Args.withDescription("Regular expression pattern")
+const grepPatternArg = Argument.String("pattern").pipe(
+  Argument.withDescription("Regular expression pattern")
 )
 
-const grepRepoOption = Options.text("repo").pipe(
-  Options.withAlias("r"),
-  Options.withDescription("Filter to specific repository"),
-  Options.optional
+const grepRepoOption = Flag.String("repo").pipe(
+  Flag.withAlias("r"),
+  Flag.withDescription("Filter to specific repository"),
+  Flag.optional
 )
 
-const grepIgnoreCaseOption = Options.boolean("ignore-case").pipe(
-  Options.withAlias("i"),
-  Options.withDescription("Case insensitive search"),
-  Options.withDefault(false)
+const grepIgnoreCaseOption = Flag.Boolean("ignore-case").pipe(
+  Flag.withAlias("i"),
+  Flag.withDescription("Case insensitive search"),
+  Flag.withDefault(false)
 )
 
-const grepContextBeforeOption = Options.integer("before").pipe(
-  Options.withAlias("B"),
-  Options.withDescription("Lines before match"),
-  Options.withDefault(0)
+const grepContextBeforeOption = Flag.Int("before").pipe(
+  Flag.withAlias("B"),
+  Flag.withDescription("Lines before match"),
+  Flag.withDefault(0)
 )
 
-const grepContextAfterOption = Options.integer("after").pipe(
-  Options.withAlias("A"),
-  Options.withDescription("Lines after match"),
-  Options.withDefault(0)
+const grepContextAfterOption = Flag.Int("after").pipe(
+  Flag.withAlias("A"),
+  Flag.withDescription("Lines after match"),
+  Flag.withDefault(0)
 )
 
-const grepContextOption = Options.integer("context").pipe(
-  Options.withAlias("C"),
-  Options.withDescription("Lines before and after match"),
-  Options.optional
+const grepContextOption = Flag.Int("context").pipe(
+  Flag.withAlias("C"),
+  Flag.withDescription("Lines before and after match"),
+  Flag.optional
 )
 
-const grepFilesOnlyOption = Options.boolean("files-with-matches").pipe(
-  Options.withAlias("l"),
-  Options.withDescription("Only show filenames"),
-  Options.withDefault(false)
+const grepFilesOnlyOption = Flag.Boolean("files-with-matches").pipe(
+  Flag.withAlias("l"),
+  Flag.withDescription("Only show filenames"),
+  Flag.withDefault(false)
 )
 
-const grepCountOption = Options.boolean("count").pipe(
-  Options.withAlias("c"),
-  Options.withDescription("Only show match counts"),
-  Options.withDefault(false)
+const grepCountOption = Flag.Boolean("count").pipe(
+  Flag.withAlias("c"),
+  Flag.withDescription("Only show match counts"),
+  Flag.withDefault(false)
 )
 
-const grepTypeOption = Options.text("type").pipe(
-  Options.withAlias("t"),
-  Options.withDescription("Filter by file extension (e.g., 'ts')"),
-  Options.optional
+const grepTypeOption = Flag.String("type").pipe(
+  Flag.withAlias("t"),
+  Flag.withDescription("Filter by file extension (e.g., 'ts')"),
+  Flag.optional
 )
 
-const grepLimitOption = Options.integer("limit").pipe(
-  Options.withDescription("Limit output lines (default: 100)"),
-  Options.withDefault(100)
+const grepPathOption = Flag.String("path").pipe(
+  Flag.withAlias("p"),
+  Flag.withDescription("Only search this file, or the files under this directory"),
+  Flag.optional
+)
+
+const grepGlobOption = Flag.String("glob").pipe(
+  Flag.withAlias("g"),
+  Flag.withDescription("Only search files matching a glob (e.g., 'src/**/*.ts')"),
+  Flag.optional
+)
+
+const grepExcludeOption = Flag.String("exclude").pipe(
+  Flag.withAlias("X"),
+  Flag.withDescription("Skip files matching a glob (e.g., '**/*.test.ts')"),
+  Flag.optional
+)
+
+const grepLimitOption = Flag.Int("limit").pipe(
+  Flag.withDescription("Limit output lines (default: 100)"),
+  Flag.withDefault(100)
 )
 
 const formatGrepResult = (result: GrepResult): string[] => {
@@ -697,6 +700,9 @@ const grepCommand = Command.make(
     filesOnly: grepFilesOnlyOption,
     count: grepCountOption,
     type: grepTypeOption,
+    path: grepPathOption,
+    glob: grepGlobOption,
+    exclude: grepExcludeOption,
     limit: grepLimitOption
   },
   ({
@@ -709,6 +715,9 @@ const grepCommand = Command.make(
     filesOnly,
     count,
     type,
+    path,
+    glob,
+    exclude,
     limit
   }) =>
     Effect.gen(function* () {
@@ -717,7 +726,8 @@ const grepCommand = Command.make(
       const contextBefore = contextVal ?? before
       const contextAfter = contextVal ?? after
 
-      const results = yield* grepPattern(pattern, {
+      const indexer = yield* Indexer
+      const results = yield* indexer.grepPattern(pattern, {
         repo: Option.getOrUndefined(repo),
         ignoreCase,
         contextBefore,
@@ -725,8 +735,12 @@ const grepCommand = Command.make(
         filesWithMatches: filesOnly,
         count,
         fileType: Option.getOrUndefined(type),
+        path: Option.getOrUndefined(path),
+        glob: Option.getOrUndefined(glob),
+        exclude: Option.getOrUndefined(exclude),
         limit
       })
+      yield* noteUnavailable(Option.getOrUndefined(repo))
 
       if (results.length === 0) {
         yield* Console.log("No matches found.")
@@ -749,8 +763,8 @@ const grepCommand = Command.make(
         }
       }
     }).pipe(
-      Effect.catchAll((error) =>
-        Console.error(`Error: ${error._tag} - ${JSON.stringify(error)}`)
+      Effect.catch((error) =>
+        reportError(error)
       )
     )
 ).pipe(Command.withDescription("Search for regex pattern in file contents"))
@@ -764,6 +778,7 @@ const rootCommand = Command.make("repobase").pipe(
     addCommand,
     listCommand,
     syncCommand,
+    reindexCommand,
     removeCommand,
     cloudCommand,
     searchCommand,
@@ -777,13 +792,12 @@ const rootCommand = Command.make("repobase").pipe(
 // ============================================================================
 // CLI Setup and Run
 // ============================================================================
-const cli = Command.run(rootCommand, {
-  name: "repobase",
+const cli = Command.runWith(rootCommand, {
   version: "0.1.0"
 })
 
 // Layer composition
-// NodeContext.layer provides FileSystem, CommandExecutor, Terminal, etc.
+// BunServices.layer provides FileSystem, Path, ChildProcessSpawner, Terminal, etc.
 const EngineLive = RepobaseEngineLayer.pipe(
   Layer.provide(GitClientLayer),
   Layer.provide(RepoStoreLayer),
@@ -792,12 +806,30 @@ const EngineLive = RepobaseEngineLayer.pipe(
 
 const CloudSyncLive = CloudSyncLayer.pipe(Layer.provide(RepoStoreLayer))
 
-// All application layers merged together
-const AppLayer = Layer.mergeAll(EngineLive, CloudSyncLive, IndexerLayer)
+const JobsLive = JobRunnerLayer(makeJobDefinitions({ ...defaultDefinitionsConfig(), indexingConcurrency: 1 }), {
+  concurrency: 1,
+  processName: "cli"
+}).pipe(
+  Layer.provideMerge(Layer.mergeAll(layerInProcessWorkers, JobProgressLayer)),
+  Layer.provideMerge(Layer.mergeAll(JobStoreLayer, RepoStoreLayer)),
+  Layer.provide(Layer.mergeAll(GitClientLayer, IndexerLayer))
+)
 
-// Run the CLI - provide AppLayer then NodeContext (platform layer)
-cli(process.argv).pipe(
+const AppLayer = Layer.mergeAll(EngineLive, CloudSyncLive, IndexerLayer, JobsLive).pipe(
+  Layer.provideMerge(telemetryLayer("repobase-cli")),
+  Layer.provideMerge(fileLoggerLayer(logPath("cli")))
+)
+
+// Run the CLI - provide AppLayer then BunServices (platform layer)
+cli(process.argv.slice(2)).pipe(
+  Effect.andThen(CliExit.use(Ref.get)),
+  Effect.tap((code) =>
+    Effect.sync(() => {
+      process.exitCode = code
+    })
+  ),
+  Effect.provide(CliExit.layer),
   Effect.provide(AppLayer),
-  Effect.provide(BunContext.layer),
+  Effect.provide(BunServices.layer),
   BunRuntime.runMain
 )

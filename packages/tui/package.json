@@ -5,18 +5,18 @@
   "main": "src/main.tsx",
   "types": "src/main.tsx",
   "scripts": {
-    "start": "bun run src/main.tsx"
+    "start": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.tsx",
+    "check": "tsc"
   },
   "dependencies": {
-    "@effect/platform": "^0.93.6",
-    "@effect/platform-bun": "^0.86.0",
-    "@opentui/core": "^0.1.0",
-    "@opentui/react": "^0.1.0",
+    "@effect/platform-bun": "catalog:",
+    "@opentui/core": "catalog:",
+    "@opentui/react": "catalog:",
     "@repobase/engine": "workspace:*",
-    "effect": "^3.19.9",
-    "react": "^19.0.0"
+    "effect": "catalog:",
+    "react": "catalog:"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0"
+    "@types/react": "catalog:"
   }
 }

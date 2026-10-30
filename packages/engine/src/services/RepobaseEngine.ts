@@ -1,41 +1,29 @@
-import { FileSystem } from "@effect/platform"
-import { Context, Effect, Fiber, Layer, Option, Stream, SubscriptionRef } from "effect"
+import { Context, DateTime, Effect, Fiber, FileSystem, Layer, Option, Path, Stream, SubscriptionRef } from "effect"
 import {
   GitError,
   IndexError,
+  InvalidRepoUrlError,
   RepoAlreadyExistsError,
   RepoNotFoundError,
   SearchError,
   StoreError
 } from "../errors.js"
-import { RepoConfig, RepoMode } from "../schemas.js"
-import { deriveRepoId, trackingMode } from "../utils.js"
+import type {
+  AddRepoProgress,
+  IndexSummary,
+  IndexingProgress,
+  RepoConfig,
+  RepoMode,
+  SearchMode,
+  SearchResult,
+  SyncResult
+} from "../schemas.js"
+import { deriveRepoId, migratedRepoId, trackingMode } from "../utils.js"
+import { CURRENT_INDEX_FORMAT, needsReindex } from "../indexFormat.js"
 import { GitClient } from "./GitClient.js"
 import { RepoStore } from "./RepoStore.js"
-import {
-  Indexer,
-  type IndexSummary,
-  type IndexingProgress,
-  type SearchMode,
-  type SearchOptions,
-  type SearchResult,
-  initialIndexingProgress
-} from "./Indexer.js"
+import { Indexer, type SearchOptions, initialIndexingProgress } from "./Indexer.js"
 import * as os from "os"
-
-/**
- * Progress state for adding a repository
- */
-export type AddRepoStage = "cloning" | "indexing" | "complete" | "error"
-
-export interface AddRepoProgress {
-  readonly stage: AddRepoStage
-  readonly progress: number // 0-100
-  readonly message: string
-  readonly filesIndexed?: number
-  readonly totalFiles?: number
-  readonly currentFile?: string
-}
 
 /**
  * Initial progress state
@@ -64,17 +52,6 @@ export interface AddRepoOptions {
 }
 
 /**
- * Result of a sync operation
- */
-export interface SyncResult {
-  readonly id: string
-  readonly updated: boolean
-  readonly previousCommit: Option.Option<string>
-  readonly currentCommit: string
-  readonly indexSummary?: IndexSummary
-}
-
-/**
  * All possible engine errors
  */
 export type EngineError =
@@ -84,6 +61,7 @@ export type EngineError =
   | SearchError
   | RepoNotFoundError
   | RepoAlreadyExistsError
+  | InvalidRepoUrlError
 
 /**
  * RepobaseEngine service interface
@@ -100,6 +78,8 @@ export interface RepobaseEngineService {
   ) => Effect.Effect<Option.Option<RepoConfig>, EngineError>
   readonly syncRepo: (id: string) => Effect.Effect<SyncResult, EngineError>
   readonly syncAll: () => Effect.Effect<Array<SyncResult>, EngineError>
+  readonly reindexRepo: (id: string) => Effect.Effect<IndexSummary & { readonly id: string }, EngineError>
+  readonly migrateRepoId: (id: string) => Effect.Effect<string, EngineError>
   readonly search: (
     query: string,
     mode: SearchMode,
@@ -110,38 +90,46 @@ export interface RepobaseEngineService {
 /**
  * RepobaseEngine service tag
  */
-export class RepobaseEngine extends Context.Tag(
+export class RepobaseEngine extends Context.Service<RepobaseEngine, RepobaseEngineService>()(
   "@repobase/engine/RepobaseEngine"
-)<RepobaseEngine, RepobaseEngineService>() {}
+) {}
 
 /**
- * Get the repos directory path
+ * Create the RepobaseEngine service implementation, with clones in `reposDir`
+ * (default ~/.repobase/repos)
  */
-const getReposDir = () => `${os.homedir()}/.repobase/repos`
-
-/**
- * Create the RepobaseEngine service implementation
- */
-export const make = Effect.gen(function* () {
+export const makeWith = (config: { readonly reposDir?: string } = {}) => Effect.gen(function* () {
   const git = yield* GitClient
   const store = yield* RepoStore
   const indexer = yield* Indexer
   const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
 
-  const reposDir = getReposDir()
+  const reposDir = config.reposDir ?? path.join(os.homedir(), ".repobase", "repos")
+
+  // An owner's directory under repos/ goes once its last repo is removed
+  const removeIfEmptyOwnerDir = (dir: string) =>
+    Effect.gen(function* () {
+      if (path.dirname(dir) !== reposDir) return
+      const entries = yield* fs.readDirectory(dir)
+      if (entries.length === 0) yield* fs.remove(dir, { recursive: true })
+    }).pipe(Effect.catch(() => Effect.void))
 
   const addRepo: RepobaseEngineService["addRepo"] = (url, options) =>
     Effect.gen(function* () {
       const progressRef = options?.progressRef
-      
+
       // Helper to update progress
       const updateProgress = (update: Partial<AddRepoProgress>) =>
         progressRef
           ? SubscriptionRef.update(progressRef, (prev) => ({ ...prev, ...update }))
           : Effect.void
 
-      const id = deriveRepoId(url)
-      const localPath = `${reposDir}/${id}`
+      const id = yield* Effect.try({
+        try: () => deriveRepoId(url),
+        catch: () => new InvalidRepoUrlError({ url, message: `${url} isn't a GitHub repository URL` })
+      })
+      const localPath = path.join(reposDir, id)
 
       // Check if already exists
       const existing = yield* store.getRepo(id)
@@ -150,53 +138,55 @@ export const make = Effect.gen(function* () {
         return yield* Effect.fail(new RepoAlreadyExistsError({ id }))
       }
 
-      // Ensure repos directory exists
-      yield* fs.makeDirectory(reposDir, { recursive: true }).pipe(
+      // Ensure the owner's directory exists: the clone goes in repos/<owner>/<name>
+      yield* fs.makeDirectory(path.dirname(localPath), { recursive: true }).pipe(
         Effect.mapError(
           (e) => new StoreError({ operation: "makeDirectory", message: e.message })
         )
       )
 
       // Clone the repository
-      yield* updateProgress({ 
-        stage: "cloning", 
-        progress: 10, 
-        message: `Cloning ${url}...` 
+      yield* updateProgress({
+        stage: "cloning",
+        progress: 10,
+        message: `Cloning ${url}...`
       })
       yield* Effect.log(`Cloning ${url}...`)
-      yield* git.clone(url, localPath)
+      yield* git.clone(url, localPath, options?.mode)
 
-      yield* updateProgress({ 
-        stage: "cloning", 
-        progress: 40, 
-        message: "Clone complete, preparing..." 
+      yield* updateProgress({
+        stage: "cloning",
+        progress: 40,
+        message: "Clone complete, preparing..."
       })
 
       // Get current commit
       const currentCommit = yield* git.getCurrentCommit(localPath)
 
-      // Build config
-      const mode = options?.mode ?? trackingMode("main")
+      // Build config: by default, track the branch the clone checked out (the remote's default)
+      const mode = options?.mode ?? trackingMode(yield* git.getCurrentBranch(localPath))
+      const now = yield* DateTime.now
       const repo: RepoConfig = {
         id,
         url,
         localPath,
         mode,
-        lastSyncedCommit: Option.some(currentCommit),
-        lastSyncedAt: Option.some(new Date()),
-        addedAt: new Date(),
+        lastSyncedCommit: Option.none(),
+        lastSyncedAt: Option.none(),
+        addedAt: now,
         // Cloud sync fields - disabled by default
         cloudEnabled: false,
         lastPushedAt: Option.none(),
-        lastPushedCommit: Option.none()
+        lastPushedCommit: Option.none(),
+        indexFormat: CURRENT_INDEX_FORMAT
       }
 
       // Save config
       yield* store.addRepo(repo)
 
-      yield* updateProgress({ 
-        stage: "indexing", 
-        progress: 50, 
+      yield* updateProgress({
+        stage: "indexing",
+        progress: 50,
         message: `Indexing ${id}...`,
         filesIndexed: 0,
         totalFiles: 0
@@ -206,18 +196,18 @@ export const make = Effect.gen(function* () {
       const indexingProgressRef = yield* SubscriptionRef.make<IndexingProgress>(initialIndexingProgress)
 
       // Subscribe to indexing progress changes and forward them
-      const forwarderFiber = yield* Effect.fork(
-        Stream.runForEach(indexingProgressRef.changes, (indexingState) => 
+      const forwarderFiber = yield* Effect.forkChild(
+        Stream.runForEach(SubscriptionRef.changes(indexingProgressRef), (indexingState) =>
           Effect.gen(function* () {
             if (!progressRef) return
-            
+
             const overallProgress = calcIndexingProgress(indexingState)
-            const phaseMessage = indexingState.phase === "scanning" 
+            const phaseMessage = indexingState.phase === "scanning"
               ? "Scanning files..."
               : indexingState.phase === "finalizing"
                 ? "Finalizing index..."
                 : `Indexing: ${indexingState.currentFile ?? "..."}`
-            
+
             yield* SubscriptionRef.update(progressRef, (prev) => ({
               ...prev,
               progress: overallProgress,
@@ -227,7 +217,7 @@ export const make = Effect.gen(function* () {
               currentFile: indexingState.currentFile
             }))
           })
-        ).pipe(Effect.catchAll(() => Effect.void))
+        ).pipe(Effect.catch(() => Effect.void))
       )
 
       // Index the repository with progress tracking
@@ -240,9 +230,16 @@ export const make = Effect.gen(function* () {
       // Clean up forwarder
       yield* Fiber.interrupt(forwarderFiber)
 
-      yield* updateProgress({ 
-        stage: "complete", 
-        progress: 100, 
+      const synced = {
+        lastSyncedCommit: Option.some(currentCommit),
+        lastSyncedAt: Option.some(yield* DateTime.now),
+        lastSyncedCommitAt: yield* git.getCommitTime(localPath, currentCommit)
+      }
+      yield* store.updateRepo(id, synced)
+
+      yield* updateProgress({
+        stage: "complete",
+        progress: 100,
         message: `Added ${id}`,
         filesIndexed: indexResult.filesIndexed,
         totalFiles: indexResult.filesIndexed
@@ -250,7 +247,7 @@ export const make = Effect.gen(function* () {
 
       yield* Effect.log(`Added repository: ${id}`)
 
-      return repo
+      return { ...repo, ...synced }
     })
 
   const removeRepo: RepobaseEngineService["removeRepo"] = (id) =>
@@ -267,8 +264,9 @@ export const make = Effect.gen(function* () {
 
       // Remove files
       yield* fs.remove(repo.localPath, { recursive: true }).pipe(
-        Effect.catchAll(() => Effect.void) // Ignore if already deleted
+        Effect.catch(() => Effect.void) // Ignore if already deleted
       )
+      yield* removeIfEmptyOwnerDir(path.dirname(repo.localPath))
 
       // Remove from store
       yield* store.removeRepo(id)
@@ -306,10 +304,11 @@ export const make = Effect.gen(function* () {
       yield* Effect.log(`Fetching ${id}...`)
       yield* git.fetch(repo.localPath)
 
-      // Check if update needed
+      // Check if update needed; an index in an old format is re-indexed even with nothing new
       const remoteHead = yield* git.getRemoteHead(repo.localPath, repo.mode.branch)
       const previousCommit = repo.lastSyncedCommit
-      const needsUpdate = Option.match(previousCommit, {
+      const outdated = needsReindex(repo)
+      const needsUpdate = outdated || Option.match(previousCommit, {
         onNone: () => true,
         onSome: (prev) => prev !== remoteHead
       })
@@ -330,12 +329,15 @@ export const make = Effect.gen(function* () {
         onSome: (prev) => git.diffNameStatus(repo.localPath, prev, remoteHead)
       })
 
-      // Update working tree - use origin/<branch> for shallow clones
-      yield* git.resetHard(repo.localPath, `origin/${repo.mode.branch}`)
+      // The commit the diff was taken against
+      yield* git.resetHard(repo.localPath, remoteHead)
 
       // Update index
       let indexSummary: IndexSummary
-      if (changes.length > 0) {
+      if (outdated) {
+        yield* Effect.log(`Re-indexing every file of ${id} in the current index format...`)
+        indexSummary = yield* indexer.indexRepo(id, repo.localPath, { force: true })
+      } else if (changes.length > 0) {
         // Incremental indexing
         yield* Effect.log(`Incrementally indexing ${changes.length} changed files...`)
         indexSummary = yield* indexer.indexChanges(id, repo.localPath, changes)
@@ -352,8 +354,11 @@ export const make = Effect.gen(function* () {
       // Update store
       yield* store.updateRepo(id, {
         lastSyncedCommit: Option.some(remoteHead),
-        lastSyncedAt: Option.some(new Date())
+        lastSyncedAt: Option.some(yield* DateTime.now),
+        lastSyncedCommitAt: yield* git.getCommitTime(repo.localPath, remoteHead),
+        indexFormat: CURRENT_INDEX_FORMAT
       })
+      if (outdated) yield* dropLegacyIndexIfUnused
 
       yield* Effect.log(
         `${id}: updated to ${remoteHead.slice(0, 8)}`
@@ -366,6 +371,61 @@ export const make = Effect.gen(function* () {
         currentCommit: remoteHead,
         indexSummary
       }
+    })
+
+  // The legacy index table goes once no repo is in an old format (see LEGACY_FILES_TABLE).
+  // Best effort, like the job step: a failure is logged and the next re-index tries again
+  const dropLegacyIndexIfUnused = Effect.gen(function* () {
+    const { repos } = yield* store.load()
+    if (repos.some(needsReindex)) return
+    if (yield* indexer.dropLegacyIndex()) yield* Effect.log("Dropped the old index table")
+  }).pipe(Effect.catch((e) => Effect.logWarning(`Dropping the old index table failed, will retry: ${e.message}`)))
+
+  const requireRepo = (id: string) =>
+    store.getRepo(id).pipe(
+      Effect.flatMap(Option.match({ onNone: () => Effect.fail(new RepoNotFoundError({ id })), onSome: Effect.succeed }))
+    )
+
+  const migrateRepoId: RepobaseEngineService["migrateRepoId"] = (id) =>
+    Effect.gen(function* () {
+      const repo = yield* requireRepo(id)
+      const newId = migratedRepoId(repo)
+      if (newId === undefined) return id
+
+      // Already added again under its new id: this one is a duplicate
+      if (Option.isSome(yield* store.getRepo(newId))) {
+        yield* Effect.log(`${id} was added again as ${newId}; removing the old copy`)
+        yield* removeRepo(id)
+        return newId
+      }
+
+      // Each step can be re-run, so a migration that stopped partway finishes next time
+      const localPath = path.join(reposDir, newId)
+      yield* Effect.gen(function* () {
+        if (yield* fs.exists(repo.localPath)) {
+          yield* fs.makeDirectory(path.dirname(localPath), { recursive: true })
+          yield* fs.rename(repo.localPath, localPath)
+        }
+      }).pipe(Effect.mapError((e) => new StoreError({ operation: "moveClone", message: e.message })))
+      yield* indexer.removeIndex(id)
+      yield* store.modify((data) => ({
+        ...data,
+        repos: data.repos.map((r) => (r.id === id ? { ...r, id: newId, localPath } : r))
+      }))
+      yield* Effect.log(`Renamed ${id} to ${newId}`)
+      return newId
+    })
+
+  const reindexRepo: RepobaseEngineService["reindexRepo"] = (requestedId) =>
+    Effect.gen(function* () {
+      const id = yield* migrateRepoId(requestedId)
+      const repo = yield* requireRepo(id)
+      yield* Effect.log(`Re-indexing every file of ${id} in the current index format...`)
+      const summary = yield* indexer.indexRepo(id, repo.localPath, { force: true })
+      const lastSyncedCommitAt = yield* git.getCommitTime(repo.localPath, "HEAD")
+      yield* store.updateRepo(id, { indexFormat: CURRENT_INDEX_FORMAT, lastSyncedCommitAt })
+      yield* dropLegacyIndexIfUnused
+      return { ...summary, id }
     })
 
   const syncAll: RepobaseEngineService["syncAll"] = () =>
@@ -397,11 +457,20 @@ export const make = Effect.gen(function* () {
     getRepo,
     syncRepo,
     syncAll,
+    reindexRepo,
+    migrateRepoId,
     search
   })
 })
 
+export const make = makeWith()
+
 /**
- * RepobaseEngine layer - requires GitClient, RepoStore, Indexer, and FileSystem
+ * RepobaseEngine layer - requires GitClient, RepoStore, Indexer, FileSystem and Path
  */
 export const layer = Layer.effect(RepobaseEngine, make)
+
+/**
+ * RepobaseEngine with clones in a custom directory
+ */
+export const layerWith = (config: { readonly reposDir: string }) => Layer.effect(RepobaseEngine, makeWith(config))

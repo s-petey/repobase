@@ -1,9 +1,8 @@
 import { describe, it, expect } from "@effect/vitest"
-import { Effect, Layer, Option } from "effect"
-import { FileSystem } from "@effect/platform"
+import { DateTime, Effect, FileSystem, Layer, Option } from "effect"
 import { RepoStore } from "../src/services/RepoStore.js"
 import { layer as RepoStoreLayer } from "../src/services/RepoStore.js"
-import { RepoConfig, RepoStoreData } from "../src/schemas.js"
+import type { RepoConfig, RepoStoreData } from "../src/schemas.js"
 import { trackingMode } from "../src/utils.js"
 import * as os from "os"
 
@@ -14,7 +13,7 @@ const createMockFileSystem = (initialData: Record<string, string> = {}) => {
   const files = new Map<string, string>(Object.entries(initialData))
   const directories = new Set<string>()
 
-  return FileSystem.FileSystem.of({
+  return FileSystem.makeNoop({
     exists: (path) => Effect.succeed(files.has(path) || directories.has(path)),
     readFileString: (path) => {
       const content = files.get(path)
@@ -31,48 +30,18 @@ const createMockFileSystem = (initialData: Record<string, string> = {}) => {
       files.set(path, content)
       return Effect.succeed(void 0)
     },
+    rename: (from, to) => {
+      const content = files.get(from)
+      if (content !== undefined) {
+        files.set(to, content)
+        files.delete(from)
+      }
+      return Effect.succeed(void 0)
+    },
     makeDirectory: (path, _options) => {
       directories.add(path)
       return Effect.succeed(void 0)
-    },
-    // Stub implementations for unused methods
-    access: () => Effect.succeed(void 0),
-    chmod: () => Effect.succeed(void 0),
-    chown: () => Effect.succeed(void 0),
-    copy: () => Effect.succeed(void 0),
-    copyFile: () => Effect.succeed(void 0),
-    link: () => Effect.succeed(void 0),
-    makeTempDirectory: () => Effect.succeed("/tmp/test"),
-    makeTempDirectoryScoped: () => Effect.succeed("/tmp/test"),
-    makeTempFile: () => Effect.succeed("/tmp/test-file"),
-    makeTempFileScoped: () => Effect.succeed("/tmp/test-file"),
-    open: () => Effect.die("not implemented"),
-    readDirectory: () => Effect.succeed([]),
-    readFile: () => Effect.succeed(new Uint8Array()),
-    readLink: () => Effect.succeed(""),
-    realPath: (path) => Effect.succeed(path),
-    remove: () => Effect.succeed(void 0),
-    rename: () => Effect.succeed(void 0),
-    sink: () => Effect.die("not implemented"),
-    stat: () =>
-      Effect.succeed({
-        type: "File",
-        size: 0,
-        mtime: new Date(),
-        atime: new Date(),
-        ctime: new Date(),
-        mode: 0o644,
-        uid: 1000,
-        gid: 1000,
-        dev: 0,
-        ino: 0
-      } as any),
-    stream: () => Effect.die("not implemented"),
-    symlink: () => Effect.succeed(void 0),
-    truncate: () => Effect.succeed(void 0),
-    utimes: () => Effect.succeed(void 0),
-    watch: () => Effect.die("not implemented"),
-    writeFile: () => Effect.succeed(void 0)
+    }
   })
 }
 
@@ -85,9 +54,17 @@ const createTestLayer = (initialData: Record<string, string> = {}) => {
   return RepoStoreLayer.pipe(Layer.provide(MockFileSystem))
 }
 
+// Also exposes the mock filesystem, to inspect what was written
+const createTestLayerWithFs = (initialData: Record<string, string> = {}) => {
+  const MockFileSystem = Layer.succeed(FileSystem.FileSystem, createMockFileSystem(initialData))
+  return RepoStoreLayer.pipe(Layer.provideMerge(MockFileSystem))
+}
+
 /**
  * Create a sample repo config for testing
  */
+const ADDED_AT_MS = 1_790_000_000_000
+
 const createTestRepo = (id: string, overrides: Partial<RepoConfig> = {}): RepoConfig => ({
   id,
   url: `https://github.com/test/${id}`,
@@ -95,10 +72,11 @@ const createTestRepo = (id: string, overrides: Partial<RepoConfig> = {}): RepoCo
   mode: trackingMode("main"),
   lastSyncedCommit: Option.none(),
   lastSyncedAt: Option.none(),
-  addedAt: new Date(),
+  addedAt: DateTime.makeUnsafe(ADDED_AT_MS),
   cloudEnabled: false,
   lastPushedAt: Option.none(),
   lastPushedCommit: Option.none(),
+  indexFormat: 2,
   ...overrides
 })
 
@@ -124,6 +102,8 @@ describe("RepoStore", () => {
         expect(data.version).toBe(1)
         expect(data.repos).toHaveLength(1)
         expect(data.repos[0].id).toBe("test-repo")
+        // Written before index formats existed, so indexed with the first one
+        expect(data.repos[0].indexFormat).toBe(1)
       }).pipe(
         Effect.provide(
           createTestLayer({
@@ -137,7 +117,7 @@ describe("RepoStore", () => {
                   mode: { _tag: "tracking", branch: "main" },
                   lastSyncedCommit: null,
                   lastSyncedAt: null,
-                  addedAt: Date.now(),
+                  addedAt: ADDED_AT_MS,
                   lastPushedAt: null,
                   lastPushedCommit: null
                 }
@@ -164,6 +144,24 @@ describe("RepoStore", () => {
         const loaded = yield* store.load()
         expect(loaded.version).toBe(1)
       }).pipe(Effect.provide(createTestLayer()))
+    )
+  })
+
+  describe("dates", () => {
+    it.effect("stores them as epoch millis, as before, and reads them back as DateTimes", () =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        const syncedAt = DateTime.makeUnsafe(ADDED_AT_MS + 60_000)
+        yield* store.addRepo(createTestRepo("dated", { lastSyncedAt: Option.some(syncedAt) }))
+
+        const fs = yield* FileSystem.FileSystem
+        const onDisk = JSON.parse(yield* fs.readFileString(configPath)).repos[0]
+        expect(onDisk).toMatchObject({ addedAt: ADDED_AT_MS, lastSyncedAt: ADDED_AT_MS + 60_000, lastPushedAt: null })
+
+        const repo = Option.getOrThrow(yield* store.getRepo("dated"))
+        expect(DateTime.toEpochMillis(repo.addedAt)).toBe(ADDED_AT_MS)
+        expect(Option.map(repo.lastSyncedAt, DateTime.toEpochMillis)).toEqual(Option.some(ADDED_AT_MS + 60_000))
+      }).pipe(Effect.provide(createTestLayerWithFs()))
     )
   })
 
@@ -235,6 +233,36 @@ describe("RepoStore", () => {
           expect(Option.getOrNull(result.value.lastSyncedCommit)).toBe("abc123")
         }
       }).pipe(Effect.provide(createTestLayer()))
+    )
+  })
+
+  describe("concurrent changes", () => {
+    it.effect("keeps every change when several land at once", () =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        yield* store.addRepo(createTestRepo("existing"))
+
+        yield* Effect.all(
+          [
+            store.addRepo(createTestRepo("added")),
+            store.updateRepo("existing", { indexFormat: 3 }),
+            store.addRepo(createTestRepo("also-added"))
+          ],
+          { concurrency: "unbounded" }
+        )
+
+        const data = yield* store.load()
+        expect(data.repos.map((r) => r.id).sort()).toEqual(["added", "also-added", "existing"])
+        expect(Option.getOrThrow(yield* store.getRepo("existing")).indexFormat).toBe(3)
+      }).pipe(Effect.provide(createTestLayer()))
+    )
+
+    it.effect("fails with a StoreError, not a defect, for a config that isn't JSON", () =>
+      Effect.gen(function* () {
+        const store = yield* RepoStore
+        const error = yield* Effect.flip(store.load())
+        expect(error._tag).toBe("StoreError")
+      }).pipe(Effect.provide(createTestLayer({ [configPath]: '{"version": 1, "repos": [' })))
     )
   })
 

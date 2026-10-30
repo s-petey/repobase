@@ -1,19 +1,26 @@
-import { TextAttributes, type InputRenderable } from "@opentui/core"
-import { useRenderer, useKeyboard } from "@opentui/react"
-import { useEffect, useRef, useState } from "react"
+import { TextAttributes } from "@opentui/core"
+import { useKeyboard } from "@opentui/react"
+import { useState } from "react"
 import type { SearchMode } from "@repobase/engine"
+import type { SearchFilter, SearchScope } from "../searchView.js"
 import { colors } from "../theme/index.js"
 
-interface PasteEvent {
-  text: string
-  preventDefault: () => void
-}
-
 interface SearchModalProps {
-  onSubmit: (query: string, mode: SearchMode) => void
+  // `repos` is undefined when searching every repository
+  onSubmit: (
+    query: string,
+    mode: SearchMode,
+    filter: SearchFilter | undefined,
+    repos: ReadonlyArray<string> | undefined
+  ) => void
   onCancel: () => void
   onInput: (value: string) => void
   value: string
+  initialMode?: SearchMode
+  initialFilter?: SearchFilter
+  // What's highlighted in the repo list; without one, search covers every repository
+  scope?: SearchScope
+  initialSearchAll?: boolean
 }
 
 const SEARCH_MODES: { mode: SearchMode; label: string; description: string }[] = [
@@ -22,27 +29,62 @@ const SEARCH_MODES: { mode: SearchMode; label: string; description: string }[] =
   { mode: "hybrid", label: "Hybrid", description: "Combined keyword + semantic" },
 ]
 
-export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalProps) => {
-  const renderer = useRenderer()
-  const inputRef = useRef<InputRenderable | null>(null)
-  const [selectedModeIndex, setSelectedModeIndex] = useState(2) // Default to hybrid
-  const [inputFocused, setInputFocused] = useState(true)
+const FILTER_KINDS: { kind: SearchFilter["kind"]; label: string; placeholder: string }[] = [
+  { kind: "path", label: "Path", placeholder: "Part of a path, e.g. editor or src/components" },
+  { kind: "glob", label: "Glob", placeholder: "A glob, e.g. crates/*/src/**/*.rs or *.md" },
+]
 
-  // Listen for paste events on the renderer's keyInput
-  useEffect(() => {
-    const handlePaste = (event: PasteEvent) => {
-      if (inputRef.current && inputFocused) {
-        inputRef.current.insertText(event.text)
-      }
-    }
+// Tab moves through these in order
+const FOCUS_ORDER = ["query", "filter", "filterKind", "scope", "mode"] as const
+type Focus = (typeof FOCUS_ORDER)[number]
 
-    renderer?.keyInput.on("paste", handlePaste)
-    return () => {
-      renderer?.keyInput.off("paste", handlePaste)
-    }
-  }, [renderer, inputFocused])
+// Paste is handled natively by the focused <input> (opentui >= 0.5)
+export const SearchModal = ({
+  onSubmit,
+  onCancel,
+  onInput,
+  value,
+  initialMode = "hybrid",
+  initialFilter,
+  scope,
+  initialSearchAll = false,
+}: SearchModalProps) => {
+  const [selectedModeIndex, setSelectedModeIndex] = useState(() =>
+    Math.max(0, SEARCH_MODES.findIndex((m) => m.mode === initialMode))
+  )
+  const [filterKindIndex, setFilterKindIndex] = useState(() =>
+    Math.max(0, FILTER_KINDS.findIndex((k) => k.kind === initialFilter?.kind))
+  )
+  const [focus, setFocus] = useState<Focus>("query")
+  // The inputs' starting text (e.g. the last search when reopened from results);
+  // captured once, so re-renders while typing don't reset them
+  const [initialValue] = useState(value)
+  const [startFilterText] = useState(initialFilter?.text ?? "")
+  const [query, setQuery] = useState(value)
+  const [filterText, setFilterText] = useState(initialFilter?.text ?? "")
+  const [searchAll, setSearchAll] = useState(initialSearchAll)
+  // With nothing highlighted there's nothing to narrow to
+  const searchesAll = searchAll || !scope
 
-  // Handle keyboard navigation for mode selection
+  const handleQueryInput = (text: string) => {
+    setQuery(text)
+    onInput(text)
+  }
+
+  const submit = () => {
+    if (!query.trim()) return
+    const text = filterText.trim()
+    const filter = text ? { kind: FILTER_KINDS[filterKindIndex].kind, text } : undefined
+    onSubmit(query, SEARCH_MODES[selectedModeIndex].mode, filter, searchesAll ? undefined : scope?.repos)
+  }
+
+  // h/l and the arrows move along a row of options
+  const step = (key: string, index: number, count: number): number => {
+    if (key === "left" || key === "h") return Math.max(0, index - 1)
+    if (key === "right" || key === "l") return Math.min(count - 1, index + 1)
+    return index
+  }
+
   useKeyboard((key) => {
     if (key.name === "escape") {
       onCancel()
@@ -50,36 +92,45 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
     }
 
     if (key.name === "tab") {
-      // Tab switches between input and mode selection
-      setInputFocused(!inputFocused)
+      setFocus(FOCUS_ORDER[(FOCUS_ORDER.indexOf(focus) + 1) % FOCUS_ORDER.length])
       return
     }
 
-    if (!inputFocused) {
-      // Mode selection navigation
-      switch (key.name) {
-        case "left":
-        case "h":
-          setSelectedModeIndex(Math.max(0, selectedModeIndex - 1))
-          break
-        case "right":
-        case "l":
-          setSelectedModeIndex(Math.min(SEARCH_MODES.length - 1, selectedModeIndex + 1))
-          break
-        case "return":
-          if (value.trim()) {
-            onSubmit(value, SEARCH_MODES[selectedModeIndex].mode)
-          }
-          break
-      }
+    // The inputs handle their own keys, including Enter
+    if (focus === "query" || focus === "filter") return
+
+    if (key.name === "return") {
+      submit()
+    } else if (focus === "scope") {
+      if (key.name === "space" && scope) setSearchAll(!searchAll)
+    } else if (focus === "mode") {
+      setSelectedModeIndex(step(key.name, selectedModeIndex, SEARCH_MODES.length))
+    } else {
+      setFilterKindIndex(step(key.name, filterKindIndex, FILTER_KINDS.length))
     }
   })
 
-  const handleSubmit = (query: string) => {
-    if (query.trim()) {
-      onSubmit(query, SEARCH_MODES[selectedModeIndex].mode)
-    }
-  }
+  const focusColor = (area: Focus, otherwise: string) => (focus === area ? colors.status.info.default : otherwise)
+
+  // A row of options, like `Mode: [*] Keyword  [o] Semantic`
+  const optionRow = (area: Focus, label: string, options: string[], selected: number) => (
+    <box style={{ flexDirection: "row", gap: 2 }}>
+      <text content={label} style={{ fg: focusColor(area, colors.text.secondary) }} />
+      {options.map((option, index) => {
+        const isSelected = index === selected
+        return (
+          <text
+            key={option}
+            content={`[${isSelected ? "*" : "o"}] ${option}`}
+            style={{
+              fg: isSelected ? focusColor(area, colors.text.primary) : colors.text.tertiary,
+              attributes: isSelected ? TextAttributes.BOLD : undefined,
+            }}
+          />
+        )
+      })}
+    </box>
+  )
 
   return (
     <box
@@ -88,7 +139,7 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
         top: "20%",
         left: "10%",
         width: "80%",
-        height: 12,
+        height: 19,
         backgroundColor: colors.bg.elevated,
         borderStyle: "double",
         borderColor: colors.status.info.default,
@@ -109,49 +160,59 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
         title="Search Query"
         style={{
           border: true,
-          borderColor: inputFocused ? colors.status.info.default : colors.border.default,
+          borderColor: focusColor("query", colors.border.default),
           height: 3,
         }}
       >
         <input
-          ref={(r: InputRenderable | null) => { inputRef.current = r }}
           placeholder="Enter search query..."
-          onInput={onInput}
-          onSubmit={handleSubmit}
-          focused={inputFocused}
+          value={initialValue}
+          onInput={handleQueryInput}
+          onSubmit={submit}
+          focused={focus === "query"}
           style={{
             focusedBackgroundColor: colors.bg.muted,
           }}
         />
       </box>
-      
-      {/* Mode selection */}
+
       <box
+        title={`Filter by ${FILTER_KINDS[filterKindIndex].label.toLowerCase()} (optional)`}
         style={{
-          flexDirection: "row",
-          marginTop: 1,
-          gap: 2,
+          border: true,
+          borderColor: focusColor("filter", colors.border.default),
+          height: 3,
         }}
       >
-        <text
-          content="Mode: "
-          style={{ fg: colors.text.secondary }}
+        <input
+          placeholder={FILTER_KINDS[filterKindIndex].placeholder}
+          value={startFilterText}
+          onInput={setFilterText}
+          onSubmit={submit}
+          focused={focus === "filter"}
+          style={{
+            focusedBackgroundColor: colors.bg.muted,
+          }}
         />
-        {SEARCH_MODES.map((item, index) => {
-          const isSelected = index === selectedModeIndex
-          return (
-            <text
-              key={item.mode}
-              content={`[${isSelected ? "*" : "o"}] ${item.label}`}
-              style={{
-                fg: isSelected ? colors.status.info.default : colors.text.tertiary,
-                attributes: isSelected ? TextAttributes.BOLD : undefined,
-              }}
-            />
-          )
-        })}
       </box>
-      
+
+      {optionRow("filterKind", "Filter: ", FILTER_KINDS.map((k) => k.label), filterKindIndex)}
+
+      <box style={{ flexDirection: "row", gap: 2 }}>
+        <text
+          content={`[${searchesAll ? "x" : " "}] Search all repositories`}
+          style={{ fg: focusColor("scope", colors.text.primary) }}
+        />
+        <text
+          content={searchesAll ? (scope ? "" : "(nothing highlighted)") : `(searching ${scope?.label})`}
+          style={{ fg: colors.text.tertiary }}
+        />
+      </box>
+
+      <box style={{ marginTop: 1 }}>
+        {optionRow("mode", "Mode: ", SEARCH_MODES.map((m) => m.label), selectedModeIndex)}
+      </box>
+
       <text
         content={SEARCH_MODES[selectedModeIndex].description}
         style={{
@@ -159,9 +220,9 @@ export const SearchModal = ({ onSubmit, onCancel, onInput, value }: SearchModalP
           marginTop: 0,
         }}
       />
-      
+
       <text
-        content="[Enter] Search  [Tab] Switch focus  [h/l] Change mode  [Esc] Cancel"
+        content="[Enter] Search  [Tab] Next  [h/l] Option  [Space] Toggle  [Esc] Cancel"
         style={{
           fg: colors.text.tertiary,
           marginTop: 1,

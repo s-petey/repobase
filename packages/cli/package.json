@@ -8,13 +8,12 @@
   "main": "src/main.ts",
   "types": "src/main.ts",
   "scripts": {
-    "start": "bun run src/main.ts",
-    "repobase": "bun run src/main.ts"
+    "start": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts",
+    "repobase": "LANCEDB_LOG=${LANCEDB_LOG:-error} bun run src/main.ts",
+    "check": "tsc"
   },
   "dependencies": {
-    "@effect/cli": "^0.59.0",
-    "@effect/platform": "^0.93.6",
     "@repobase/engine": "workspace:*",
-    "effect": "^3.19.9"
+    "effect": "catalog:"
   }
 }

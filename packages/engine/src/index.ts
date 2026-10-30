@@ -8,6 +8,16 @@ export {
   type CloudConfig,
   type SyncManifestFile,
   type SyncManifest,
+  type FileChange,
+  type IndexPlanFile,
+  type IndexPlan,
+  type IndexSummary,
+  type IndexingProgress,
+  type SearchMode,
+  type SearchResult,
+  type AddRepoStage,
+  type AddRepoProgress,
+  type SyncResult,
   TrackingMode as TrackingModeSchema,
   PinnedMode as PinnedModeSchema,
   RepoMode as RepoModeSchema,
@@ -15,11 +25,30 @@ export {
   RepoStoreData as RepoStoreDataSchema,
   CloudConfig as CloudConfigSchema,
   SyncManifestFile as SyncManifestFileSchema,
-  SyncManifest as SyncManifestSchema
+  SyncManifest as SyncManifestSchema,
+  FileChange as FileChangeSchema,
+  IndexPlanFile as IndexPlanFileSchema,
+  IndexPlan as IndexPlanSchema,
+  IndexSummary as IndexSummarySchema,
+  IndexingProgress as IndexingProgressSchema,
+  SearchMode as SearchModeSchema,
+  SearchResult as SearchResultSchema,
+  AddRepoStage as AddRepoStageSchema,
+  AddRepoProgress as AddRepoProgressSchema,
+  SyncResult as SyncResultSchema
 } from "./schemas.js"
 
 // Utils
-export { deriveRepoId, trackingMode, pinnedMode } from "./utils.js"
+export {
+  deriveRepoId,
+  extractRepoParts,
+  migratedRepoId,
+  repoNames,
+  splitRepoPath,
+  trackingMode,
+  pinnedMode
+} from "./utils.js"
+export { CURRENT_INDEX_FORMAT, needsReindex } from "./indexFormat.js"
 
 // Errors
 export {
@@ -31,23 +60,20 @@ export {
   CloudNotConfiguredError,
   RepoNotFoundError,
   RepoAlreadyExistsError,
+  InvalidRepoUrlError,
   FileNotFoundError,
   InvalidPatternError,
   type EngineError
 } from "./errors.js"
 
 // Services
-export { GitClient, type GitClientService, type FileChange } from "./services/GitClient.js"
+export { GitClient, type GitClientService } from "./services/GitClient.js"
 export { RepoStore, type RepoStoreService } from "./services/RepoStore.js"
 export {
   Indexer,
   type IndexerService,
-  type IndexSummary,
-  type SearchResult,
   type SearchOptions,
-  type SearchMode,
   type IndexOptions,
-  type IndexingProgress,
   initialIndexingProgress,
   type FileInfo,
   type FileContent,
@@ -58,13 +84,11 @@ export {
   type ReadFileOptions,
   type GrepOptions
 } from "./services/Indexer.js"
+export { Embedder, type EmbedderService } from "./services/Embedder.js"
 export {
   RepobaseEngine,
   type RepobaseEngineService,
   type AddRepoOptions,
-  type AddRepoProgress,
-  type AddRepoStage,
-  type SyncResult,
   initialProgress
 } from "./services/RepobaseEngine.js"
 export {
@@ -76,16 +100,173 @@ export {
   type CloudConfigInput
 } from "./services/CloudSync.js"
 
+// Worker limits
+export {
+  MAX_WORKERS_ENV,
+  MAX_INDEXING_ENV,
+  resolveWorkerCount,
+  hostWorkerCount,
+  resolveIndexingConcurrency,
+  hostIndexingConcurrency,
+  splitPools,
+  ONNX_THREADS_PER_WORKER,
+  type WorkerCount,
+  type WorkerCountInput,
+  type PoolSizes
+} from "./worker/limits.js"
+
+// Job step errors
+export {
+  StepError,
+  GitFailureReason,
+  PlanIndexPhase,
+  IndexBatchPhase,
+  RepoAlreadyAddedError,
+  RepoMissingError,
+  CloneFailedError,
+  ResolveHeadFailedError,
+  SaveConfigFailedError,
+  FetchFailedError,
+  RemoteBranchMissingError,
+  DiffFailedError,
+  ResetFailedError,
+  PlanIndexFailedError,
+  DeleteRemovedFailedError,
+  IndexBatchFailedError,
+  EmbedderLoadFailedError,
+  FinalizeFtsFailedError,
+  UpdateStoreFailedError,
+  WorkerCrashedError,
+  UnexpectedStepError,
+  isRetryable,
+  classifyGitFailure,
+  cloneFailed,
+  fetchFailed,
+  remoteHeadFailed,
+  workerCrashed,
+  formatStepError,
+  type StepErrorDisplay
+} from "./jobs/errors.js"
+
+// Jobs
+export {
+  Job,
+  AddRepoJob,
+  SyncRepoJob,
+  ReindexRepoJob,
+  AddRepoPayload,
+  SyncRepoPayload,
+  JobStatus,
+  Step,
+  StepStatus,
+  StepRunsOn,
+  makeJobId,
+  superseded,
+  type JobKind
+} from "./jobs/Job.js"
+export {
+  JobStore,
+  type JobStoreService,
+  defaultJobsDir,
+  heldBy,
+  layer as JobStoreLayer,
+  layerWith as JobStoreLayerWith,
+  layerMemory as JobStoreLayerMemory
+} from "./jobs/JobStore.js"
+export {
+  JobRunner,
+  type JobRunnerService,
+  type JobRunnerError,
+  JobAlreadyRunningError,
+  JobNotFoundError,
+  JobNotRetryableError,
+  type JobDefinition,
+  type JobDefinitions,
+  type StepDefinition,
+  type FanOutDefinition,
+  type StepContext,
+  type OutputSchema,
+  step,
+  fanOut,
+  fanOutKey,
+  layer as JobRunnerLayer
+} from "./jobs/JobRunner.js"
+export {
+  JobProgress,
+  type JobProgressService,
+  type FileProgress,
+  layer as JobProgressLayer
+} from "./jobs/JobProgress.js"
+export {
+  makeJobDefinitions,
+  defaultDefinitionsConfig,
+  type DefinitionsConfig,
+  type JobDefinitionsServices
+} from "./jobs/definitions.js"
+export { runningElsewhere, runningHere } from "./jobs/owner.js"
+export {
+  stepIcon,
+  stepLines,
+  type StepLine,
+  retryState,
+  kindLabel,
+  resumableJob,
+  unfinishedIndexing,
+  resumePoint,
+  jobFailureMessage,
+  syncUpdated,
+  jobFailed
+} from "./jobs/view.js"
+export { runSync } from "./jobs/runs.js"
+export { reuseOrStart } from "./jobs/reuse.js"
+export { removeRepoWithJobs } from "./jobs/remove.js"
+
+// Worker pool
+export {
+  StepRpcs,
+  Clone,
+  ResolveHead,
+  PlanFullIndex,
+  DeleteRemoved,
+  IndexBatch,
+  FinalizeIndex,
+  PlanSummary,
+  IndexBatchEvent,
+  Search
+} from "./worker/rpcs.js"
+export { WorkerSettings } from "./worker/settings.js"
+export {
+  WorkerClient,
+  layerWorkerPool,
+  QueryClient,
+  layerQueryPool,
+  IndexingClient,
+  layerIndexingPool,
+  layerQueryFromIndexingPool
+} from "./worker/client.js"
+export { runWorker, layerInProcessWorkers } from "./worker/server.js"
+
+// Logging
+export {
+  logPath,
+  fileLoggerLayer,
+  addFileLoggerLayer,
+  silentLoggerLayer
+} from "./file-logger.js"
+
+export { hostOtlpEndpoint, otlpLayer, telemetryLayer } from "./telemetry.js"
+export { EMBED_LOG_ENV, hostEmbedLog } from "./embedLog.js"
+
 // Layers
 export { layer as GitClientLayer } from "./services/GitClient.js"
 export { layer as RepoStoreLayer } from "./services/RepoStore.js"
-export { layer as IndexerLayer } from "./services/Indexer.js"
+export { layer as IndexerLayer, layerWith as IndexerLayerWith } from "./services/Indexer.js"
 export { layer as RepobaseEngineLayer } from "./services/RepobaseEngine.js"
 export { layer as CloudSyncLayer } from "./services/CloudSync.js"
 
 // Layer composition for Bun
 import { Layer } from "effect"
-import { BunFileSystem, BunCommandExecutor } from "@effect/platform-bun"
+import { BunServices } from "@effect/platform-bun"
 import { layer as GitClientLayer } from "./services/GitClient.js"
 import { layer as RepoStoreLayer } from "./services/RepoStore.js"
 import { layer as IndexerLayer } from "./services/Indexer.js"
@@ -95,10 +276,7 @@ import { layer as CloudSyncLayer } from "./services/CloudSync.js"
 /**
  * Platform dependencies for Bun
  */
-export const PlatformLive = Layer.mergeAll(
-  BunFileSystem.layer,
-  BunCommandExecutor.layer
-)
+export const PlatformLive = BunServices.layer
 
 /**
  * GitClient layer with Bun platform

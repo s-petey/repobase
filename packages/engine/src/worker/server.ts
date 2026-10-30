@@ -1,0 +1,309 @@
+import { BunServices, BunWorkerRunner } from "@effect/platform-bun"
+import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Queue, Stream } from "effect"
+import type { Context } from "effect"
+import { RpcServer, RpcTest, RpcWorker } from "effect/rpc"
+import { format } from "node:util"
+import { consoleLogLevel, type EmbedLog, type EmbedLogLevel, embedLogOf } from "../embedLog.js"
+import {
+  CloneFailedError,
+  cloneFailed,
+  DeleteRemovedFailedError,
+  type EmbedderLoadFailedError,
+  fetchFailed,
+  FinalizeFtsFailedError,
+  IndexBatchFailedError,
+  indexBatchFailed,
+  PlanIndexFailedError,
+  planIndexFailed,
+  RemoteBranchMissingError,
+  remoteHeadFailed,
+  ResetFailedError,
+  ResolveHeadFailedError
+} from "../jobs/errors.js"
+import { JobStore, layer as JobStoreLayer } from "../jobs/JobStore.js"
+import { layer as EmbedderLayer } from "../services/Embedder.js"
+import { GitClient, layer as GitClientLayer } from "../services/GitClient.js"
+import { INDEX_BATCH_SIZE, Indexer, layerWith as IndexerLayerWith } from "../services/Indexer.js"
+import { otlpLayer } from "../telemetry.js"
+import { ONNX_THREADS_PER_WORKER } from "./limits.js"
+import { IndexingClient, WorkerClient } from "./client.js"
+import { type IndexBatchEvent, StepRpcs } from "./rpcs.js"
+import { WorkerSettings } from "./settings.js"
+
+const DEFAULT_BRANCH = "HEAD"
+
+/**
+ * Handlers for StepRpcs, run inside the worker thread. Exported so tests can
+ * run them in-process against temp directories.
+ */
+export const HandlersLayer = StepRpcs.toLayer(
+  Effect.gen(function* () {
+    const git = yield* GitClient
+    const indexer = yield* Indexer
+    const jobs = yield* JobStore
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+
+    const readPlan = (jobId: string) => jobs.readPlan(jobId).pipe(Effect.map(Option.getOrUndefined))
+
+    return StepRpcs.of({
+      Clone: ({ repoId, url, localPath, mode }) =>
+        Effect.gen(function* () {
+          // A retried clone starts from scratch: drop whatever a failed attempt left
+          yield* Effect.all([
+            fs.remove(localPath, { recursive: true, force: true }),
+            fs.makeDirectory(path.dirname(localPath), { recursive: true })
+          ]).pipe(
+            Effect.mapError(
+              (e) => new CloneFailedError({ repoId, url, reason: "unknown", message: e.message })
+            )
+          )
+          yield* git.clone(url, localPath, mode).pipe(Effect.mapError(cloneFailed({ repoId, url })))
+        }),
+
+      ResolveHead: ({ repoId, localPath }) =>
+        Effect.all({
+          commit: git.getCurrentCommit(localPath),
+          branch: git.getCurrentBranch(localPath),
+          committedAt: git.getCommitTime(localPath, "HEAD")
+        }).pipe(
+          Effect.mapError((e) => new ResolveHeadFailedError({ repoId, message: e.message }))
+        ),
+
+      PlanFullIndex: ({ jobId, repoId, localPath, force }) =>
+        Effect.gen(function* () {
+          const plan = yield* indexer
+            .planFullIndex(repoId, localPath, { force: force ?? false })
+            .pipe(Effect.mapError(planIndexFailed({ repoId })))
+          yield* jobs
+            .writePlan(jobId, plan)
+            .pipe(
+              Effect.mapError((e) => new PlanIndexFailedError({ repoId, phase: "savePlan", message: e.message }))
+            )
+          return { toIndex: plan.toIndex.length, toDelete: plan.toDelete.length, skipped: plan.skipped }
+        }),
+
+      DeleteRemoved: ({ jobId, repoId }) =>
+        Effect.gen(function* () {
+          const plan = yield* readPlan(jobId).pipe(
+            Effect.mapError((e) => new DeleteRemovedFailedError({ repoId, count: 0, message: e.message }))
+          )
+          if (!plan) {
+            return yield* new DeleteRemovedFailedError({
+              repoId,
+              count: 0,
+              message: `No indexing plan saved for job ${jobId}`
+            })
+          }
+          yield* indexer
+            .deletePaths(repoId, plan.toDelete)
+            .pipe(
+              Effect.mapError(
+                (e) => new DeleteRemovedFailedError({ repoId, count: plan.toDelete.length, message: e.message })
+              )
+            )
+          return { count: plan.toDelete.length }
+        }),
+
+      IndexBatch: ({ jobId, repoId, localPath, batch, total }) =>
+        Stream.callback<IndexBatchEvent, IndexBatchFailedError | EmbedderLoadFailedError>((queue) =>
+          Effect.gen(function* () {
+            const batchError = (message: string) =>
+              new IndexBatchFailedError({ repoId, batch, total, phase: "read", message })
+            const plan = yield* readPlan(jobId).pipe(Effect.mapError((e) => batchError(e.message)))
+            if (!plan) return yield* batchError(`No indexing plan saved for job ${jobId}`)
+
+            // The same chunking the main thread used to count batches
+            const files = Arr.chunksOf(plan.toIndex, INDEX_BATCH_SIZE)[batch] ?? []
+            const result = yield* indexer
+              .indexBatch(repoId, localPath, files, {
+                onFile: (file) => Queue.offer(queue, { _tag: "File", path: file }).pipe(Effect.asVoid)
+              })
+              .pipe(Effect.mapError(indexBatchFailed({ repoId, batch, total })))
+
+            yield* Queue.offer(queue, { _tag: "Done", ...result })
+            yield* Queue.end(queue)
+          }).pipe(
+            // Fail the stream itself; a failure left in the callback would
+            // leave the caller waiting on a queue that never ends
+            Effect.catch((error) => Queue.fail(queue, error))
+          )
+        ),
+
+      FinalizeIndex: ({ repoId }) =>
+        indexer
+          .finalizeIndex()
+          .pipe(Effect.mapError((e) => new FinalizeFtsFailedError({ repoId, message: e.message }))),
+
+      Fetch: ({ repoId, localPath }) =>
+        git.fetch(localPath).pipe(Effect.mapError(fetchFailed({ repoId }))),
+
+      RemoteHead: ({ repoId, localPath, branch }) =>
+        git.getRemoteHead(localPath, branch).pipe(
+          Effect.flatMap((commit) =>
+            git.getCommitTime(localPath, commit).pipe(Effect.map((committedAt) => ({ commit, committedAt })))
+          ),
+          Effect.mapError(remoteHeadFailed({ repoId, branch }))
+        ),
+
+      RemoteBranchHead: ({ repoId, url, branch }) =>
+        git.lsRemote(url, branch === undefined ? DEFAULT_BRANCH : `refs/heads/${branch}`).pipe(
+          Effect.mapError(fetchFailed({ repoId })),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new RemoteBranchMissingError({
+                    repoId,
+                    branch: branch ?? DEFAULT_BRANCH,
+                    message: `${url} has no ${branch ?? DEFAULT_BRANCH}`
+                  })
+                ),
+              onSome: (commit) => Effect.succeed({ commit })
+            })
+          )
+        ),
+
+      ResetHard: ({ repoId, localPath, ref }) =>
+        git
+          .resetHard(localPath, ref)
+          .pipe(Effect.mapError((e) => new ResetFailedError({ repoId, ref, message: e.message }))),
+
+      PlanChanges: ({ jobId, repoId, localPath, from, to, force }) =>
+        Effect.gen(function* () {
+          // Only the files that changed, if git can tell us; otherwise scan everything
+          const changes =
+            from === null
+              ? Option.none()
+              : yield* git.diffNameStatus(localPath, from, to).pipe(
+                  Effect.map(Option.some),
+                  Effect.catch((e) =>
+                    Effect.logWarning(`${repoId}: diff ${from}..${to} failed, re-indexing everything: ${e.message}`).pipe(
+                      Effect.as(Option.none())
+                    )
+                  )
+                )
+          const plan = yield* Option.match(changes, {
+            onNone: () => indexer.planFullIndex(repoId, localPath, { force }),
+            onSome: (changed) => indexer.planChanges(repoId, localPath, changed)
+          }).pipe(Effect.mapError(planIndexFailed({ repoId })))
+          yield* jobs
+            .writePlan(jobId, plan)
+            .pipe(
+              Effect.mapError((e) => new PlanIndexFailedError({ repoId, phase: "savePlan", message: e.message }))
+            )
+          return {
+            toIndex: plan.toIndex.length,
+            toDelete: plan.toDelete.length,
+            skipped: plan.skipped,
+            fullScan: Option.isNone(changes)
+          }
+        }),
+
+      Search: ({ query, mode, repo, repos, path, glob, limit }) => {
+        const options = { repo, repos, path, glob, limit }
+        switch (mode) {
+          case "keyword":
+            return indexer.searchKeyword(query, options)
+          case "semantic":
+            return indexer.searchSemantic(query, options)
+          case "hybrid":
+            return indexer.searchHybrid(query, options)
+        }
+      },
+
+      DropLegacyIndex: ({ repoId }) =>
+        indexer.dropLegacyIndex().pipe(
+          Effect.map((dropped) => ({ dropped })),
+          Effect.catch((e) =>
+            Effect.logWarning(`${repoId}: dropping the old index table failed, will retry: ${e.message}`).pipe(
+              Effect.as({ dropped: false })
+            )
+          )
+        )
+    })
+  })
+)
+
+/**
+ * WorkerClient and IndexingClient served on the calling thread, for a process
+ * with no UI to keep responsive (the CLI). Needs what the handlers need: a
+ * GitClient, Indexer and JobStore.
+ */
+export const layerInProcessWorkers = Layer.mergeAll(
+  Layer.effect(WorkerClient)(RpcTest.makeClient(StepRpcs)),
+  Layer.effect(IndexingClient)(RpcTest.makeClient(StepRpcs))
+).pipe(Layer.provide(HandlersLayer))
+
+/**
+ * A console method that writes to the worker log, at the level consoleLogLevel
+ * picks for `level`
+ */
+const logConsoleCall =
+  (context: Context.Context<never>, embedLog: EmbedLog, level: EmbedLogLevel) =>
+  (...args: Array<unknown>) => {
+    Effect.runForkWith(context)(Effect.logWithLevel(consoleLogLevel(embedLog, level))(format(...args)))
+  }
+
+/**
+ * Send console output to the worker log instead of the terminal. transformers.js
+ * reports a failed model run with console.error.
+ */
+const consoleToLogLayer = (embedLog: EmbedLog) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const context = yield* Effect.context<never>()
+      console.error = logConsoleCall(context, embedLog, "error")
+      console.warn = logConsoleCall(context, embedLog, "warning")
+      console.info = logConsoleCall(context, embedLog, "info")
+      console.log = logConsoleCall(context, embedLog, "info")
+    })
+  )
+
+/**
+ * The RPC server and everything it runs, built from the settings the main
+ * thread sent
+ */
+const serverLayer = (settings: WorkerSettings["Service"]) => {
+  const embedLog = embedLogOf(settings.embedLog)
+  return Layer.mergeAll(
+    RpcServer.layer(StepRpcs),
+    consoleToLogLayer(embedLog),
+    Layer.effectDiscard(Effect.logDebug(`Worker ready (${ONNX_THREADS_PER_WORKER} ONNX threads)`))
+  ).pipe(
+    Layer.provide(HandlersLayer),
+    Layer.provide(
+      Layer.mergeAll(
+        GitClientLayer,
+        IndexerLayerWith({}).pipe(Layer.provide(EmbedderLayer({ threads: ONNX_THREADS_PER_WORKER, embedLog }))),
+        JobStoreLayer
+      )
+    ),
+    Layer.provideMerge(otlpLayer("repobase-worker", Option.fromUndefinedOr(settings.otlpEndpoint)))
+  )
+}
+
+// The protocol comes first: it receives the settings, and holds requests until
+// the server is built from them. provideMerge so the logger is in the context
+// everything else is built with; otherwise worker logs would go to stdout.
+const workerLayer = <E>(logger: Layer.Layer<never, E, FileSystem.FileSystem | Path.Path>) =>
+  Layer.unwrap(
+    RpcWorker.initialMessage(WorkerSettings.schema).pipe(Effect.tapCause(Effect.logError), Effect.map(serverLayer))
+  ).pipe(
+    Layer.provide(RpcServer.layerProtocolWorkerRunner),
+    Layer.provide(BunWorkerRunner.layer),
+    Layer.provideMerge(logger),
+    Layer.provide(BunServices.layer)
+  )
+
+/**
+ * Entry point for a worker thread: serve StepRpcs until the pool closes this
+ * worker. The worker runner handles the close message from the main thread,
+ * so there are no process signal handlers here.
+ *
+ * @param logger - Where the worker's logs go, such as
+ *   `fileLoggerLayer(logPath("worker"))`
+ */
+export const runWorker = <E>(options: { readonly logger: Layer.Layer<never, E, FileSystem.FileSystem | Path.Path> }) => {
+  Effect.runFork(Layer.launch(workerLayer(options.logger)))
+}

@@ -6,9 +6,19 @@ interface ConfirmDialogProps {
   message: string
   onConfirm: () => void
   onCancel: () => void
+  title?: string
+  color?: string
+  hints?: string
 }
 
-export const ConfirmDialog = ({ message, onConfirm, onCancel }: ConfirmDialogProps) => {
+export const ConfirmDialog = ({
+  message,
+  onConfirm,
+  onCancel,
+  title = "! Confirm Delete",
+  color = colors.status.error.default,
+  hints = "[Enter] Confirm  [Esc] Cancel",
+}: ConfirmDialogProps) => {
   useKeyboard((key) => {
     if (key.name === "escape") {
       onCancel()
@@ -28,19 +38,18 @@ export const ConfirmDialog = ({ message, onConfirm, onCancel }: ConfirmDialogPro
         top: "30%",
         left: "10%",
         width: "80%",
-        height: 8,
         backgroundColor: colors.bg.elevated,
         borderStyle: "double",
-        borderColor: colors.status.error.default,
+        borderColor: color,
         border: true,
         flexDirection: "column",
         padding: 1,
       }}
     >
       <text
-        content="! Confirm Delete"
+        content={title}
         style={{
-          fg: colors.status.error.default,
+          fg: color,
           attributes: TextAttributes.BOLD,
           marginBottom: 1,
         }}
@@ -53,7 +62,7 @@ export const ConfirmDialog = ({ message, onConfirm, onCancel }: ConfirmDialogPro
         }}
       />
       <text
-        content="[Enter] Confirm  [Esc] Cancel"
+        content={hints}
         style={{
           fg: colors.text.tertiary,
           marginTop: 1,
