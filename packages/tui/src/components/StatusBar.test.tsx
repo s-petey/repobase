@@ -77,8 +77,29 @@ describe("StatusBar", () => {
     expect(frame).toContain("! 3 repos need re-indexing · [r] [R] all")
   })
 
-  it("keeps each key hint whole on one line in a narrow terminal", async () => {
-    setup = await testRender(<StatusBar mode="list" grouped />, { width: 60, height: 8 })
+  it("hints at the actions menu with [?]", async () => {
+    setup = await testRender(<StatusBar mode="list" />, { width: 160, height: 5 })
+    await interact(setup, () => {})
+    const frame = setup.captureCharFrame()
+
+    expect(frame).toContain("[q] Quit")
+    expect(frame).toContain("[?] Keys")
+  })
+
+  it("shows only the main keys and [?] for the rest in a narrow terminal", async () => {
+    setup = await testRender(<StatusBar mode="list" grouped />, { width: 60, height: 6 })
+    await interact(setup, () => {})
+    const frame = setup.captureCharFrame()
+
+    for (const hint of ["[a]dd", "[s]ync", "[/]search", "[t]asks", "[q]uit", "[?] all keys"]) {
+      expect(frame).toContain(hint)
+    }
+    expect(frame).not.toContain("[d] Delete")
+    expect(frame).not.toContain("[Enter] Toggle group")
+  })
+
+  it("keeps each key hint whole when the hints wrap", async () => {
+    setup = await testRender(<StatusBar mode="list" grouped />, { width: 80, height: 8 })
     await interact(setup, () => {})
     const frame = setup.captureCharFrame()
 

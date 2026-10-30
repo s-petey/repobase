@@ -7,7 +7,7 @@ import { featureFlags } from "../config.js"
 import { KeyHints } from "./KeyHints.js"
 
 interface StatusBarProps {
-  mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs"
+  mode: "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs" | "actions"
   message?: string
   outdated?: number
   mcpServerRunning?: boolean
@@ -27,7 +27,7 @@ export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloud
   const { width } = useTerminalDimensions()
   const narrow = isNarrow(width)
   const getHelpText = () => {
-    if (mode === "add" || mode === "search" || mode === "confirmDelete" || mode === "confirmReindex" || mode === "jobs") {
+    if (mode === "add" || mode === "search" || mode === "confirmDelete" || mode === "confirmReindex" || mode === "jobs" || mode === "actions") {
       return "" // Help text shown in modal
     }
     if (mode === "syncing" || mode === "adding") {
@@ -36,7 +36,8 @@ export const StatusBar = ({ mode, message, outdated = 0, mcpServerRunning, cloud
     if (mode === "results") {
       return "[Esc] Back"
     }
-    const base = "[a] Add  [d] Delete  [s] Sync  [S] Sync All  [/] Search  [t] Tasks  [c] Copy MCP Config  [q] Quit"
+    if (narrow) return "[a]dd  [s]ync  [/]search  [t]asks  [q]uit  [?] all keys"
+    const base = "[a] Add  [d] Delete  [s] Sync  [S] Sync All  [/] Search  [t] Tasks  [c] Copy MCP Config  [q] Quit  [?] Keys"
     if (grouped) {
       return `[Enter] Toggle group  ${base}`
     }

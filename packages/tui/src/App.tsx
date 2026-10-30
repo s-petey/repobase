@@ -5,19 +5,22 @@ import { initialProgress, needsReindex, repoNames } from "@repobase/engine"
 import { Array as Arr, DateTime, Order } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Header, RepoList, StatusBar, AddRepoModal, SearchModal, SearchResults, ProgressModal, ConfirmDialog, TasksView } from "./components/index.js"
-import type { FlatRow } from "./components/RepoList.js"
+import { ActionsMenu, type MenuLine } from "./components/ActionsMenu.js"
+import { type FlatRow, formatCommitDate, formatMode } from "./components/RepoList.js"
 import { type ListAction, matchesKey } from "./actions.js"
 import { colors } from "./theme/index.js"
 import { featureFlags } from "./config.js"
 import { jobCounts, syncActivityText, type SyncActivity } from "./jobView.js"
 import type { SearchFilter, SearchScope } from "./searchView.js"
 
-type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs"
+type AppMode = "list" | "add" | "syncing" | "search" | "results" | "adding" | "confirmDelete" | "confirmReindex" | "jobs" | "actions"
 
 type ExitStage = "idle" | "confirming" | "quitting"
 
 // How long a first Ctrl+C waits for the second one
 const EXIT_CONFIRM_MS = 3000
+
+const MENU_KEY = "?"
 
 const exitNotice = (stage: ExitStage, running: number): string | undefined => {
   if (stage === "quitting") return "Exiting... press Ctrl+C again to force quit"
@@ -407,6 +410,8 @@ export const App = ({
   }, [])
 
   const row = flatRows[selectedIndex]
+  const taskRunning = row?.kind === "repo" && jobs.some((j) => j.repoId === row.repo.id && j.status === "running")
+  const outdatedHere = (highlightedScope?.repos ?? []).filter((id) => outdated.includes(id))
 
   const reindexHighlighted = (all: boolean) => {
     // [R] every outdated repo, [r] those in the highlighted repo or group. Only
@@ -425,6 +430,7 @@ export const App = ({
       label: row?.kind === "header" && row.collapsed ? "Expand" : "Collapse",
       description: "Show or hide this group's repos",
       scope: "row",
+      available: row?.kind === "header",
       run: () => {
         if (row?.kind === "header") toggleGroup(row.owner)
       }
@@ -434,6 +440,7 @@ export const App = ({
       label: "Re-index",
       description: "Rebuild the search index of this repo, or the outdated repos in this group",
       scope: "row",
+      available: outdatedHere.some((id) => !reindexing.has(id)),
       run: () => reindexHighlighted(false)
     },
     {
@@ -441,6 +448,7 @@ export const App = ({
       label: "Sync",
       description: "Fetch and index new commits",
       scope: "row",
+      available: row?.kind === "repo" && row.repo.mode._tag === "tracking",
       run: () => {
         if (row?.kind === "repo") handleSyncRepo(row.repo)
       }
@@ -450,6 +458,7 @@ export const App = ({
       label: "Search",
       description: "Search this repo or group",
       scope: "row",
+      available: row !== undefined,
       run: () => setMode("search")
     },
     {
@@ -457,9 +466,10 @@ export const App = ({
       label: "Delete",
       description: "Remove the repo and its index",
       scope: "row",
+      available: row?.kind === "repo" && !taskRunning,
       run: () => {
         if (row?.kind !== "repo") return
-        if (jobs.some((j) => j.repoId === row.repo.id && j.status === "running")) {
+        if (taskRunning) {
           return showMessage(`${row.repo.id} has a task running; wait for it or discard it in [t] Tasks`)
         }
         setRepoToDelete(row.repo)
@@ -471,6 +481,7 @@ export const App = ({
       label: "Add",
       description: "Add a repository",
       scope: "general",
+      available: true,
       run: () => setMode("add")
     },
     {
@@ -478,6 +489,7 @@ export const App = ({
       label: "Sync all",
       description: "Sync every repo",
       scope: "general",
+      available: true,
       run: () => {
         if (syncActivity?.kind === "all") return showMessage("Sync All is already running; see [t] Tasks")
         handleSyncAll()
@@ -488,6 +500,7 @@ export const App = ({
       label: "Re-index all",
       description: "Re-index every outdated repo",
       scope: "general",
+      available: outdated.length > 0,
       run: () => reindexHighlighted(true)
     },
     {
@@ -495,6 +508,7 @@ export const App = ({
       label: "Tasks",
       description: "Open the Tasks view",
       scope: "general",
+      available: true,
       run: () => setMode("jobs")
     },
     {
@@ -502,6 +516,7 @@ export const App = ({
       label: "Copy MCP config",
       description: "Copy the MCP server config to the clipboard",
       scope: "general",
+      available: true,
       run: () => handleCopyMcpConfig()
     },
     {
@@ -509,9 +524,36 @@ export const App = ({
       label: "Quit",
       description: "Quit repobase",
       scope: "general",
+      available: true,
       run: onQuit
     }
   ]
+
+  const menuTitle = row?.kind === "repo" ? row.repo.id : (highlightedScope?.label ?? "repobase")
+
+  const menuLines = (): ReadonlyArray<MenuLine> => {
+    if (row?.kind === "header") {
+      return outdatedHere.length === 0
+        ? []
+        : [{ text: `! ${outdatedHere.length} of ${row.repoCount} not searchable until re-indexed`, color: colors.status.warning.default }]
+    }
+    if (row?.kind !== "repo") return []
+    const date = formatCommitDate(row.repo)
+    const lines: Array<MenuLine> = [
+      { text: `${formatMode(row.repo)}${date ? ` · last commit ${date}` : ""}`, color: colors.text.secondary }
+    ]
+    if (needsReindex(row.repo)) {
+      lines.push(
+        reindexing.has(row.repo.id)
+          ? { text: "~ Re-indexing in the background", color: colors.status.info.default }
+          : { text: "! Not searchable until re-indexed", color: colors.status.warning.default }
+      )
+    }
+    if (taskRunning) {
+      lines.push({ text: "A task is running for this repo; Delete waits until it ends", color: colors.status.warning.default })
+    }
+    return lines
+  }
 
   useKeyboard((key) => {
     // Ctrl+C works in every mode, so the app can always be exited. This handler is
@@ -553,6 +595,8 @@ export const App = ({
     }
 
     if (mode !== "list") return
+
+    if (key.name === MENU_KEY || (key.name === "/" && key.shift)) return setMode("actions")
 
     switch (key.name) {
       case "up":
@@ -721,6 +765,19 @@ export const App = ({
             handleReindex(outdated)
           }}
           onCancel={() => setMode("list")}
+        />
+      )}
+
+      {mode === "actions" && (
+        <ActionsMenu
+          title={menuTitle}
+          lines={menuLines()}
+          actions={listActions.filter((action) => action.available)}
+          onRun={(action) => {
+            setMode("list")
+            action.run()
+          }}
+          onClose={() => setMode("list")}
         />
       )}
     </box>

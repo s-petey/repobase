@@ -392,6 +392,156 @@ describe("App owner grouping", () => {
   })
 })
 
+describe("App actions menu", () => {
+  // Rows: the Effect-TS header, effect, website, then sindresorhus/ky
+  const repos = [repo("sindresorhus", "ky"), repo("Effect-TS", "website"), repo("Effect-TS", "effect")]
+
+  const press = (app: TestRendererSetup, key: string) => interact(app, () => app.mockInput.pressKey(key))
+
+  const escape = (app: TestRendererSetup) =>
+    interact(app, async () => {
+      app.mockInput.pressEscape()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+
+  const openOnEffect = async (overrides: Partial<ComponentProps<typeof App>> = {}) => {
+    const app = await show(repos, () => {}, overrides)
+    await interact(app, () => {})
+    await press(app, "j")
+    await press(app, "?")
+    return app
+  }
+
+  // Descriptions only the menu shows; the status bar has the same key hints
+  const SYNC = "Fetch and index new commits"
+  const SEARCH = "Search this repo or group"
+  const DELETE = "Remove the repo and its index"
+  const REINDEX = "Rebuild the search index"
+  const COLLAPSE = "Show or hide this group's repos"
+  const MENU_KEYS = "[↑↓/jk] choose  [Enter] run  [/] filter  [q/Esc] close"
+
+  it("opens on ? for the highlighted repo, listing only the actions that apply", async () => {
+    const app = await openOnEffect()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain(MENU_KEYS)
+    expect(frame).toContain("tracking: main")
+    for (const description of [SYNC, SEARCH, DELETE, "Add a repository", "Sync every repo", "Open the Tasks view", "Quit repobase"]) {
+      expect(frame).toContain(description)
+    }
+    // A current repo needs no re-index, and a repo row has no group to collapse
+    expect(frame).not.toContain(REINDEX)
+    expect(frame).not.toContain("Re-index every outdated repo")
+    expect(frame).not.toContain(COLLAPSE)
+  })
+
+  it("lists a group's actions on its header", async () => {
+    const app = await show(repos)
+    await interact(app, () => {})
+    await press(app, "?")
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain(MENU_KEYS)
+    expect(frame).toContain(COLLAPSE)
+    expect(frame).not.toContain(DELETE)
+    expect(frame).not.toContain(SYNC)
+  })
+
+  it("runs an action from its own key and closes", async () => {
+    const onSyncRepo = vi.fn(async () => ({ updated: false }))
+    const app = await openOnEffect({ onSyncRepo })
+    expect(app.captureCharFrame()).toContain(MENU_KEYS)
+
+    await press(app, "s")
+
+    expect(onSyncRepo).toHaveBeenCalledWith("Effect-TS/effect")
+    expect(app.captureCharFrame()).not.toContain(MENU_KEYS)
+  })
+
+  it("runs the highlighted action with Enter", async () => {
+    const onSyncRepo = vi.fn(async () => ({ updated: false }))
+    const app = await openOnEffect({ onSyncRepo })
+
+    // Sync is listed first for a current repo
+    await interact(app, () => app.mockInput.pressEnter())
+
+    expect(onSyncRepo).toHaveBeenCalledWith("Effect-TS/effect")
+  })
+
+  it("moves with j and k as well as the arrows", async () => {
+    const app = await openOnEffect()
+
+    // Sync, then Search
+    await press(app, "j")
+    await press(app, "j")
+    await press(app, "k")
+    await interact(app, () => app.mockInput.pressEnter())
+
+    expect(app.captureCharFrame()).toContain("Search Repositories")
+  })
+
+  it("closes on q without quitting, so Quit runs only with Enter", async () => {
+    const onQuit = vi.fn()
+    const app = await openOnEffect({ onQuit })
+
+    await press(app, "q")
+
+    expect(onQuit).not.toHaveBeenCalled()
+    expect(app.captureCharFrame()).not.toContain(MENU_KEYS)
+    expect(app.captureCharFrame()).toContain("Repositories (3)")
+  })
+
+  it("filters the actions with /, where letters type instead of running actions", async () => {
+    const onSyncRepo = vi.fn(async () => ({ updated: false }))
+    const app = await openOnEffect({ onSyncRepo })
+
+    await press(app, "/")
+    for (const letter of "search") await press(app, letter)
+    const frame = app.captureCharFrame()
+
+    expect(onSyncRepo).not.toHaveBeenCalled()
+    expect(frame).toContain("Filter: search")
+    expect(frame).toContain(SEARCH)
+    expect(frame).not.toContain(DELETE)
+
+    // Search's own key is the filter here, so it runs with Enter
+    await interact(app, () => app.mockInput.pressEnter())
+    expect(app.captureCharFrame()).toContain("Search Repositories")
+  })
+
+  it("clears the filter on Esc, then closes on the next", async () => {
+    const app = await openOnEffect()
+    await press(app, "/")
+    for (const letter of "tasks") await press(app, letter)
+    expect(app.captureCharFrame()).toContain("Filter: tasks")
+    expect(app.captureCharFrame()).not.toContain(DELETE)
+
+    await escape(app)
+    let frame = app.captureCharFrame()
+    expect(frame).not.toContain("Filter:")
+    expect(frame).toContain(DELETE)
+
+    await escape(app)
+    frame = app.captureCharFrame()
+    expect(frame).not.toContain(MENU_KEYS)
+    expect(frame).toContain("Repositories (3)")
+  })
+
+  it("leaves out Delete while the repo has a task running, and says why", async () => {
+    const app = await openOnEffect({
+      onJobsChange: (listener) => {
+        listener([runningJob("syncRepo-Effect-TS__effect-1", "Effect-TS/effect")])
+        return () => {}
+      }
+    })
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain(MENU_KEYS)
+    expect(frame).not.toContain(DELETE)
+    expect(frame).toContain("A task is running for this repo")
+  })
+})
+
 describe("App status messages", () => {
   it("keeps a new message for its full time when an older one's timer runs out", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })

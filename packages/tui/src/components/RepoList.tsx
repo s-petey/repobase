@@ -17,7 +17,7 @@ interface RepoListProps {
   reindexing?: ReadonlySet<string>
 }
 
-const formatMode = (repo: RepoConfig): string => {
+export const formatMode = (repo: RepoConfig): string => {
   if (repo.mode._tag === "tracking") {
     return `tracking: ${repo.mode.branch}`
   }
@@ -40,7 +40,7 @@ const formatStatus = (repo: RepoConfig, reindexing: boolean): { text: string; co
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-const formatCommitDate = (repo: RepoConfig): string => {
+export const formatCommitDate = (repo: RepoConfig): string => {
   if (!repo.lastSyncedCommitAt) return ""
   const date = DateTime.toDate(repo.lastSyncedCommitAt)
   return `${String(date.getDate()).padStart(2, "0")} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`
