@@ -487,6 +487,23 @@ describe("JobRunner", () => {
     }).pipe(Effect.provide(runnerLayer(script.definitions)))
   })
 
+  it.effect("refuses a repo another process has claimed, until that process lets it go", () => {
+    const script = makeScript()
+    return Effect.gen(function* () {
+      const runner = yield* JobRunner
+      const store = yield* JobStore
+      yield* store.claimRepo("acme-widgets", { pid: process.ppid, name: "cli" })
+
+      const refused = yield* Effect.flip(runner.start(syncRepo()))
+      expect(refused).toBeInstanceOf(JobAlreadyRunningError)
+      expect(refused.message).toContain(`repobase cli (pid ${process.ppid})`)
+      expect((yield* runner.await((yield* runner.start(syncRepo("other-repo"))).id)).status).toBe("completed")
+
+      yield* store.releaseRepo("acme-widgets")
+      expect((yield* runner.await((yield* runner.start(syncRepo())).id)).status).toBe("completed")
+    }).pipe(Effect.provide(runnerLayer(script.definitions)))
+  })
+
   it.effect("frees the repo when a start is interrupted before its job launches", () => {
     const script = makeScript()
     return Effect.gen(function* () {
