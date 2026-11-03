@@ -2,7 +2,7 @@
 /**
  * Build script for repobase distribution package.
  * 
- * Bundles TUI and MCP server into dist/ for npm publishing.
+ * Bundles TUI, CLI and MCP server into dist/ for npm publishing.
  */
 
 import { $ } from "bun"
@@ -22,7 +22,11 @@ async function buildTUI() {
   console.log("📦 Building TUI...")
   
   await Bun.build({
-    entrypoints: [join(ROOT, "packages/tui/src/main.tsx")],
+    // worker.ts is spawned by main.tsx as ./worker.js, so both are built into the same directory
+    entrypoints: [
+      join(ROOT, "packages/tui/src/main.tsx"),
+      join(ROOT, "packages/tui/src/worker.ts"),
+    ],
     outdir: join(DIST, "tui"),
     target: "node",
     format: "esm",
@@ -31,7 +35,7 @@ async function buildTUI() {
     external: [
       // Keep native modules external - they'll be installed as deps
       "@lancedb/lancedb",
-      "@xenova/transformers",
+      "@huggingface/transformers",
       // Keep React and opentui external
       "react",
       "@opentui/core",
@@ -40,10 +44,36 @@ async function buildTUI() {
       "effect",
       "@effect/platform",
       "@effect/platform-node",
+      "@effect/platform-bun",
     ],
   })
-  
-  console.log("  ✓ TUI built to dist/tui/main.js")
+
+  console.log("  ✓ TUI built to dist/tui/main.js and dist/tui/worker.js")
+}
+
+async function buildCLI() {
+  console.log("📦 Building CLI...")
+
+  await Bun.build({
+    entrypoints: [join(ROOT, "packages/cli/src/main.ts")],
+    outdir: join(DIST, "cli"),
+    target: "node",
+    format: "esm",
+    splitting: false,
+    sourcemap: "external",
+    external: [
+      // Keep native modules external
+      "@lancedb/lancedb",
+      "@huggingface/transformers",
+      // Keep effect ecosystem external
+      "effect",
+      "@effect/platform",
+      "@effect/platform-node",
+      "@effect/platform-bun",
+    ],
+  })
+
+  console.log("  ✓ CLI built to dist/cli/main.js")
 }
 
 async function buildMCP() {
@@ -59,15 +89,13 @@ async function buildMCP() {
     external: [
       // Keep native modules external
       "@lancedb/lancedb",
-      "@xenova/transformers",
+      "@huggingface/transformers",
       // Keep MCP SDK external
-      "@modelcontextprotocol/sdk",
+      "@modelcontextprotocol/server",
       // Keep effect ecosystem external
       "effect",
       "@effect/platform",
       "@effect/platform-node",
-      // Zod
-      "zod",
     ],
   })
   
@@ -79,14 +107,23 @@ async function createBinWrappers() {
   
   await mkdir(join(DIST, "bin"), { recursive: true })
   
-  // TUI wrapper - uses bun for @opentui compatibility
-  const tuiBin = `#!/usr/bin/env bun
-import "../tui/main.js"
+  // repobase wrapper - runs a CLI command when given arguments (repobase add,
+  // sync, ...) and opens the TUI otherwise. Uses bun for @opentui compatibility.
+  // LANCEDB_LOG=error keeps LanceDB's Rust warnings off stderr, where they draw
+  // over the TUI; it must be set at process start (see "LanceDB log level" in
+  // the README).
+  const tuiBin = `#!/usr/bin/env -S LANCEDB_LOG=error bun
+if (process.argv.length > 2) {
+  await import("../cli/main.js")
+} else {
+  await import("../tui/main.js")
+}
 `
   await Bun.write(join(DIST, "bin/repobase.js"), tuiBin)
   
-  // MCP wrapper - uses bun for consistency
-  const mcpBin = `#!/usr/bin/env bun
+  // MCP wrapper - uses bun for consistency. LANCEDB_LOG=error keeps LanceDB's
+  // warnings out of MCP clients' logs.
+  const mcpBin = `#!/usr/bin/env -S LANCEDB_LOG=error bun
 import "../mcp-server/main.js"
 `
   await Bun.write(join(DIST, "bin/repobase-mcp.js"), mcpBin)
@@ -104,14 +141,16 @@ async function main() {
   
   await clean()
   await buildTUI()
+  await buildCLI()
   await buildMCP()
   await createBinWrappers()
   
   console.log("\n✅ Build complete!")
   console.log("\nTo test locally:")
   console.log("  npm link")
-  console.log("  repobase      # Start TUI")
-  console.log("  repobase-mcp  # Start MCP server")
+  console.log("  repobase            # Start TUI")
+  console.log("  repobase add <url>  # Run a CLI command")
+  console.log("  repobase-mcp        # Start MCP server")
 }
 
 main().catch((err) => {

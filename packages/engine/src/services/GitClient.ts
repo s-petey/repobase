@@ -1,25 +1,25 @@
-import { Command, CommandExecutor } from "@effect/platform"
-import { Context, Effect, Layer } from "effect"
+import { Context, DateTime, Effect, Layer, Option, type PlatformError, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GitError } from "../errors.js"
-
-/**
- * Represents a file change from git diff
- */
-export interface FileChange {
-  status: "A" | "M" | "D" // Added, Modified, Deleted
-  path: string
-}
+import type { FileChange, RepoMode } from "../schemas.js"
 
 /**
  * Git client service interface
  */
 export interface GitClientService {
-  readonly clone: (url: string, path: string) => Effect.Effect<void, GitError>
+  /**
+   * Shallow-clone `url`, checking out the tracked branch or pinned ref of `mode`,
+   * or the remote's default branch without one
+   */
+  readonly clone: (url: string, path: string, mode?: RepoMode) => Effect.Effect<void, GitError>
   readonly fetch: (path: string) => Effect.Effect<void, GitError>
   readonly resetHard: (path: string, ref: string) => Effect.Effect<void, GitError>
   readonly checkout: (path: string, ref: string) => Effect.Effect<void, GitError>
   readonly getCurrentCommit: (path: string) => Effect.Effect<string, GitError>
+  readonly getCommitTime: (path: string, ref: string) => Effect.Effect<DateTime.Utc, GitError>
+  readonly getCurrentBranch: (path: string) => Effect.Effect<string, GitError>
   readonly getRemoteHead: (path: string, branch: string) => Effect.Effect<string, GitError>
+  readonly lsRemote: (remote: string, ref: string) => Effect.Effect<Option.Option<string>, GitError>
   readonly diffNameStatus: (
     path: string,
     fromCommit: string,
@@ -30,10 +30,9 @@ export interface GitClientService {
 /**
  * GitClient service tag
  */
-export class GitClient extends Context.Tag("@repobase/engine/GitClient")<
-  GitClient,
-  GitClientService
->() {}
+export class GitClient extends Context.Service<GitClient, GitClientService>()(
+  "@repobase/engine/GitClient"
+) {}
 
 /**
  * Helper to convert platform errors to GitError
@@ -43,94 +42,146 @@ const toGitError =
   (error: unknown): GitError =>
     new GitError({
       command,
-      message: error instanceof Error ? error.message : String(error)
+      message:
+        typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : String(error)
     })
+
+// A type change (e.g. a file becoming a symlink) is a modification, so the file is
+// re-read. git reports the other statuses (U, X) only for unmerged or broken trees.
+const DIFF_STATUSES = new Map<string, FileChange["status"]>([
+  ["A", "A"],
+  ["M", "M"],
+  ["D", "D"],
+  ["T", "M"]
+])
 
 /**
  * Create the GitClient service implementation
  */
 export const make = Effect.gen(function* () {
-  const executor = yield* CommandExecutor.CommandExecutor
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
-  // Run command and check exit code - fail on non-zero
-  const runCommand = (cmd: Command.Command, commandName: string) =>
-    Effect.provideService(Command.exitCode(cmd), CommandExecutor.CommandExecutor, executor).pipe(
-      Effect.flatMap((exitCode) =>
+  // Git must never wait for input: there's no terminal to answer a password
+  // prompt in a worker thread, and a prompt on /dev/tty would draw over the
+  // TUI. With prompts off, a repo needing credentials fails fast with
+  // "terminal prompts disabled" instead of hanging. A user-provided
+  // GIT_SSH_COMMAND is kept as is.
+  const gitEnv: Record<string, string> = {
+    GIT_TERMINAL_PROMPT: "0",
+    ...(process.env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" })
+  }
+
+  const collectText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
+    stream.pipe(Stream.decodeText(), Stream.mkString)
+
+  // Run a git command and return its stdout. A non-zero exit fails with a
+  // GitError carrying git's stderr, so callers never mistake a failed command
+  // for empty output.
+  const run = (commandName: string, ...args: string[]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* spawner.spawn(
+          ChildProcess.make("git", args, { env: gitEnv, extendEnv: true })
+        )
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [collectText(handle.stdout), collectText(handle.stderr), handle.exitCode],
+          { concurrency: "unbounded" }
+        )
+        return { stdout, stderr, exitCode }
+      })
+    ).pipe(
+      Effect.mapError(toGitError(commandName)),
+      Effect.flatMap(({ stdout, stderr, exitCode }) =>
         exitCode === 0
-          ? Effect.void
+          ? Effect.succeed(stdout)
           : Effect.fail(
               new GitError({
                 command: commandName,
-                message: `Command exited with code ${exitCode}`
+                message: stderr.trim() || `Command exited with code ${exitCode}`
               })
             )
       )
     )
 
-  const runString = (cmd: Command.Command) =>
-    Effect.provideService(Command.string(cmd), CommandExecutor.CommandExecutor, executor)
-
-  const runLines = (cmd: Command.Command) =>
-    Effect.provideService(Command.lines(cmd), CommandExecutor.CommandExecutor, executor)
-
   return GitClient.of({
-    clone: (url, path) =>
-      runCommand(
-        Command.make("git", "clone", "--depth", "1", url, path),
-        "clone"
-      ).pipe(Effect.mapError(toGitError("clone"))),
+    clone: (url, path, mode) => {
+      if (mode?._tag === "pinned") {
+        // --branch takes no commit SHA, so fetch the ref on its own
+        return run("clone", "clone", "--depth", "1", "--no-checkout", "--", url, path).pipe(
+          Effect.andThen(run("fetch", "-C", path, "fetch", "--depth", "1", "--", "origin", mode.ref)),
+          Effect.andThen(run("checkout", "-C", path, "checkout", "--detach", "FETCH_HEAD")),
+          Effect.asVoid
+        )
+      }
+      const branch = mode?._tag === "tracking" ? ["--branch", mode.branch] : []
+      return run("clone", "clone", "--depth", "1", ...branch, "--", url, path).pipe(Effect.asVoid)
+    },
 
-    fetch: (path) =>
-      runCommand(
-        Command.make("git", "-C", path, "fetch", "origin"),
-        "fetch"
-      ).pipe(Effect.mapError(toGitError("fetch"))),
+    fetch: (path) => run("fetch", "-C", path, "fetch", "origin").pipe(Effect.asVoid),
 
     getCurrentCommit: (path) =>
-      runString(Command.make("git", "-C", path, "rev-parse", "HEAD")).pipe(
-        Effect.map((s) => s.trim()),
-        Effect.mapError(toGitError("rev-parse"))
+      run("rev-parse", "-C", path, "rev-parse", "HEAD").pipe(Effect.map((s) => s.trim())),
+
+    getCommitTime: (path, ref) =>
+      run("show", "-C", path, "show", "-s", "--format=%ct", ref).pipe(
+        Effect.map((s) => DateTime.fromEpochSeconds(Number(s.trim())))
       ),
+
+    getCurrentBranch: (path) =>
+      run("rev-parse", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").pipe(Effect.map((s) => s.trim())),
 
     getRemoteHead: (path, branch) =>
-      runString(Command.make("git", "-C", path, "rev-parse", `origin/${branch}`)).pipe(
-        Effect.map((s) => s.trim()),
-        Effect.mapError(toGitError("rev-parse"))
+      run("rev-parse", "-C", path, "rev-parse", `origin/${branch}`).pipe(
+        Effect.map((s) => s.trim())
       ),
 
-    resetHard: (path, ref) =>
-      runCommand(
-        Command.make("git", "-C", path, "reset", "--hard", ref),
-        "reset"
-      ).pipe(Effect.mapError(toGitError("reset"))),
+    lsRemote: (remote, ref) =>
+      run("ls-remote", "ls-remote", "--", remote, ref).pipe(
+        Effect.map((stdout) => {
+          const commit = stdout.split("\t")[0].trim()
+          return commit === "" ? Option.none() : Option.some(commit)
+        })
+      ),
 
-    checkout: (path, ref) =>
-      runCommand(
-        Command.make("git", "-C", path, "checkout", ref),
-        "checkout"
-      ).pipe(Effect.mapError(toGitError("checkout"))),
+    resetHard: (path, ref) => run("reset", "-C", path, "reset", "--hard", ref).pipe(Effect.asVoid),
 
+    checkout: (path, ref) => run("checkout", "-C", path, "checkout", ref).pipe(Effect.asVoid),
+
+    // --no-renames reports a rename as D + A.
+    // -z keeps paths unquoted: without it git quotes non-ASCII paths.
     diffNameStatus: (path, fromCommit, toCommit) =>
-      runLines(
-        Command.make("git", "-C", path, "diff", "--name-status", `${fromCommit}..${toCommit}`)
+      run(
+        "diff",
+        "-C",
+        path,
+        "diff",
+        "--name-status",
+        "--no-renames",
+        "-z",
+        `${fromCommit}..${toCommit}`
       ).pipe(
-        Effect.map((lines) =>
-          lines
-            .filter((line) => line.trim().length > 0)
-            .map((line) => {
-              const [status, ...pathParts] = line.split("\t")
-              return {
-                status: status as "A" | "M" | "D",
-                path: pathParts.join("\t")
-              }
-            })
-        ),
-        Effect.mapError(toGitError("diff"))
+        Effect.flatMap((stdout) => {
+          // status NUL path NUL, repeated
+          const fields = stdout.split("\0")
+          const changes: FileChange[] = []
+          for (let i = 0; i + 1 < fields.length; i += 2) {
+            const status = DIFF_STATUSES.get(fields[i])
+            if (status === undefined) {
+              return Effect.fail(
+                new GitError({ command: "diff", message: `Unexpected status ${fields[i]} for ${fields[i + 1]}` })
+              )
+            }
+            changes.push({ status, path: fields[i + 1] })
+          }
+          return Effect.succeed(changes)
+        })
       )
   })
 })
 
 /**
- * GitClient layer - requires CommandExecutor
+ * GitClient layer - requires ChildProcessSpawner
  */
 export const layer = Layer.effect(GitClient, make)

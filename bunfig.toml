@@ -1,0 +1,7 @@
+[install]
+# Supply-chain safety: only install package versions published at least 7 days ago.
+# Compromised releases are usually detected and unpublished well within this window.
+minimumReleaseAge = 604800 # 7 days, in seconds
+
+# Packages allowed to bypass the age check (e.g. for an urgent security fix).
+minimumReleaseAgeExcludes = ["effect", "@effect/platform-bun", "@effect/platform-node-shared", "@effect/vitest"]

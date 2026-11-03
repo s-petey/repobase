@@ -128,7 +128,7 @@ export const ProgressModal = ({ progress }: ProgressModalProps) => {
       )}
       
       <text
-        content={progress.stage === "complete" ? "[Enter] Continue" : "Please wait..."}
+        content={progress.stage === "complete" ? "[Enter] Continue" : "[Esc] Hide (keeps adding in the background)"}
         style={{
           fg: colors.text.tertiary,
           marginTop: 1,

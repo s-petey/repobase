@@ -9,17 +9,16 @@
   },
   "scripts": {
     "start": "tsx src/main.ts",
-    "build": "tsc"
+    "check": "tsc"
   },
   "dependencies": {
-    "@effect/platform": "^0.93.6",
-    "@effect/platform-bun": "^0.86.0",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@effect/platform-bun": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
     "@repobase/engine": "workspace:*",
-    "effect": "^3.19.9",
-    "zod": "^3.25.0"
+    "effect": "catalog:"
   },
   "devDependencies": {
-    "tsx": "^4.19.0"
+    "@modelcontextprotocol/client": "catalog:",
+    "tsx": "^4.23.15"
   }
 }

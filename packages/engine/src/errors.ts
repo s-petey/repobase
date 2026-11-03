@@ -1,78 +1,100 @@
-import { Data } from "effect"
+import { Schema } from "effect"
+
+// Errors are Schema classes so they can be encoded across worker threads and
+// into job checkpoints; constructors and fields are unchanged for callers.
 
 /**
  * Error from git command execution
  */
-export class GitError extends Data.TaggedError("GitError")<{
-  readonly command: string
-  readonly message: string
-}> {}
+export class GitError extends Schema.TaggedError<GitError>()("GitError", {
+  command: Schema.String,
+  message: Schema.String
+}) {}
 
 /**
  * Error from store operations (load/save config)
  */
-export class StoreError extends Data.TaggedError("StoreError")<{
-  readonly operation: string
-  readonly message: string
-}> {}
+export class StoreError extends Schema.TaggedError<StoreError>()("StoreError", {
+  operation: Schema.String,
+  message: Schema.String
+}) {}
 
 /**
  * Repository not found in store
  */
-export class RepoNotFoundError extends Data.TaggedError("RepoNotFoundError")<{
-  readonly id: string
-}> {}
+export class RepoNotFoundError extends Schema.TaggedError<RepoNotFoundError>()("RepoNotFoundError", {
+  id: Schema.String
+}) {}
 
 /**
  * Repository already exists in store
  */
-export class RepoAlreadyExistsError extends Data.TaggedError("RepoAlreadyExistsError")<{
-  readonly id: string
-}> {}
+export class RepoAlreadyExistsError extends Schema.TaggedError<RepoAlreadyExistsError>()(
+  "RepoAlreadyExistsError",
+  {
+    id: Schema.String
+  }
+) {}
+
+/**
+ * A URL that isn't a GitHub repository's, so it has no owner/name id
+ */
+export class InvalidRepoUrlError extends Schema.TaggedError<InvalidRepoUrlError>()("InvalidRepoUrlError", {
+  url: Schema.String,
+  message: Schema.String
+}) {}
 
 /**
  * Error from indexing operations
  */
-export class IndexError extends Data.TaggedError("IndexError")<{
-  readonly operation: string
-  readonly message: string
-}> {}
+export class IndexError extends Schema.TaggedError<IndexError>()("IndexError", {
+  operation: Schema.String,
+  message: Schema.String,
+  // The file being processed when the error happened, if any
+  path: Schema.optional(Schema.String)
+}) {}
 
 /**
  * Error from search operations
  */
-export class SearchError extends Data.TaggedError("SearchError")<{
-  readonly message: string
-}> {}
+export class SearchError extends Schema.TaggedError<SearchError>()("SearchError", {
+  message: Schema.String
+}) {}
 
 /**
  * Error from cloud sync operations
  */
-export class CloudError extends Data.TaggedError("CloudError")<{
-  readonly operation: string
-  readonly message: string
-}> {}
+export class CloudError extends Schema.TaggedError<CloudError>()("CloudError", {
+  operation: Schema.String,
+  message: Schema.String
+}) {}
 
 /**
  * Cloud sync not configured
  */
-export class CloudNotConfiguredError extends Data.TaggedError("CloudNotConfiguredError")<{}> {}
+export class CloudNotConfiguredError extends Schema.TaggedError<CloudNotConfiguredError>()(
+  "CloudNotConfiguredError",
+  {}
+) {}
 
 /**
  * File not found in index or on disk
  */
-export class FileNotFoundError extends Data.TaggedError("FileNotFoundError")<{
-  readonly repo: string
-  readonly path: string
-}> {}
+export class FileNotFoundError extends Schema.TaggedError<FileNotFoundError>()("FileNotFoundError", {
+  repo: Schema.String,
+  path: Schema.String
+}) {}
 
 /**
  * Invalid pattern (e.g., malformed regex or glob)
  */
-export class InvalidPatternError extends Data.TaggedError("InvalidPatternError")<{
-  readonly pattern: string
-  readonly message: string
-}> {}
+export class InvalidPatternError extends Schema.TaggedError<InvalidPatternError>()(
+  "InvalidPatternError",
+  {
+    pattern: Schema.String,
+    message: Schema.String
+  }
+) {}
 
 /**
  * Union of all engine errors
@@ -82,6 +104,7 @@ export type EngineError =
   | StoreError
   | RepoNotFoundError
   | RepoAlreadyExistsError
+  | InvalidRepoUrlError
   | IndexError
   | SearchError
   | CloudError
